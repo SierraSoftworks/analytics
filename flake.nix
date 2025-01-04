@@ -32,8 +32,8 @@
 
         craneLib = crane.mkLib pkgs;
 
-        testDataFilter = path: _type: builtins.match ".*/tests/.*$" path != null;
-        sourceFilter = path: type: (testDataFilter path type) || (craneLib.filterCargoSources path type);
+        gifDataFilter = path: _type: builtins.match ".*/.*\.gif$" path != null;
+        sourceFilter = path: type: (gifDataFilter path type) || (craneLib.filterCargoSources path type);
 
         src = lib.cleanSourceWith {
           src = ./.;
@@ -147,7 +147,6 @@
           # Extra inputs can be added here; cargo and rustc are provided by default.
           packages = [
             # pkgs.ripgrep
-            pkgs.nodejs
           ];
         };
       });
