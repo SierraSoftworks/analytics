@@ -2,7 +2,7 @@
 name = "analytics"
 version = "0.1.0"
 authors = ["Benjamin Pannell <benjamin@pannell.dev>"]
-edition = "2024"
+edition = "2021"
 
 [features]
 default = []
