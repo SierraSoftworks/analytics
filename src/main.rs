@@ -2,12 +2,10 @@ extern crate actix_web;
 extern crate chrono;
 #[macro_use]
 extern crate serde;
-extern crate rand;
 extern crate serde_json;
-extern crate uuid;
 
 use actix_cors::Cors;
-use tracing_batteries::{OpenTelemetry, Sentry, Session, prelude::*};
+use tracing_batteries::{prelude::*, OpenTelemetry, Sentry, Session};
 
 #[macro_use]
 mod macros;

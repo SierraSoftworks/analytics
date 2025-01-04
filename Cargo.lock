@@ -313,14 +313,12 @@ dependencies = [
  "env_logger",
  "futures",
  "http 0.2.12",
- "lazy_static",
  "log",
- "rand 0.8.5",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tracing-batteries",
- "uuid",
 ]
 
 [[package]]
@@ -2270,6 +2268,7 @@ dependencies = [
  "async-compression",
  "base64 0.22.1",
  "bytes",
+ "encoding_rs",
  "futures-channel",
  "futures-core",
  "futures-util",
