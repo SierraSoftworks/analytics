@@ -1,6 +1,3 @@
-use std::collections::HashSet;
-use std::sync::{Arc, RwLock};
-
 use crate::api::APIError;
 use crate::{models::*, trace_handler};
 use actix::prelude::*;
@@ -8,47 +5,18 @@ use actix::prelude::*;
 pub struct SqliteStore {
     started_at: chrono::DateTime<chrono::Utc>,
     connection: sqlite::Connection,
-    known_pages: Arc<RwLock<HashSet<(String, String)>>>,
 }
 
 impl SqliteStore {
     pub fn new<P: AsRef<str>>(path: P) -> Result<Self, sqlite::Error> {
         let instance = Self {
             started_at: chrono::Utc::now(),
-            connection: sqlite::Connection::open(path.as_ref()).unwrap(),
-            known_pages: Arc::new(RwLock::new(HashSet::new())),
+            connection: sqlite::Connection::open(path.as_ref())?,
         };
 
         super::migrations::run_migrations(&instance.connection)?;
 
         Ok(instance)
-    }
-
-    fn ensure_page(&self, domain: &str, path: &str) -> Result<(), sqlite::Error> {
-        if let Ok(target) = self.known_pages.read() {
-            if target.contains(&(domain.to_string(), path.to_string())) {
-                return Ok(());
-            }
-        }
-
-        self.create_page(domain, path)
-    }
-
-    fn create_page(&self, domain: &str, path: &str) -> Result<(), sqlite::Error> {
-        let mut query = self
-            .connection
-            .prepare("INSERT INTO pages (domain, path) VALUES (?, ?)")?;
-
-        query.bind((1, domain))?;
-        query.bind((2, path))?;
-
-        query.next()?;
-
-        if let Ok(mut target) = self.known_pages.write() {
-            target.insert((domain.to_string(), path.to_string()));
-        }
-
-        Ok(())
     }
 
     fn get_page(&self, domain: &str, path: &str) -> Result<Page, APIError> {
@@ -156,7 +124,6 @@ impl Handler<GetPage> for SqliteStore {
     type Result = Result<Page, APIError>;
 
     fn handle(&mut self, msg: GetPage, _: &mut Self::Context) -> Self::Result {
-        self.ensure_page(&msg.domain, &msg.path)?;
         self.get_page(&msg.domain, &msg.path)
     }
 }
@@ -177,7 +144,6 @@ impl Handler<LikePage> for SqliteStore {
     type Result = Result<Page, APIError>;
 
     fn handle(&mut self, msg: LikePage, _: &mut Self::Context) -> Self::Result {
-        self.ensure_page(&msg.domain, &msg.path)?;
         self.upsert_page(&msg.domain, &msg.path, 1, 0)
     }
 }
