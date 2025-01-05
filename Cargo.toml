@@ -6,7 +6,6 @@ edition = "2021"
 
 [features]
 default = []
-table_storage = []
 pure_tests = []
 
 [dependencies]
@@ -17,10 +16,8 @@ actix-rt = "2.10"
 actix-service = "2.0.2"
 actix-web = "4.8"
 async-trait = "0.1.81"
-azure_core = "0.20"
-azure_data_tables = "0.20"
-azure_storage = "0.20"
 chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5.23", features = ["derive", "env"] }
 env_logger = "0.11"
 futures = "0.3"
 http = "0.2"
@@ -35,5 +32,6 @@ reqwest = { version = "0.12.12", default-features = false, features = [
 ] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sqlite = "0.36.1"
 tokio = { version = "1.39", features = ["full"] }
 tracing-batteries = { git = "https://github.com/sierrasoftworks/tracing-batteries-rs.git" }

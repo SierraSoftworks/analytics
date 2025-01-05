@@ -15,9 +15,9 @@ pub struct GlobalState {
 }
 
 impl GlobalState {
-    pub fn new() -> Self {
-        Self {
-            store: crate::store::Store::new().start(),
-        }
+    pub fn new<P: AsRef<str>>(database_path: P) -> Result<Self, sqlite::Error> {
+        Ok(Self {
+            store: crate::store::Store::new(database_path)?.start(),
+        })
     }
 }

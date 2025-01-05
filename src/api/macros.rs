@@ -11,7 +11,7 @@ macro_rules! test_state {
     };
 
     ($state:ident = [ $($init:expr),* ]) => {
-        let $state = $crate::models::GlobalState::new();
+        let $state = $crate::models::GlobalState::new(":memory:").unwrap();
 
         test_state!(:: $state = [ $($init),* ]);
     }
@@ -81,7 +81,7 @@ macro_rules! test_request {
 
     ($method:ident $path:expr => $status:ident) => {
         {
-            let state = $crate::models::GlobalState::new();
+            let state = $crate::models::GlobalState::new(":memory:").unwrap();
 
             test_request!($method $path => $status | state = state)
         }
@@ -89,7 +89,7 @@ macro_rules! test_request {
 
     ($method:ident $path:expr, $body:expr => $status:ident) => {
         {
-            let state = $crate::models::GlobalState::new();
+            let state = $crate::models::GlobalState::new(":memory:").unwrap();
 
             test_request!($method $path, $body => $status | state = state)
         }

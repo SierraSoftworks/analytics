@@ -9,3 +9,4 @@ local.settings.json
 
 /rex
 /rex.exe
+*.sqldb

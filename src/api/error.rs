@@ -1,5 +1,5 @@
 use actix_http::body::BoxBody;
-use actix_web::{HttpResponse, error, http::StatusCode};
+use actix_web::{error, http::StatusCode, HttpResponse};
 use std::fmt;
 use tracing_batteries::prelude::*;
 
@@ -38,8 +38,8 @@ impl fmt::Display for APIError {
     }
 }
 
-impl From<azure_core::error::Error> for APIError {
-    fn from(err: azure_core::error::Error) -> Self {
+impl From<actix::MailboxError> for APIError {
+    fn from(err: actix::MailboxError) -> Self {
         error!({ exception.message = %err }, "We were unable to call Azure Table Storage");
 
         sentry::capture_error(&err);
@@ -52,16 +52,16 @@ impl From<azure_core::error::Error> for APIError {
     }
 }
 
-impl From<actix::MailboxError> for APIError {
-    fn from(err: actix::MailboxError) -> Self {
-        error!({ exception.message = %err }, "We were unable to call Azure Table Storage");
+impl From<sqlite::Error> for APIError {
+    fn from(err: sqlite::Error) -> Self {
+        error!({ exception.message = %err }, "We were unable to call SQLite");
 
         sentry::capture_error(&err);
 
         Self::new(
             500,
             "Internal Server Error",
-            "We ran into a problem, this has been reported and will be looked at.",
+            "We want into a problem, this has been reported and will be looked at.",
         )
     }
 }
