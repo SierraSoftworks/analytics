@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Generate Package Version (Release Tag)
         shell: pwsh
@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
@@ -119,7 +119,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Fetch Versioned Cargo.toml
         uses: actions/download-artifact@v5
@@ -200,7 +200,7 @@ jobs:
             type=semver,pattern={{major}}
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Pull in platform artifact
         uses: actions/download-artifact@v5
