@@ -15,7 +15,7 @@ actix-http = "3.11"
 actix-rt = "2.10"
 actix-service = "2.0.3"
 actix-web = "4.11"
-async-trait = "0.1.88"
+async-trait = "0.1.89"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5.45", features = ["derive", "env"] }
 env_logger = "0.11"
