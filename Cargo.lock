@@ -282,7 +282,7 @@ dependencies = [
  "clap",
  "env_logger",
  "futures",
- "http 0.2.12",
+ "http 1.2.0",
  "log",
  "reqwest",
  "serde",
