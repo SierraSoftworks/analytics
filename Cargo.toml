@@ -14,7 +14,7 @@ actix-cors = "0.7.1"
 actix-http = "3.12"
 actix-rt = "2.11"
 actix-service = "2.0.3"
-actix-web = "4.12"
+actix-web = "4.13"
 async-trait = "0.1.89"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5.59", features = ["derive", "env"] }
