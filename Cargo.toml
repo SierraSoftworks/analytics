@@ -30,3 +30,20 @@ humantime-serde = "1"
 include_dir = "0.7"
 dotenvy = "0.15"
 tracing-batteries = { git = "https://github.com/sierrasoftworks/tracing-batteries-rs.git" }
+
+# Storage / OLAP
+redb = "4.1"
+ulid = "1"
+polars = { version = "0.54", default-features = false, features = [
+  "lazy",
+  "parquet",
+  "streaming",
+  "is_in",
+  "strings",
+  "temporal",
+  "dtype-datetime",
+  "dtype-date",
+  "fmt",
+  "round_series",
+  "cum_agg",
+] }

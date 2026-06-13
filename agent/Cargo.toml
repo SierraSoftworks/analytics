@@ -24,6 +24,9 @@ chrono.workspace = true
 include_dir.workspace = true
 dotenvy.workspace = true
 tracing-batteries.workspace = true
+redb.workspace = true
+ulid.workspace = true
+polars.workspace = true
 
 [build-dependencies]
 vergen = { version = "8.3", features = ["git", "gitcl"] }

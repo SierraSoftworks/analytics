@@ -5,7 +5,15 @@
 //! server and by the WebAssembly `analytics-ui` frontend.
 
 mod auth;
+mod exception;
 mod health;
+mod pixel;
+mod project;
+mod source;
 
 pub use auth::{AdminUser, CsrfToken};
+pub use exception::ExceptionStatus;
 pub use health::Health;
+pub use pixel::{Pixel, PixelInput};
+pub use project::{Project, ProjectInput};
+pub use source::{Source, SourceInput, SourceKind};

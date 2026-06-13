@@ -2,6 +2,9 @@
 mod macros;
 
 mod config;
+// Wired into the web layer in Phase 4 (ingest); allow dead code until then.
+#[allow(dead_code)]
+mod store;
 mod telemetry;
 mod web;
 
