@@ -3,6 +3,8 @@
 
   var script = document.currentScript;
   var api = (script && script.getAttribute("data-api")) || "";
+  var captureExceptions =
+    script && script.getAttribute("data-auto-capture-exceptions") === "true";
 
   // Respect Do-Not-Track / Global Privacy Control.
   if (
@@ -28,23 +30,13 @@
     timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   } catch (e) {}
 
-  function send(kind, extra) {
-    var payload = {
-      b: beacon,
-      e: kind,
-      u: location.href,
-      t: timezone,
-    };
-    if (document.referrer) payload.r = document.referrer;
-    if (extra) {
-      for (var key in extra) {
-        if (extra[key] !== undefined) payload[key] = extra[key];
-      }
-    }
+  // POST JSON, using sendBeacon (with a JSON Blob so the server sees the right
+  // content type) when firing during unload, else fetch with keepalive.
+  function post(path, payload, useBeacon) {
     var body = JSON.stringify(payload);
-    var url = endpoint("/track/hit");
-    if (kind === "unload" && navigator.sendBeacon) {
-      navigator.sendBeacon(url, body);
+    var url = endpoint(path);
+    if (useBeacon && navigator.sendBeacon) {
+      navigator.sendBeacon(url, new Blob([body], { type: "application/json" }));
     } else {
       fetch(url, {
         method: "POST",
@@ -54,6 +46,26 @@
         credentials: "omit",
       }).catch(function () {});
     }
+  }
+
+  function send(kind, extra, useBeacon) {
+    var payload = { b: beacon, e: kind, u: location.href, t: timezone };
+    if (document.referrer) payload.r = document.referrer;
+    if (extra) {
+      for (var key in extra) {
+        if (extra[key] !== undefined) payload[key] = extra[key];
+      }
+    }
+    post("/track/hit", payload, useBeacon);
+  }
+
+  function sendException(error, handled, meta) {
+    var name = (error && error.name) || "Error";
+    var message = (error && error.message) || String(error);
+    var payload = { u: location.href, b: beacon, ty: name, m: message, h: !!handled };
+    if (error && error.stack) payload.s = String(error.stack);
+    if (meta) payload.d = meta;
+    post("/track/exception", payload, true);
   }
 
   function load() {
@@ -83,7 +95,7 @@
   function unload() {
     if (reported) return;
     reported = true;
-    send("unload", { m: Date.now() - startedAt });
+    send("unload", { m: Date.now() - startedAt }, true);
   }
   window.addEventListener("pagehide", unload);
   document.addEventListener("visibilitychange", function () {
@@ -92,7 +104,7 @@
 
   // SPA navigations (history API).
   var lastPath = location.pathname;
-  function onNavigation() {
+  window.addEventListener("popstate", function () {
     if (location.pathname !== lastPath) {
       lastPath = location.pathname;
       beacon = newBeacon();
@@ -100,13 +112,29 @@
       reported = false;
       load();
     }
-  }
-  window.addEventListener("popstate", onNavigation);
+  });
 
-  // Public API for manual custom events.
+  // Optional automatic capture of unhandled errors and promise rejections.
+  if (captureExceptions) {
+    window.addEventListener("error", function (event) {
+      sendException(event.error || { name: "Error", message: event.message }, false);
+    });
+    window.addEventListener("unhandledrejection", function (event) {
+      var reason = event.reason;
+      sendException(
+        reason instanceof Error ? reason : { name: "UnhandledRejection", message: String(reason) },
+        false
+      );
+    });
+  }
+
+  // Public API for manual events and exception reporting.
   window.analytics = {
     event: function (name, data) {
       send("custom", { n: name, d: data });
+    },
+    captureException: function (error, meta) {
+      sendException(error, true, meta);
     },
   };
 })();

@@ -6,7 +6,8 @@
 use std::path::Path;
 
 use analytics_api::{
-    KeyCount, MetricSummary, Overview, ProjectSummary, Source, Stats, TimeSeriesPoint,
+    ExceptionGroup, ExceptionOccurrence, ExceptionStatus, KeyCount, MetricSummary, Overview,
+    ProjectSummary, Stats, TimeSeriesPoint, pixel_source,
 };
 use polars::prelude::*;
 
@@ -63,17 +64,27 @@ pub fn overview(
     let timeseries = timeseries(base.clone(), bucket_ms)?;
     let per_source = per_source_totals(base)?;
 
+    // Build a source-URI -> project map from assigned sources and pixels.
+    let pixels = store.list_pixels()?;
+    let mut uri_project: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for source in &sources {
+        if let Some(project_id) = &source.project_id {
+            uri_project.insert(source.uri.clone(), project_id.clone());
+        }
+    }
+    for pixel in &pixels {
+        uri_project.insert(pixel_source(&pixel.id), pixel.project_id.clone());
+    }
+
     // Aggregate per-source totals up to projects, and collect unassigned sources.
     let mut project_totals: std::collections::HashMap<String, (i64, i64)> =
         std::collections::HashMap::new();
     let mut unassigned: Vec<KeyCount> = Vec::new();
-    let by_uri: std::collections::HashMap<&str, &Source> =
-        sources.iter().map(|s| (s.uri.as_str(), s)).collect();
-
     for (uri, visitors, pageviews) in &per_source {
-        match by_uri.get(uri.as_str()).and_then(|s| s.project_id.as_deref()) {
+        match uri_project.get(uri) {
             Some(project_id) => {
-                let entry = project_totals.entry(project_id.to_string()).or_insert((0, 0));
+                let entry = project_totals.entry(project_id.clone()).or_insert((0, 0));
                 entry.0 += visitors;
                 entry.1 += pageviews;
             }
@@ -107,13 +118,109 @@ pub fn overview(
     })
 }
 
-/// The source URIs belonging to a project (its sources, and — in Phase 7 — pixels).
+/// The source URIs belonging to a project: its assigned sources plus its pixels
+/// (as `pixel://<id>` URIs).
 pub fn project_source_uris(store: &Store, project_id: &str) -> Result<Vec<String>> {
-    Ok(store
+    let mut uris: Vec<String> = store
         .list_sources()?
         .into_iter()
         .filter(|s| s.project_id.as_deref() == Some(project_id))
         .map(|s| s.uri)
+        .collect();
+    for pixel in store.list_pixels()? {
+        if pixel.project_id == project_id {
+            uris.push(pixel_source(&pixel.id));
+        }
+    }
+    Ok(uris)
+}
+
+/// Aggregated exception groups for a set of sources over a time range. The triage
+/// status is filled in by the caller (which knows the project).
+pub fn exception_groups(
+    store: &Store,
+    parquet_dir: &str,
+    sources: &[String],
+    from_ms: i64,
+    to_ms: i64,
+) -> Result<Vec<ExceptionGroup>> {
+    let df = combined(store, parquet_dir, from_ms, to_ms)?
+        .filter(source_filter(sources))
+        .filter(col("kind").eq(lit("exception")))
+        .filter(col("exc_group").is_not_null())
+        .group_by([col("exc_group")])
+        .agg([
+            len().cast(DataType::Int64).alias("count"),
+            col("received_ms").min().cast(DataType::Int64).alias("first_seen"),
+            col("received_ms").max().cast(DataType::Int64).alias("last_seen"),
+            col("exc_type").first().alias("exc_type"),
+            col("exc_message").first().alias("sample_message"),
+        ])
+        .sort(["last_seen"], SortMultipleOptions::default().with_order_descending(true))
+        .limit(200)
+        .collect()
+        .or_system_err(ADVICE)?;
+
+    let group_id = df.column("exc_group").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let count = df.column("count").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let first = df.column("first_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let last = df.column("last_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let exc_type = df.column("exc_type").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let message = df.column("sample_message").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+
+    Ok((0..df.height())
+        .filter_map(|i| {
+            group_id.get(i).map(|gid| ExceptionGroup {
+                group_id: gid.to_string(),
+                exc_type: exc_type.get(i).unwrap_or("").to_string(),
+                sample_message: message.get(i).unwrap_or("").to_string(),
+                count: count.get(i).unwrap_or(0),
+                first_seen_ms: first.get(i).unwrap_or(0),
+                last_seen_ms: last.get(i).unwrap_or(0),
+                status: ExceptionStatus::Unresolved,
+                note: None,
+            })
+        })
+        .collect())
+}
+
+/// Recent occurrences of a single exception group.
+pub fn exception_occurrences(
+    store: &Store,
+    parquet_dir: &str,
+    sources: &[String],
+    group_id: &str,
+    from_ms: i64,
+    to_ms: i64,
+    limit: u32,
+) -> Result<Vec<ExceptionOccurrence>> {
+    let df = combined(store, parquet_dir, from_ms, to_ms)?
+        .filter(source_filter(sources))
+        .filter(col("kind").eq(lit("exception")))
+        .filter(col("exc_group").eq(lit(group_id.to_string())))
+        .sort(["received_ms"], SortMultipleOptions::default().with_order_descending(true))
+        .limit(limit)
+        .collect()
+        .or_system_err(ADVICE)?;
+
+    let exc_type = df.column("exc_type").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let message = df.column("exc_message").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let stack = df.column("exc_stack").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let handled = df.column("exc_handled").or_system_err(ADVICE)?.bool().or_system_err(ADVICE)?;
+    let received = df.column("received_ms").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let browser = df.column("ua_browser").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let os = df.column("ua_os").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+
+    Ok((0..df.height())
+        .map(|i| ExceptionOccurrence {
+            exc_type: exc_type.get(i).unwrap_or("").to_string(),
+            message: message.get(i).unwrap_or("").to_string(),
+            stack: stack.get(i).map(str::to_string),
+            handled: handled.get(i).unwrap_or(false),
+            received_ms: received.get(i).unwrap_or(0),
+            ua_browser: browser.get(i).map(str::to_string),
+            ua_os: os.get(i).map(str::to_string),
+        })
         .collect())
 }
 

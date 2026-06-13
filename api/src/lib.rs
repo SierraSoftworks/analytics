@@ -14,7 +14,10 @@ mod stats;
 mod track;
 
 pub use auth::{AdminUser, CsrfToken};
-pub use exception::ExceptionStatus;
+pub use exception::{
+    ExceptionGroup, ExceptionGroupDetail, ExceptionOccurrence, ExceptionReport, ExceptionStatus,
+    TriageInput,
+};
 pub use health::Health;
 pub use pixel::{Pixel, PixelInput};
 pub use project::{Project, ProjectInput};

@@ -142,6 +142,25 @@ mod tests {
     }
 
     #[test]
+    fn triage_roundtrip() {
+        use analytics_api::ExceptionStatus;
+        let store = temp_store();
+        let triage = ExceptionTriage {
+            status: ExceptionStatus::Resolved,
+            note: Some("fixed in v2".to_string()),
+            updated_at: Utc::now(),
+            updated_by: Some("admin".to_string()),
+        };
+        store.put_triage("p1", "g1", &triage).unwrap();
+        let got = store.get_triage("p1", "g1").unwrap().unwrap();
+        assert_eq!(got.status, ExceptionStatus::Resolved);
+        assert_eq!(got.note.as_deref(), Some("fixed in v2"));
+        // A different group, or different project, has no triage.
+        assert!(store.get_triage("p1", "other").unwrap().is_none());
+        assert!(store.get_triage("p2", "g1").unwrap().is_none());
+    }
+
+    #[test]
     fn appends_and_reads_events() {
         let store = temp_store();
         store
