@@ -16,6 +16,7 @@ pub struct Config {
     pub web: WebConfig,
     pub storage: StorageConfig,
     pub privacy: PrivacyConfig,
+    pub ratelimit: RateLimitConfig,
     pub telemetry: TelemetryConfig,
 }
 
@@ -135,6 +136,52 @@ impl Default for PrivacyConfig {
         Self {
             salt_rotation: Duration::from_secs(24 * 60 * 60),
             honor_dnt: true,
+        }
+    }
+}
+
+/// Per-IP rate limiting. IPs are used only as transient in-memory keys and are
+/// never logged or stored.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RateLimitConfig {
+    pub enabled: bool,
+    /// Limit applied per IP to the public tracking endpoints.
+    pub tracking: RateLimitRule,
+    /// Limit applied per IP to unauthenticated requests against protected endpoints.
+    pub unauthenticated: RateLimitRule,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            tracking: RateLimitRule {
+                per_minute: 600,
+                burst: 200,
+            },
+            unauthenticated: RateLimitRule {
+                per_minute: 60,
+                burst: 20,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct RateLimitRule {
+    /// Sustained requests per minute (token refill rate).
+    pub per_minute: u32,
+    /// Maximum burst (token bucket capacity).
+    pub burst: u32,
+}
+
+impl Default for RateLimitRule {
+    fn default() -> Self {
+        Self {
+            per_minute: 600,
+            burst: 200,
         }
     }
 }

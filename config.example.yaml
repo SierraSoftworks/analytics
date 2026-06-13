@@ -33,6 +33,18 @@ privacy:
   salt_rotation: "24h"
   honor_dnt: true
 
+# Per-IP rate limiting. IP addresses are used only as transient in-memory keys and
+# are never logged or stored. Each rule is a token bucket: `per_minute` is the
+# sustained refill rate and `burst` the maximum momentary allowance.
+ratelimit:
+  enabled: true
+  tracking:        # public /track/* beacons
+    per_minute: 600
+    burst: 200
+  unauthenticated: # unauthenticated hits to protected endpoints
+    per_minute: 60
+    burst: 20
+
 telemetry:
   service_name: "analytics"
   # sentry_dsn: "https://...@sentry.io/..."

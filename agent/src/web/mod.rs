@@ -1,21 +1,24 @@
+pub mod extract;
+mod track;
 mod ui;
 
-use actix_cors::Cors;
 use actix_web::{App, HttpResponse, HttpServer, web};
 
-use crate::config::Config;
 use crate::errors::{Result, ResultExt};
+use crate::state::AppState;
 use crate::telemetry::TracingLogger;
 
 /// Start the HTTP server and block until it shuts down.
-pub async fn run(config: Config) -> Result<()> {
-    let address = config.web.address.clone();
+pub async fn run(state: AppState) -> Result<()> {
+    let address = state.config.web.address.clone();
+    let data = web::Data::new(state);
 
     let server = HttpServer::new(move || {
         App::new()
+            .app_data(data.clone())
             .wrap(TracingLogger)
-            // TODO(phase 4): restrict permissive CORS to the public `/track/*` scope.
-            .wrap(Cors::permissive())
+            // Public tracking endpoints (their own CORS) + the tracker script.
+            .configure(track::configure)
             .route("/api/v1/health", web::get().to(health))
             // SPA fallback: serve the embedded frontend, falling back to index.html.
             .default_service(web::get().to(ui::serve))

@@ -95,6 +95,51 @@ impl Store {
         Ok(events)
     }
 
+    /// Read (without removing) all events with `received_ms < threshold_ms`. The
+    /// compactor writes these to Parquet before [`delete_before`](Store::delete_before)
+    /// removes them, so a write failure never loses data.
+    pub fn events_before(&self, threshold_ms: i64) -> Result<Vec<StoredEvent>> {
+        let threshold = threshold_ms.max(0) as u64;
+        let txn = self.db.begin_read().or_system_err(STORAGE_ADVICE)?;
+        let table = txn.open_table(EVENTS).or_system_err(STORAGE_ADVICE)?;
+        let mut out = Vec::new();
+        for item in table.iter().or_system_err(STORAGE_ADVICE)? {
+            let (key, value) = item.or_system_err(STORAGE_ADVICE)?;
+            if u64_from_be(&key.value()[0..8]) < threshold {
+                out.push(serde_json::from_slice(value.value()).or_system_err(STORAGE_ADVICE)?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Remove all events with `received_ms < threshold_ms`, returning the count.
+    pub fn delete_before(&self, threshold_ms: i64) -> Result<usize> {
+        let threshold = threshold_ms.max(0) as u64;
+        let mut keys = Vec::new();
+        {
+            let txn = self.db.begin_read().or_system_err(STORAGE_ADVICE)?;
+            let table = txn.open_table(EVENTS).or_system_err(STORAGE_ADVICE)?;
+            for item in table.iter().or_system_err(STORAGE_ADVICE)? {
+                let (key, _value) = item.or_system_err(STORAGE_ADVICE)?;
+                let key_bytes = key.value();
+                if u64_from_be(&key_bytes[0..8]) < threshold {
+                    keys.push(key_bytes.to_vec());
+                }
+            }
+        }
+        if !keys.is_empty() {
+            let txn = self.db.begin_write().or_system_err(STORAGE_ADVICE)?;
+            {
+                let mut table = txn.open_table(EVENTS).or_system_err(STORAGE_ADVICE)?;
+                for key in &keys {
+                    table.remove(key.as_slice()).or_system_err(STORAGE_ADVICE)?;
+                }
+            }
+            txn.commit().or_system_err(STORAGE_ADVICE)?;
+        }
+        Ok(keys.len())
+    }
+
     /// Build a polars [`DataFrame`] from the current hot store.
     pub fn hot_dataframe(&self) -> Result<DataFrame> {
         build_dataframe(&self.all_events()?).or_system_err(STORAGE_ADVICE)

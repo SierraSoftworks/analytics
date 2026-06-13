@@ -1,6 +1,7 @@
 //! CRUD for the metadata entities: projects, sources, pixels, and exception triage.
 
-use analytics_api::{Pixel, Project, Source};
+use analytics_api::{Pixel, Project, Source, default_kind};
+use chrono::Utc;
 
 use super::Store;
 use super::tables::{EXCEPTION_TRIAGE, PIXELS, PROJECTS, SOURCES, triage_key};
@@ -34,6 +35,25 @@ impl Store {
     }
     pub fn delete_source(&self, uri: &str) -> Result<bool> {
         self.delete_key(SOURCES, uri)
+    }
+
+    /// Register a newly-seen source as unassigned, if it does not already exist.
+    /// Called from the single-threaded ingest writer, so the check-then-insert is
+    /// race-free.
+    pub fn register_source_if_absent(&self, uri: &str) -> Result<()> {
+        if self.get_source(uri)?.is_some() {
+            return Ok(());
+        }
+        let now = Utc::now();
+        self.put_source(&Source {
+            uri: uri.to_string(),
+            project_id: None,
+            kind: default_kind(uri),
+            display_name: None,
+            created_at: now,
+            first_seen: Some(now),
+            last_seen: Some(now),
+        })
     }
 
     // --------------------------------------------------------------- pixels

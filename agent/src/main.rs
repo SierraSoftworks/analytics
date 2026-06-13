@@ -3,19 +3,27 @@ mod macros;
 
 mod config;
 mod errors;
-// The store's public surface (re-exports + methods) is consumed from Phase 4
-// (ingest) onward; allow the forward-looking dead code until then.
+mod ingest;
+mod ratelimit;
+mod state;
+// Some store CRUD (pixels/triage) and analytics helpers are consumed in Phases 6-7;
+// allow the forward-looking surface until then.
 #[allow(dead_code, unused_imports)]
 mod store;
 mod telemetry;
 mod web;
 
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use tracing_batteries::{OpenTelemetry, Sentry, Session, prelude::*};
 
 use crate::config::Config;
+use crate::ratelimit::RateLimiter;
+use crate::state::AppState;
+use crate::store::Store;
 
 /// Lightweight, privacy-preserving analytics for your websites and applications.
 #[derive(Parser, Debug)]
@@ -33,26 +41,71 @@ struct Args {
 #[actix_web::main]
 async fn main() -> ExitCode {
     let args = Args::parse();
-
-    // Load environment variables from the .env file if present (used by config
-    // interpolation). A missing file is not an error.
     let _ = dotenvy::from_path(&args.env);
 
     let config = match Config::load(&args.config) {
         Ok(config) => config,
         Err(err) => {
-            // Display includes the actionable advice.
             eprintln!("{err}");
             return ExitCode::FAILURE;
         }
     };
 
-    // Pull telemetry settings out of `config` so it can be moved into the server.
+    let session = build_telemetry(&config);
+
+    let outcome = serve(config).await;
+    let code = match &outcome {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            error!("The server exited unexpectedly: {err}");
+            eprintln!("{err}");
+            ExitCode::FAILURE
+        }
+    };
+
+    session.shutdown();
+    code
+}
+
+/// Open storage, start the ingest pipeline, and run the web server.
+async fn serve(config: Config) -> errors::Result<()> {
+    let store = Arc::new(Store::open(&config.storage.redb_path)?);
+    let ingest = ingest::spawn(store.clone(), config.storage.clone());
+
+    let tracking_limiter = Arc::new(RateLimiter::from_rule(&config.ratelimit.tracking));
+    let unauth_limiter = Arc::new(RateLimiter::from_rule(&config.ratelimit.unauthenticated));
+    spawn_limiter_cleanup(tracking_limiter.clone(), unauth_limiter.clone());
+
+    let state = AppState {
+        store,
+        ingest,
+        config: Arc::new(config),
+        tracking_limiter,
+        unauth_limiter,
+    };
+
+    info!("Starting analytics server on {}", state.config.web.address);
+    web::run(state).await
+}
+
+/// Periodically reclaim memory from idle rate-limit buckets.
+fn spawn_limiter_cleanup(tracking: Arc<RateLimiter>, unauth: Arc<RateLimiter>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(120));
+        loop {
+            tick.tick().await;
+            tracking.cleanup();
+            unauth.cleanup();
+        }
+    });
+}
+
+fn build_telemetry(config: &Config) -> Session {
+    let service_name = config.telemetry.service_name.clone();
+    let environment = config.telemetry.environment.clone();
+    let sentry_dsn = config.telemetry.sentry_dsn.clone();
     // `OpenTelemetry::new` requires a `&'static str`; leak the configured endpoint
     // (a one-time startup allocation) when one is provided.
-    let service_name = config.telemetry.service_name.clone();
-    let sentry_dsn = config.telemetry.sentry_dsn.clone();
-    let environment = config.telemetry.environment.clone();
     let otlp_endpoint: &'static str = match config.telemetry.otlp_endpoint.as_deref() {
         Some(endpoint) if !endpoint.is_empty() => Box::leak(endpoint.to_owned().into_boxed_str()),
         _ => "",
@@ -71,18 +124,5 @@ async fn main() -> ExitCode {
             },
         )));
     }
-
-    info!("Starting analytics server on {}", config.web.address);
-    let outcome = web::run(config).await;
-    let code = match &outcome {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            error!("The server exited unexpectedly: {err}");
-            eprintln!("{err}");
-            ExitCode::FAILURE
-        }
-    };
-
-    session.shutdown();
-    code
+    session
 }

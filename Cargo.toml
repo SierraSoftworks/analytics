@@ -39,6 +39,11 @@ filt-rs = { git = "https://github.com/SierraSoftworks/filters", features = [
   "regex",
 ] }
 
+# Ingest / enrichment
+woothee = "0.13"
+httpdate = "1"
+url = "2"
+
 # Storage / OLAP
 redb = "4.1"
 ulid = "1"

@@ -56,6 +56,9 @@ where
             .and_then(|h| h.to_str().ok())
             .unwrap_or("");
 
+        // Never log client IPs: redact IP-bearing (and auth/cookie) headers.
+        let headers = format_headers(req.headers());
+
         let span = info_span!(
             "request",
             "otel.kind" = "server",
@@ -66,7 +69,7 @@ where
             "http.status_code" = EmptyField,
             "http.method" = %req.method(),
             "http.url" = %req.match_pattern().unwrap_or_else(|| req.path().into()),
-            "http.headers" = %req.headers().iter().map(|(k, v)| format!("{k}: {v:?}")).collect::<Vec<_>>().join("\n"),
+            "http.headers" = %headers,
         );
 
         // Propagate OpenTelemetry parent span context information
@@ -97,6 +100,36 @@ where
 
         Box::pin(fut)
     }
+}
+
+/// Headers whose values can reveal a client IP, or are otherwise sensitive, are
+/// redacted before being attached to a trace — the service never logs IPs.
+const REDACTED_HEADERS: &[&str] = &[
+    "x-forwarded-for",
+    "x-real-ip",
+    "forwarded",
+    "cf-connecting-ip",
+    "true-client-ip",
+    "fastly-client-ip",
+    "x-client-ip",
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+];
+
+fn format_headers(headers: &HeaderMap) -> String {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            if REDACTED_HEADERS.contains(&name.as_str()) {
+                format!("{name}: [redacted]")
+            } else {
+                format!("{name}: {value:?}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 struct HeaderMapExtractor<'a> {
