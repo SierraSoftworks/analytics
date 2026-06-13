@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::errors::{Result, ResultExt};
+
 /// Top-level server configuration, loaded from a YAML file.
 ///
 /// All fields have sensible defaults so that a config file is optional for local
@@ -43,8 +45,9 @@ impl Default for WebConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct AdminConfig {
-    /// An ACL filter expression evaluated for every protected request. Defaults to
-    /// `false` (deny all) so the dashboard is locked down unless explicitly opened.
+    /// A [filt-rs](https://github.com/SierraSoftworks/filters) ACL expression
+    /// evaluated for every protected request. Defaults to `false` (deny all) so the
+    /// dashboard is locked down unless explicitly opened.
     pub acl: String,
     /// OIDC provider configuration. When absent, authentication is disabled and the
     /// ACL is evaluated against request metadata only.
@@ -60,6 +63,22 @@ impl Default for AdminConfig {
     }
 }
 
+impl AdminConfig {
+    /// Parse the ACL expression into an evaluable filter, surfacing syntax errors
+    /// with guidance.
+    pub fn acl_filter(&self) -> Result<filt_rs::Filter> {
+        filt_rs::Filter::new(self.acl.as_str()).wrap_user_err(
+            "The `web.admin.acl` filter expression is invalid.",
+            &[
+                "Check the filter syntax: string literals use double quotes and membership uses the `in` operator.",
+                "Example: \"administrators\" in claims.groups",
+            ],
+        )
+    }
+}
+
+// Fields are consumed by the OIDC auth layer in Phase 5.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct OidcConfig {
     /// The issuer/discovery endpoint (without the `.well-known` suffix).
@@ -143,33 +162,46 @@ impl Default for TelemetryConfig {
 impl Config {
     /// Load configuration from `path`. A missing file yields the default config so
     /// that `cargo run` works out of the box.
-    pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         if !path.exists() {
             return Ok(Config::default());
         }
 
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| ConfigError::Io(path.display().to_string(), e))?;
+        let raw = std::fs::read_to_string(path).wrap_user_err(
+            format!("Could not read the configuration file `{}`.", path.display()),
+            &["Check that the path is correct and that the file is readable."],
+        )?;
         Self::from_yaml_str(&raw)
     }
 
     /// Parse a YAML document, interpolating `${{ env.VAR }}` placeholders inside
-    /// string *values* (so placeholders in comments are ignored).
-    pub fn from_yaml_str(raw: &str) -> Result<Self, ConfigError> {
+    /// string *values* (so placeholders in comments are ignored) and validating the
+    /// ACL expression.
+    pub fn from_yaml_str(raw: &str) -> Result<Self> {
         if raw.trim().is_empty() {
             return Ok(Config::default());
         }
 
-        let mut value: serde_yaml::Value = serde_yaml::from_str(raw).map_err(ConfigError::Parse)?;
+        let mut value: serde_yaml::Value = serde_yaml::from_str(raw).wrap_user_err(
+            "The configuration file is not valid YAML.",
+            &["Check the file for syntax errors such as bad indentation or quoting."],
+        )?;
         interpolate_value(&mut value)?;
-        serde_yaml::from_value(value).map_err(ConfigError::Parse)
+        let config: Config = serde_yaml::from_value(value).wrap_user_err(
+            "The configuration file does not match the expected schema.",
+            &["Compare your configuration against config.example.yaml."],
+        )?;
+
+        // Fail fast on an invalid ACL rather than at the first request.
+        config.web.admin.acl_filter()?;
+        Ok(config)
     }
 }
 
 /// Recursively interpolate environment placeholders in every string value of a
 /// parsed YAML document.
-fn interpolate_value(value: &mut serde_yaml::Value) -> Result<(), ConfigError> {
+fn interpolate_value(value: &mut serde_yaml::Value) -> Result<()> {
     match value {
         serde_yaml::Value::String(s) => *s = interpolate(s)?,
         serde_yaml::Value::Sequence(seq) => {
@@ -188,23 +220,35 @@ fn interpolate_value(value: &mut serde_yaml::Value) -> Result<(), ConfigError> {
 }
 
 /// Replace `${{ env.VAR_NAME }}` placeholders with values from the environment.
-fn interpolate(input: &str) -> Result<String, ConfigError> {
+fn interpolate(input: &str) -> Result<String> {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
 
     while let Some(start) = rest.find("${{") {
         out.push_str(&rest[..start]);
         let after = &rest[start + 3..];
-        let end = after
-            .find("}}")
-            .ok_or_else(|| ConfigError::Interpolation("unterminated `${{ ... }}` placeholder".into()))?;
+        let end = after.find("}}").ok_or_else(|| {
+            human_errors::user(
+                "A `${{ ... }}` placeholder in the configuration was not terminated.",
+                &["Close every `${{` with a matching `}}`."],
+            )
+        })?;
         let expr = after[..end].trim();
         let var = expr
             .strip_prefix("env.")
-            .ok_or_else(|| ConfigError::Interpolation(format!("unsupported placeholder expression: `{expr}`")))?
+            .ok_or_else(|| {
+                human_errors::user(
+                    format!("Unsupported configuration placeholder `{expr}`."),
+                    &["Only `${{ env.VAR_NAME }}` placeholders are supported."],
+                )
+            })?
             .trim();
-        let value = std::env::var(var)
-            .map_err(|_| ConfigError::Interpolation(format!("environment variable not set: `{var}`")))?;
+        let value = std::env::var(var).map_err(|_| {
+            human_errors::user(
+                format!("The environment variable `{var}` referenced in the configuration is not set."),
+                &["Set the variable in the environment or in the .env file before starting the server."],
+            )
+        })?;
         out.push_str(&value);
         rest = &after[end + 2..];
     }
@@ -212,25 +256,6 @@ fn interpolate(input: &str) -> Result<String, ConfigError> {
     out.push_str(rest);
     Ok(out)
 }
-
-#[derive(Debug)]
-pub enum ConfigError {
-    Io(String, std::io::Error),
-    Parse(serde_yaml::Error),
-    Interpolation(String),
-}
-
-impl std::fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConfigError::Io(path, err) => write!(f, "failed to read config file `{path}`: {err}"),
-            ConfigError::Parse(err) => write!(f, "failed to parse YAML config: {err}"),
-            ConfigError::Interpolation(msg) => write!(f, "config interpolation error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for ConfigError {}
 
 #[cfg(test)]
 mod tests {
@@ -244,6 +269,7 @@ mod tests {
             assert_eq!(config.storage.redb_path, "analytics.redb");
             assert!(config.privacy.honor_dnt);
             assert!(config.web.admin.oidc.is_none());
+            assert_eq!(config.web.admin.acl, "false");
         }
     }
 
@@ -259,20 +285,20 @@ mod tests {
 
     #[test]
     fn placeholders_in_comments_are_ignored() {
-        // The YAML parser drops comments, so an unset placeholder inside one must not
-        // cause an interpolation error (regression: example config failed to load).
-        let config =
-            Config::from_yaml_str("# uses ${{ env.NOT_SET_ANALYTICS }}\nweb:\n  trust_proxy: true\n")
-                .unwrap();
+        let config = Config::from_yaml_str(
+            "# uses ${{ env.NOT_SET_ANALYTICS }}\nweb:\n  trust_proxy: true\n",
+        )
+        .unwrap();
         assert!(config.web.trust_proxy);
     }
 
     #[test]
     fn missing_environment_variable_in_a_value_is_an_error() {
-        let err =
-            Config::from_yaml_str("telemetry:\n  sentry_dsn: ${{ env.DEFINITELY_NOT_SET_ANALYTICS }}\n")
-                .unwrap_err();
-        assert!(matches!(err, ConfigError::Interpolation(_)));
+        let err = Config::from_yaml_str(
+            "telemetry:\n  sentry_dsn: ${{ env.DEFINITELY_NOT_SET_ANALYTICS }}\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("DEFINITELY_NOT_SET_ANALYTICS"));
     }
 
     #[test]
@@ -281,6 +307,20 @@ mod tests {
             Config::from_yaml_str("storage:\n  hot_window: 12h\n  retention: 30d\n").unwrap();
         assert_eq!(config.storage.hot_window, Duration::from_secs(12 * 3600));
         assert_eq!(config.storage.retention, Duration::from_secs(30 * 24 * 3600));
+    }
+
+    #[test]
+    fn valid_acl_is_accepted() {
+        let config =
+            Config::from_yaml_str("web:\n  admin:\n    acl: '\"admins\" in claims.groups'\n")
+                .unwrap();
+        assert!(config.web.admin.acl_filter().is_ok());
+    }
+
+    #[test]
+    fn invalid_acl_is_rejected() {
+        let err = Config::from_yaml_str("web:\n  admin:\n    acl: '&& ||'\n").unwrap_err();
+        assert!(err.to_string().contains("acl"));
     }
 
     #[test]

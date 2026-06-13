@@ -31,6 +31,14 @@ include_dir = "0.7"
 dotenvy = "0.15"
 tracing-batteries = { git = "https://github.com/sierrasoftworks/tracing-batteries-rs.git" }
 
+# Errors & filtering (SierraSoftworks)
+human-errors = "0.2.3"
+filt-rs = { git = "https://github.com/SierraSoftworks/filters", features = [
+  "serde",
+  "chrono",
+  "regex",
+] }
+
 # Storage / OLAP
 redb = "4.1"
 ulid = "1"

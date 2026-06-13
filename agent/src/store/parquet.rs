@@ -1,9 +1,12 @@
+//! Columnar bridge between [`StoredEvent`]s and Parquet partitions via polars.
+
 use std::path::Path;
 
 use polars::prelude::*;
 
-use super::error::StoreError;
 use super::event::StoredEvent;
+use super::tables::STORAGE_ADVICE;
+use crate::errors::{Result, ResultExt};
 
 /// Build a columnar [`DataFrame`] from a batch of events. Timestamps are kept as
 /// `i64` epoch-millis columns; time bucketing is done with integer arithmetic at
@@ -54,19 +57,21 @@ pub fn build_dataframe(events: &[StoredEvent]) -> PolarsResult<DataFrame> {
 }
 
 /// Write a batch of events to a Parquet partition file, creating parent dirs.
-pub fn write_partition(events: &[StoredEvent], path: &Path) -> Result<(), StoreError> {
+pub fn write_partition(events: &[StoredEvent], path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).or_system_err(STORAGE_ADVICE)?;
     }
-    let mut df = build_dataframe(events)?;
-    let file = std::fs::File::create(path)?;
-    ParquetWriter::new(file).finish(&mut df)?;
+    let mut df = build_dataframe(events).or_system_err(STORAGE_ADVICE)?;
+    let file = std::fs::File::create(path).or_system_err(STORAGE_ADVICE)?;
+    ParquetWriter::new(file)
+        .finish(&mut df)
+        .or_system_err(STORAGE_ADVICE)?;
     Ok(())
 }
 
 /// Read a Parquet partition back into a [`DataFrame`] (used by tests and ad-hoc
 /// queries).
-pub fn read_partition(path: &Path) -> Result<DataFrame, StoreError> {
-    let file = std::fs::File::open(path)?;
-    Ok(ParquetReader::new(file).finish()?)
+pub fn read_partition(path: &Path) -> Result<DataFrame> {
+    let file = std::fs::File::open(path).or_system_err(STORAGE_ADVICE)?;
+    ParquetReader::new(file).finish().or_system_err(STORAGE_ADVICE)
 }

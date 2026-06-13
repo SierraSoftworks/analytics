@@ -2,11 +2,15 @@
 mod macros;
 
 mod config;
-// Wired into the web layer in Phase 4 (ingest); allow dead code until then.
-#[allow(dead_code)]
+mod errors;
+// The store's public surface (re-exports + methods) is consumed from Phase 4
+// (ingest) onward; allow the forward-looking dead code until then.
+#[allow(dead_code, unused_imports)]
 mod store;
 mod telemetry;
 mod web;
+
+use std::process::ExitCode;
 
 use clap::Parser;
 use tracing_batteries::{OpenTelemetry, Sentry, Session, prelude::*};
@@ -27,7 +31,7 @@ struct Args {
 }
 
 #[actix_web::main]
-async fn main() -> std::io::Result<()> {
+async fn main() -> ExitCode {
     let args = Args::parse();
 
     // Load environment variables from the .env file if present (used by config
@@ -37,8 +41,9 @@ async fn main() -> std::io::Result<()> {
     let config = match Config::load(&args.config) {
         Ok(config) => config,
         Err(err) => {
-            eprintln!("Failed to load configuration from `{}`: {err}", args.config);
-            std::process::exit(1);
+            // Display includes the actionable advice.
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
         }
     };
 
@@ -68,11 +73,16 @@ async fn main() -> std::io::Result<()> {
     }
 
     info!("Starting analytics server on {}", config.web.address);
-    let result = web::run(config).await;
-    if let Err(err) = &result {
-        error!("The server exited unexpectedly: {err}");
-    }
+    let outcome = web::run(config).await;
+    let code = match &outcome {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            error!("The server exited unexpectedly: {err}");
+            eprintln!("{err}");
+            ExitCode::FAILURE
+        }
+    };
 
     session.shutdown();
-    result
+    code
 }
