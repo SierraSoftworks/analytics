@@ -1,0 +1,27 @@
+[package]
+name = "analytics-ui"
+description = "Client-side-rendered Yew dashboard for the analytics service."
+version = "0.1.0"
+authors = ["Benjamin Pannell <benjamin@pannell.dev>"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/SierraSoftworks/analytics"
+
+[dependencies]
+analytics-api = { path = "../api" }
+
+yew = { version = "0.21", features = ["csr"] }
+yew-router = "0.18"
+gloo-net = "0.6"
+gloo-utils = "0.2"
+gloo-timers = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Location", "Document", "HtmlElement"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde", "wasmbind"] }
+log = "0.4"
+wasm-logger = "0.2"
+console_error_panic_hook = "0.1"
