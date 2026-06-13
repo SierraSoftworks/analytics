@@ -7,9 +7,6 @@ use crate::store::Store;
 use crate::web::helpers::oidc::OidcCache;
 
 /// Shared application state, wrapped in `web::Data` (an `Arc`) and cloned per worker.
-// `store` is consumed by the protected API (Phase 6); allow the forward-looking
-// field until then.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,

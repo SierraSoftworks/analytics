@@ -7,6 +7,10 @@
 
 mod auth;
 mod me;
+mod overview;
+mod projects;
+mod query;
+mod sources;
 
 use actix_web::http::StatusCode;
 use actix_web::{
@@ -61,9 +65,28 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 web::scope("")
                     .wrap(from_fn(api_auth))
                     .route("/csrf", web::get().to(auth::csrf_token))
-                    .route("/me", web::get().to(me::me)),
+                    .route("/me", web::get().to(me::me))
+                    .route("/overview", web::get().to(overview::overview))
+                    .route("/projects", web::get().to(projects::list))
+                    .route("/projects", web::post().to(projects::create))
+                    .route("/projects/{id}", web::get().to(projects::get))
+                    .route("/projects/{id}", web::put().to(projects::update))
+                    .route("/projects/{id}", web::delete().to(projects::delete))
+                    .route("/projects/{id}/stats", web::get().to(projects::stats))
+                    .route("/sources", web::get().to(sources::list))
+                    .route("/sources", web::put().to(sources::update))
+                    .route("/sources", web::delete().to(sources::delete)),
             ),
     );
+}
+
+/// Log an internal error and return a generic 500 (details stay server-side).
+pub fn internal_error(err: human_errors::Error) -> HttpResponse {
+    error!("internal API error: {err}");
+    json_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "An internal error occurred.",
+    )
 }
 
 async fn health() -> HttpResponse {

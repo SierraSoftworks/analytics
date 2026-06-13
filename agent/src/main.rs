@@ -1,6 +1,7 @@
 #[macro_use]
 mod macros;
 
+mod analytics;
 mod config;
 mod errors;
 mod ingest;

@@ -10,6 +10,7 @@ mod health;
 mod pixel;
 mod project;
 mod source;
+mod stats;
 mod track;
 
 pub use auth::{AdminUser, CsrfToken};
@@ -21,4 +22,5 @@ pub use source::{
     Source, SourceInput, SourceKind, SourceScheme, app_source, default_kind, pixel_id_of,
     pixel_source, source_label, source_scheme, website_source,
 };
+pub use stats::{KeyCount, MetricSummary, Overview, ProjectSummary, Stats, TimeSeriesPoint};
 pub use track::{BeaconKind, PingResponse, TrackEvent};
