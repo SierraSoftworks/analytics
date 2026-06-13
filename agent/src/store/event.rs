@@ -27,10 +27,11 @@ impl EventKind {
 
 /// A fully enriched, anonymized event as persisted to redb and Parquet.
 ///
-/// Attribution is via `hostname` (browser beacons) **or** `pixel_id` (tracking
-/// GIFs); the owning project is resolved at query time from the sources/pixels
-/// maps, never stored here. No raw IP, User-Agent, Accept-Language, or cookies are
-/// ever retained — only derived classes.
+/// Attribution is a single canonical `source` URI (`https://<hostname>`,
+/// `app://<appname>`, `pixel://<id>`, extensible to future schemes); the owning
+/// project is resolved at query time from the sources/pixels maps, never stored
+/// here. No raw IP, User-Agent, Accept-Language, or cookies are ever retained —
+/// only derived classes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredEvent {
     /// Client-reported event time (epoch millis).
@@ -41,9 +42,8 @@ pub struct StoredEvent {
     pub bid: String,
     pub kind: EventKind,
 
-    // Attribution (exactly one is set).
-    pub hostname: Option<String>,
-    pub pixel_id: Option<String>,
+    /// Canonical source URI this event is attributed to.
+    pub source: String,
 
     pub pathname: Option<String>,
     pub is_unique_user: bool,

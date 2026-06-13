@@ -16,4 +16,7 @@ pub use exception::ExceptionStatus;
 pub use health::Health;
 pub use pixel::{Pixel, PixelInput};
 pub use project::{Project, ProjectInput};
-pub use source::{Source, SourceInput, SourceKind};
+pub use source::{
+    Source, SourceInput, SourceKind, SourceScheme, app_source, default_kind, pixel_id_of,
+    pixel_source, source_label, source_scheme, website_source,
+};

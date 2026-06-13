@@ -180,16 +180,16 @@ impl Store {
     // ---------------------------------------------------------------- sources
 
     pub fn put_source(&self, source: &Source) -> Result<(), StoreError> {
-        self.put_json(SOURCES, &source.hostname, source)
+        self.put_json(SOURCES, &source.uri, source)
     }
-    pub fn get_source(&self, hostname: &str) -> Result<Option<Source>, StoreError> {
-        self.get_json(SOURCES, hostname)
+    pub fn get_source(&self, uri: &str) -> Result<Option<Source>, StoreError> {
+        self.get_json(SOURCES, uri)
     }
     pub fn list_sources(&self) -> Result<Vec<Source>, StoreError> {
         self.list_json(SOURCES)
     }
-    pub fn delete_source(&self, hostname: &str) -> Result<bool, StoreError> {
-        self.delete_key(SOURCES, hostname)
+    pub fn delete_source(&self, uri: &str) -> Result<bool, StoreError> {
+        self.delete_key(SOURCES, uri)
     }
 
     // ----------------------------------------------------------------- pixels
@@ -331,13 +331,13 @@ mod tests {
         TempStore { store, path }
     }
 
-    fn event(hostname: &str, received_ms: i64) -> StoredEvent {
+    fn event(source: &str, received_ms: i64) -> StoredEvent {
         StoredEvent {
             created_ms: received_ms,
             received_ms,
             bid: "b1".to_string(),
             kind: EventKind::PageLoad,
-            hostname: Some(hostname.to_string()),
+            source: source.to_string(),
             pathname: Some("/".to_string()),
             is_unique_user: true,
             ..Default::default()
@@ -364,9 +364,9 @@ mod tests {
     fn appends_and_reads_events() {
         let store = temp_store();
         store
-            .append_events(&[event("a.com", 1000), event("b.com", 2000)])
+            .append_events(&[event("https://a.com", 1000), event("https://b.com", 2000)])
             .unwrap();
-        store.append_events(&[event("a.com", 3000)]).unwrap();
+        store.append_events(&[event("https://a.com", 3000)]).unwrap();
         assert_eq!(store.event_count().unwrap(), 3);
         let all = store.all_events().unwrap();
         assert_eq!(all.len(), 3);
@@ -384,7 +384,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         {
             let store = Store::open(&path).unwrap();
-            store.append_events(&[event("a.com", 1000)]).unwrap();
+            store.append_events(&[event("https://a.com", 1000)]).unwrap();
         }
         let reopened = Store::open(&path).unwrap();
         // next_seq was persisted and reloaded, so it is at least 1.
@@ -397,7 +397,11 @@ mod tests {
     fn take_before_drains_old_events() {
         let store = temp_store();
         store
-            .append_events(&[event("a", 1000), event("b", 2000), event("c", 3000)])
+            .append_events(&[
+                event("https://a", 1000),
+                event("https://b", 2000),
+                event("https://c", 3000),
+            ])
             .unwrap();
         let drained = store.take_before(2500).unwrap();
         assert_eq!(drained.len(), 2);
@@ -408,7 +412,7 @@ mod tests {
     #[test]
     fn parquet_roundtrip() {
         let store = temp_store();
-        let events = vec![event("a.com", 1000), event("b.com", 2000)];
+        let events = vec![event("https://a.com", 1000), event("pixel://01HX", 2000)];
         store.append_events(&events).unwrap();
         let path = std::env::temp_dir().join(format!(
             "analytics-test-{}-part.parquet",
@@ -417,7 +421,7 @@ mod tests {
         super::write_partition(&events, &path).unwrap();
         let df = super::read_partition(&path).unwrap();
         assert_eq!(df.height(), 2);
-        assert!(df.get_column_names().iter().any(|c| c.as_str() == "hostname"));
+        assert!(df.get_column_names().iter().any(|c| c.as_str() == "source"));
         let _ = std::fs::remove_file(&path);
     }
 }
