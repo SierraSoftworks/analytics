@@ -199,19 +199,16 @@ fn unauthenticated(state: &AppState, req: &ServiceRequest) -> HttpResponse {
 
 fn client_ip(req: &ServiceRequest, trust_proxy: bool) -> String {
     if trust_proxy {
-        if let Some(forwarded) = req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-            if let Some(first) = forwarded.split(',').next() {
-                let ip = first.trim();
-                if !ip.is_empty() {
-                    return ip.to_string();
-                }
-            }
+        if let Some(forwarded) = req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok())
+            && let Some(first) = forwarded.split(',').next()
+            && !first.trim().is_empty()
+        {
+            return first.trim().to_string();
         }
-        if let Some(real) = req.headers().get("x-real-ip").and_then(|v| v.to_str().ok()) {
-            let ip = real.trim();
-            if !ip.is_empty() {
-                return ip.to_string();
-            }
+        if let Some(real) = req.headers().get("x-real-ip").and_then(|v| v.to_str().ok())
+            && !real.trim().is_empty()
+        {
+            return real.trim().to_string();
         }
     }
     req.peer_addr()

@@ -15,7 +15,7 @@ pub async fn list(state: web::Data<AppState>, path: web::Path<String>) -> HttpRe
         Ok(pixels) => {
             let mut pixels: Vec<Pixel> =
                 pixels.into_iter().filter(|p| p.project_id == project_id).collect();
-            pixels.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            pixels.sort_by_key(|p| p.name.to_lowercase());
             HttpResponse::Ok().json(pixels)
         }
         Err(err) => internal_error(err),

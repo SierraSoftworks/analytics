@@ -107,8 +107,8 @@ pub fn overview(
             }
         })
         .collect();
-    project_summaries.sort_by(|a, b| b.pageviews.cmp(&a.pageviews));
-    unassigned.sort_by(|a, b| b.count.cmp(&a.count));
+    project_summaries.sort_by_key(|p| std::cmp::Reverse(p.pageviews));
+    unassigned.sort_by_key(|u| std::cmp::Reverse(u.count));
 
     Ok(Overview {
         summary,

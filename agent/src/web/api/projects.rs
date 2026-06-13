@@ -14,7 +14,7 @@ use crate::state::AppState;
 pub async fn list(state: web::Data<AppState>) -> HttpResponse {
     match state.store.list_projects() {
         Ok(mut projects) => {
-            projects.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            projects.sort_by_key(|p| p.name.to_lowercase());
             HttpResponse::Ok().json(projects)
         }
         Err(err) => internal_error(err),

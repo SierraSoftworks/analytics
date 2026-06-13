@@ -33,7 +33,10 @@
         craneLib = crane.mkLib pkgs;
 
         gifDataFilter = path: _type: builtins.match ".*/.*\.gif$" path != null;
-        sourceFilter = path: type: (gifDataFilter path type) || (craneLib.filterCargoSources path type);
+        # Include the built frontend bundle so the agent can embed it via include_dir!.
+        uiDistFilter = path: _type: builtins.match ".*/ui/dist/.*" path != null;
+        sourceFilter = path: type:
+          (gifDataFilter path type) || (uiDistFilter path type) || (craneLib.filterCargoSources path type);
 
         src = lib.cleanSourceWith {
           src = ./.;
@@ -121,7 +124,7 @@
             partitions = 1;
             partitionType = "count";
 
-            cargoNextestExtraArgs = "--no-fail-fast --features pure_tests";
+            cargoNextestExtraArgs = "--no-fail-fast";
           });
         };
 

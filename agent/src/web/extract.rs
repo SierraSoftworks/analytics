@@ -7,19 +7,16 @@ use actix_web::HttpRequest;
 /// has opted into trusting a reverse proxy. For rate limiting only.
 pub fn client_ip(req: &HttpRequest, trust_proxy: bool) -> String {
     if trust_proxy {
-        if let Some(forwarded) = header(req, "x-forwarded-for") {
-            if let Some(first) = forwarded.split(',').next() {
-                let ip = first.trim();
-                if !ip.is_empty() {
-                    return ip.to_string();
-                }
-            }
+        if let Some(forwarded) = header(req, "x-forwarded-for")
+            && let Some(first) = forwarded.split(',').next()
+            && !first.trim().is_empty()
+        {
+            return first.trim().to_string();
         }
-        if let Some(real) = header(req, "x-real-ip") {
-            let ip = real.trim();
-            if !ip.is_empty() {
-                return ip.to_string();
-            }
+        if let Some(real) = header(req, "x-real-ip")
+            && !real.trim().is_empty()
+        {
+            return real.trim().to_string();
         }
     }
     req.peer_addr()
@@ -43,14 +40,12 @@ pub fn header(req: &HttpRequest, name: &str) -> Option<String> {
 /// Whether the original request reached us over HTTPS. `X-Forwarded-Proto` is only
 /// consulted when the deployment is configured to trust its proxy.
 pub fn is_https(trust_proxy: bool, req: &HttpRequest) -> bool {
-    if trust_proxy {
-        if let Some(proto) = header(req, "x-forwarded-proto") {
-            return proto
-                .split(',')
-                .next()
-                .map(|p| p.trim().eq_ignore_ascii_case("https"))
-                .unwrap_or(false);
-        }
+    if trust_proxy && let Some(proto) = header(req, "x-forwarded-proto") {
+        return proto
+            .split(',')
+            .next()
+            .map(|p| p.trim().eq_ignore_ascii_case("https"))
+            .unwrap_or(false);
     }
     req.uri().scheme_str() == Some("https")
 }
