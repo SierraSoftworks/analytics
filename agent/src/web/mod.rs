@@ -1,8 +1,10 @@
+mod api;
 pub mod extract;
+pub mod helpers;
 mod track;
 mod ui;
 
-use actix_web::{App, HttpResponse, HttpServer, web};
+use actix_web::{App, HttpServer, web};
 
 use crate::errors::{Result, ResultExt};
 use crate::state::AppState;
@@ -19,7 +21,8 @@ pub async fn run(state: AppState) -> Result<()> {
             .wrap(TracingLogger)
             // Public tracking endpoints (their own CORS) + the tracker script.
             .configure(track::configure)
-            .route("/api/v1/health", web::get().to(health))
+            // /api/v1: public health + auth, everything else gated by api_auth.
+            .configure(api::configure)
             // SPA fallback: serve the embedded frontend, falling back to index.html.
             .default_service(web::get().to(ui::serve))
     })
@@ -36,8 +39,4 @@ pub async fn run(state: AppState) -> Result<()> {
         .run()
         .await
         .or_system_err(&["The HTTP server stopped unexpectedly; check the logs for details."])
-}
-
-async fn health() -> HttpResponse {
-    HttpResponse::Ok().json(analytics_api::Health { ok: true })
 }

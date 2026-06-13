@@ -21,6 +21,7 @@ use clap::Parser;
 use tracing_batteries::{OpenTelemetry, Sentry, Session, prelude::*};
 
 use crate::config::Config;
+use crate::errors::ResultExt;
 use crate::ratelimit::RateLimiter;
 use crate::state::AppState;
 use crate::store::Store;
@@ -72,6 +73,12 @@ async fn serve(config: Config) -> errors::Result<()> {
     let store = Arc::new(Store::open(&config.storage.redb_path)?);
     let ingest = ingest::spawn(store.clone(), config.storage.clone());
 
+    // Parse the ACL once at startup (config load already validated its syntax).
+    let acl = Arc::new(config.web.admin.acl_filter()?);
+    let http = reqwest::Client::builder()
+        .build()
+        .or_system_err(&["Failed to initialise the HTTP client used for OIDC."])?;
+
     let tracking_limiter = Arc::new(RateLimiter::from_rule(&config.ratelimit.tracking));
     let unauth_limiter = Arc::new(RateLimiter::from_rule(&config.ratelimit.unauthenticated));
     spawn_limiter_cleanup(tracking_limiter.clone(), unauth_limiter.clone());
@@ -80,6 +87,9 @@ async fn serve(config: Config) -> errors::Result<()> {
         store,
         ingest,
         config: Arc::new(config),
+        http,
+        oidc_cache: Arc::new(web::helpers::oidc::OidcCache::default()),
+        acl,
         tracking_limiter,
         unauth_limiter,
     };
