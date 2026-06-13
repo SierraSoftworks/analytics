@@ -26,5 +26,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
     }
 
+    // `include_dir!` embeds ui/dist at compile time but cargo can't see that
+    // dependency, so re-run (and re-embed) whenever the built frontend changes.
+    println!("cargo:rerun-if-changed=../ui/dist");
+
     Ok(())
 }

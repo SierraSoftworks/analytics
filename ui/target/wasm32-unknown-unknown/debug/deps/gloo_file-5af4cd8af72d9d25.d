@@ -1,0 +1,9 @@
+D:\dev\gh\SierraSoftworks\analytics\ui\target\wasm32-unknown-unknown\debug\deps\gloo_file-5af4cd8af72d9d25.d: C:\Users\BenjaminPannell\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\gloo-file-0.3.0\src\lib.rs C:\Users\BenjaminPannell\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\gloo-file-0.3.0\src\blob.rs C:\Users\BenjaminPannell\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\gloo-file-0.3.0\src\file_list.rs C:\Users\BenjaminPannell\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\gloo-file-0.3.0\src\file_reader.rs C:\Users\BenjaminPannell\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\gloo-file-0.3.0\src\object_url.rs
+
+D:\dev\gh\SierraSoftworks\analytics\ui\target\wasm32-unknown-unknown\debug\deps\libgloo_file-5af4cd8af72d9d25.rmeta: C:\Users\BenjaminPannell\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\gloo-file-0.3.0\src\lib.rs C:\Users\BenjaminPannell\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\gloo-file-0.3.0\src\blob.rs C:\Users\BenjaminPannell\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\gloo-file-0.3.0\src\file_list.rs C:\Users\BenjaminPannell\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\gloo-file-0.3.0\src\file_reader.rs C:\Users\BenjaminPannell\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\gloo-file-0.3.0\src\object_url.rs
+
+C:\Users\BenjaminPannell\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\gloo-file-0.3.0\src\lib.rs:
+C:\Users\BenjaminPannell\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\gloo-file-0.3.0\src\blob.rs:
+C:\Users\BenjaminPannell\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\gloo-file-0.3.0\src\file_list.rs:
+C:\Users\BenjaminPannell\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\gloo-file-0.3.0\src\file_reader.rs:
+C:\Users\BenjaminPannell\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\gloo-file-0.3.0\src\object_url.rs:

@@ -1,0 +1,100 @@
+use analytics_api::{ExceptionGroupDetail, ExceptionStatus, TriageInput};
+use wasm_bindgen_futures::spawn_local;
+use yew::prelude::*;
+use yew_router::prelude::*;
+
+use crate::api::{self, ApiError};
+use crate::app::Route;
+use crate::pages::project::{status_class, status_label};
+
+#[derive(Properties, PartialEq)]
+pub struct ExceptionDetailProps {
+    pub project: String,
+    pub group: String,
+}
+
+#[function_component(ExceptionDetail)]
+pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
+    let (project, group) = (props.project.clone(), props.group.clone());
+    let detail = use_state(|| None::<Result<ExceptionGroupDetail, ApiError>>);
+    let reload = use_state(|| 0u32);
+
+    {
+        let detail = detail.clone();
+        let (project, group) = (project.clone(), group.clone());
+        use_effect_with((group.clone(), *reload), move |_| {
+            spawn_local(async move {
+                detail.set(Some(api::exception_detail(&group, &project).await));
+            });
+            || ()
+        });
+    }
+
+    let set_status = {
+        let (project, group, reload) = (project.clone(), group.clone(), reload.clone());
+        move |status: ExceptionStatus| {
+            let input = TriageInput {
+                project_id: project.clone(),
+                status,
+                note: None,
+            };
+            let (group, reload) = (group.clone(), reload.clone());
+            Callback::from(move |_| {
+                let (group, input, reload) = (group.clone(), input.clone(), reload.clone());
+                spawn_local(async move {
+                    if api::set_triage(&group, &input).await.is_ok() {
+                        reload.set(*reload + 1);
+                    }
+                });
+            })
+        }
+    };
+
+    html! {
+        <div class="page">
+            <p class="crumb">
+                <Link<Route> to={Route::Project { id: project.clone() }}>{ "← Back to project" }</Link<Route>>
+            </p>
+            {
+                match &*detail {
+                    None => html! { <p class="muted">{ "Loading…" }</p> },
+                    Some(Err(err)) => html! { <div class="alert alert--error">{ err.to_string() }</div> },
+                    Some(Ok(detail)) => html! {
+                        <>
+                            <div class="exc-header">
+                                <h1>{ &detail.group.exc_type }</h1>
+                                <span class={status_class(detail.group.status)}>{ status_label(detail.group.status) }</span>
+                            </div>
+                            <p class="exc-message">{ &detail.group.sample_message }</p>
+                            <p class="muted">{ format!("{} occurrences", detail.group.count) }</p>
+                            <div class="form-row">
+                                <button class="btn" onclick={set_status(ExceptionStatus::Resolved)}>{ "Mark resolved" }</button>
+                                <button class="btn" onclick={set_status(ExceptionStatus::Ignored)}>{ "Ignore" }</button>
+                                <button class="btn btn--ghost" onclick={set_status(ExceptionStatus::Unresolved)}>{ "Reopen" }</button>
+                            </div>
+                            <h2>{ "Recent occurrences" }</h2>
+                            { for detail.occurrences.iter().map(occurrence) }
+                        </>
+                    },
+                }
+            }
+        </div>
+    }
+}
+
+fn occurrence(o: &analytics_api::ExceptionOccurrence) -> Html {
+    let ua = match (&o.ua_browser, &o.ua_os) {
+        (Some(b), Some(os)) => format!("{b} on {os}"),
+        (Some(b), None) => b.clone(),
+        _ => "unknown client".to_string(),
+    };
+    html! {
+        <div class="occurrence">
+            <div class="occurrence__meta muted">{ format!("{} · {}", ua, if o.handled { "handled" } else { "unhandled" }) }</div>
+            <div>{ &o.message }</div>
+            if let Some(stack) = &o.stack {
+                <pre class="stack">{ stack }</pre>
+            }
+        </div>
+    }
+}
