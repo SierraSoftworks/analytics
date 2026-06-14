@@ -1,0 +1,13 @@
+[package]
+name = "analytics-api"
+description = "Shared API contract types for the analytics service, compiled by both the native server and the WebAssembly frontend."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true

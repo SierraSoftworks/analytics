@@ -1,0 +1,42 @@
+[package]
+name = "analytics"
+description = "Lightweight, privacy-preserving analytics for your websites and applications."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+analytics-api.workspace = true
+
+actix-web.workspace = true
+actix-cors.workspace = true
+actix-service.workspace = true
+futures.workspace = true
+tokio.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+humantime-serde.workspace = true
+chrono.workspace = true
+include_dir.workspace = true
+dotenvy.workspace = true
+tracing-batteries.workspace = true
+human-errors.workspace = true
+filt-rs.workspace = true
+woothee.workspace = true
+httpdate.workspace = true
+url.workspace = true
+reqwest.workspace = true
+jsonwebtoken.workspace = true
+base64.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+redb.workspace = true
+ulid.workspace = true
+polars.workspace = true
+
+[build-dependencies]
+vergen = { version = "8.3", features = ["git", "gitcl"] }

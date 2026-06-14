@@ -1,45 +1,142 @@
 # Analytics
-**Lightweight, privacy preserving, analytics for your website(s).**
 
-This project provides a simple, lightweight, and privacy preserving analytics solution for your website(s).
-It is written in Rust, designed to be self-hosted at extremely low cost, provides a simple tracking API for
-view counts, and ensures that your users' privacy is respected by keeping the data collected as simple as
-possible (just the number of times the page is viewed and/or liked).
+**Lightweight, privacy-preserving analytics for your websites and applications.**
+
+A self-hosted analytics service written in Rust. It collects useful product
+analytics without compromising your users' privacy — no cookies, no IP addresses,
+no personally identifiable information. Multiple sources (a marketing site, its
+docs, a paired application) can be grouped into a **project** and viewed in
+aggregate, alongside a global overview across every project.
+
+It also doubles as a lightweight, privacy-preserving **error tracker**, grouping
+client-side exceptions much like Sentry.
+
+## Privacy model
+
+Inspired by [medama](https://oss.medama.io/methodology/overview), the service
+deliberately collects only broad, non-identifying signals:
+
+- **No cookies, no IP storage, no PII.** Client IPs are used transiently only as
+  rate-limit keys and are never logged or persisted.
+- **Daily unique visitors** are counted with the HTTP conditional-request cache
+  trick (`If-Modified-Since` vs UTC midnight), so uniqueness resets every day
+  without any client-side identifier.
+- The **User-Agent** and **Accept-Language** headers are parsed into broad classes
+  (browser / OS / device, primary language) at the edge — the raw values are never
+  stored.
+- **Country** is derived from the browser's reported timezone, not IP geolocation.
+- `DNT` / `Sec-GPC` signals are honored.
 
 ## Features
-- **Counts Views** - Track the number of times a page has been viewed on your website, and display that count
-  to your users.
 
-- **Page Likes** - Allow your users to like a page, and track the number of likes that page has received.
+- **Projects & sources** — group multiple hostnames (and applications) into a
+  project; filter to subsets; auto-register new reporting hostnames.
+- **Metrics** — visitors, page views, bounce rate, median time on page, time
+  series, and breakdowns by page, referrer, browser, OS, device, country,
+  language, and source.
+- **Tracking pixels** — admin-created, project-bound tracking GIFs (e.g. for email
+  opens) with attached metadata. Unknown pixel ids are rejected — there is no open
+  pixel endpoint.
+- **Exception tracking** — capture unhandled errors and rejections, grouped by a
+  Sentry-style fingerprint, with triage state (unresolved / resolved / ignored).
+- **OIDC authentication** — the dashboard and management API are gated by a
+  server-driven OIDC flow with a configurable
+  [filter-expression](https://github.com/SierraSoftworks/filters) ACL. The public
+  tracking endpoints need no authentication.
+- **Rate limiting** — per-IP token-bucket limits on both the public tracking
+  endpoints and unauthenticated hits to protected endpoints.
+- **Append-only, write-optimized storage** — events are appended to an
+  [redb](https://github.com/cberner/redb) hot store, compacted into date-partitioned
+  Parquet, and queried with [polars](https://pola.rs).
 
-- **Privacy Focused** - We don't track any Personally Identifiable Information (PII) about your users,
-  just the number of times a page has been viewed and/or liked.
+## Architecture
 
-- **Self-Hosted** - Run your own analytics server, ensuring that your data is kept private and secure.
+A Cargo workspace, mirroring [grey](https://github.com/SierraSoftworks/grey) and
+[automate](https://github.com/SierraSoftworks/automate):
 
-- **Low Cost** - Designed to be run on a small server, with minimal resource requirements through the use
-  of Rust and SQLite.
+- **`api/`** — framework-free serde DTOs shared by the server and the WebAssembly
+  frontend.
+- **`agent/`** — the `actix-web` server: clap CLI, YAML config, OIDC auth, the
+  ingest pipeline, storage, and the polars query layer. The compiled frontend is
+  embedded into the binary via `include_dir!`.
+- **`ui/`** — a client-side-rendered [Yew](https://yew.rs) dashboard, built with
+  [Trunk](https://trunkrs.dev).
+- **`tracker/`** — the tracking beacon: a dependency-free, pure-JavaScript snippet
+  built into a single heavily-minified artifact with
+  [esbuild](https://esbuild.github.io) and served at `/tracker.js`. One build, no
+  variants — behaviour is toggled by `data-*` attributes at runtime. Unit-tested with
+  [Vitest](https://vitest.dev).
 
-## Usage
-To run an instance of the analytics server, you should download the latest release from the
-[Releases](https://github.com/SierraSoftworks/analytics/releases) page which corresponds to your platform.
-You can then launch the server using the following command.
+## Quick start
 
 ```bash
-# Start the analytics server on port 8080, using the analytics.db database file
-./analytics --port 8080 --database analytics.db
+# 1. Build the tracking beacon (embedded into the server binary).
+cd tracker && npm install && npm run build && cd ..
+
+# 2. Build the frontend bundle (embedded into the server binary).
+cd ui && trunk build --release && cd ..
+
+# 3. Build and run the server.
+cargo build --release -p analytics
+cp config.example.yaml config.yaml   # then edit to taste
+./target/release/analytics --config config.yaml
 ```
 
-The server provides a simple HTTP API which can be used to track page views on your website. The easiest
-way to do so is to include the following snippet in your website's HTML. This will automatically attach
-a 1x1 pixel GIF image to the page which will be loaded by the user's browser, triggering a page view event
-on the analytics server.
+The dashboard is served at the configured address (default `http://127.0.0.1:8080`).
+
+### Tracking a website
+
+Add the tracker script to your pages, pointing `data-api` at your server:
 
 ```html
-<script async>
-  const trackingImage = document.createElement("img")
-  trackingImage.src = `https://$your-analytics-server/embed/${window.location.hostname}/${window.location.pathname}`;
-  trackingImage.style.display = "none";
-  document.body.appendChild(trackingImage);
-</script>
+<script
+  async
+  src="https://analytics.example.com/tracker.js"
+  data-api="https://analytics.example.com"
+  data-auto-capture-exceptions="true"
+></script>
 ```
+
+The script reports page views (and, with `data-auto-capture-exceptions`, unhandled
+errors and promise rejections). It follows SPA navigations automatically by
+intercepting the History API; add `data-hash` if your app routes with the URL hash
+instead. It also exposes `window.analytics.event(name, data)` and
+`window.analytics.captureException(error, meta)` for manual reporting. Sources are
+identified purely by their hostname — no per-site key to embed.
+
+### Tracking pixels
+
+Create a pixel in the dashboard (under a project) to get an embeddable URL such as
+`https://analytics.example.com/track/gif/<id>.gif` for contexts where JavaScript
+can't run (email opens, RSS, docs).
+
+## Configuration
+
+All configuration lives in a YAML file (see
+[`config.example.yaml`](config.example.yaml)). Secrets can be injected from the
+environment with `${{ env.VAR_NAME }}` placeholders.
+
+Omitting the `web.admin.oidc` block disables the sign-in flow, but the dashboard is
+still gated by the `web.admin.acl` filter expression — which **defaults to `"false"`
+(deny all)**. To run locally without authentication, omit OIDC *and* set an
+allow-all ACL so the API is reachable:
+
+```yaml
+web:
+  admin:
+    acl: "true"   # local development only — grants everyone full access
+```
+
+With the default deny-all ACL and no OIDC, the dashboard cannot be signed into (the
+sign-in page explains this rather than looping).
+
+## API
+
+- **Public (no auth):** `GET /tracker.js`, `GET /track/ping`, `POST /track/hit`,
+  `POST /track/exception`, `GET /track/gif/{id}.gif`, `GET /api/v1/health`.
+- **Protected (OIDC + ACL):** everything else under `/api/v1` — projects, sources,
+  pixels, overview, per-project stats, and exception groups/triage.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

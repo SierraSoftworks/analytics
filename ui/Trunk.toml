@@ -1,0 +1,16 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+[watch]
+watch = ["src", "styles.scss", "index.html"]
+
+[serve]
+port = 8081
+
+# During development, proxy API + tracking + auth calls to the local agent.
+[[proxy]]
+backend = "http://127.0.0.1:8080/api"
+
+[[proxy]]
+backend = "http://127.0.0.1:8080/track"
