@@ -50,13 +50,10 @@ where
     }
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        let user_agent = req
-            .headers()
-            .get("User-Agent")
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("");
-
-        // Never log client IPs: redact IP-bearing (and auth/cookie) headers.
+        // Privacy: log only an allowlist of non-identifying headers (drops the raw
+        // User-Agent, Accept-Language, client hints, cookies, and any IP-bearing
+        // header by default), and never the query string (which can carry the OIDC
+        // `code`/`state` or other secrets).
         let headers = format_headers(req.headers());
 
         let span = info_span!(
@@ -64,8 +61,7 @@ where
             "otel.kind" = "server",
             "otel.name" = req.match_pattern().unwrap_or_else(|| req.uri().path().to_string()),
             "net.transport" = "IP.TCP",
-            "http.target" = %req.uri(),
-            "http.user_agent" = %user_agent,
+            "http.target" = %req.uri().path(),
             "http.status_code" = EmptyField,
             "http.method" = %req.method(),
             "http.url" = %req.match_pattern().unwrap_or_else(|| req.path().into()),
@@ -102,30 +98,31 @@ where
     }
 }
 
-/// Headers whose values can reveal a client IP, or are otherwise sensitive, are
-/// redacted before being attached to a trace — the service never logs IPs.
-const REDACTED_HEADERS: &[&str] = &[
-    "x-forwarded-for",
-    "x-real-ip",
-    "forwarded",
-    "cf-connecting-ip",
-    "true-client-ip",
-    "fastly-client-ip",
-    "x-client-ip",
-    "authorization",
-    "proxy-authorization",
-    "cookie",
-    "set-cookie",
+/// Only these non-identifying headers are logged verbatim; every other header is
+/// redacted. An allowlist (rather than a denylist) keeps the raw User-Agent,
+/// Accept-Language, client hints, cookies, auth tokens, and any current or future
+/// IP-bearing header out of traces by default — central to the no-PII-in-logs
+/// promise.
+const LOGGED_HEADERS: &[&str] = &[
+    "host",
+    "content-type",
+    "content-length",
+    "accept",
+    "accept-encoding",
+    "connection",
+    "origin",
+    "dnt",
+    "sec-gpc",
 ];
 
 fn format_headers(headers: &HeaderMap) -> String {
     headers
         .iter()
         .map(|(name, value)| {
-            if REDACTED_HEADERS.contains(&name.as_str()) {
-                format!("{name}: [redacted]")
-            } else {
+            if LOGGED_HEADERS.contains(&name.as_str()) {
                 format!("{name}: {value:?}")
+            } else {
+                format!("{name}: [redacted]")
             }
         })
         .collect::<Vec<_>>()

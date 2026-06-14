@@ -7,9 +7,11 @@ use std::path::Path;
 
 use analytics_api::{
     ExceptionGroup, ExceptionOccurrence, ExceptionStatus, KeyCount, MetricSummary, Overview,
-    ProjectSummary, Stats, TimeSeriesPoint, pixel_source,
+    ProjectSummary, SourceSummary, Stats, TimeSeriesPoint, pixel_source,
 };
+use chrono::{Datelike, TimeZone, Utc};
 use polars::prelude::*;
+use tracing_batteries::prelude::warn;
 
 use crate::errors::{Result, ResultExt};
 use crate::store::Store;
@@ -77,10 +79,11 @@ pub fn overview(
         uri_project.insert(pixel_source(&pixel.id), pixel.project_id.clone());
     }
 
-    // Aggregate per-source totals up to projects, and collect unassigned sources.
+    // Aggregate per-source totals up to projects, and collect unassigned sources
+    // (keeping both their visitor and view totals).
     let mut project_totals: std::collections::HashMap<String, (i64, i64)> =
         std::collections::HashMap::new();
-    let mut unassigned: Vec<KeyCount> = Vec::new();
+    let mut unassigned: Vec<SourceSummary> = Vec::new();
     for (uri, visitors, pageviews) in &per_source {
         match uri_project.get(uri) {
             Some(project_id) => {
@@ -88,9 +91,10 @@ pub fn overview(
                 entry.0 += visitors;
                 entry.1 += pageviews;
             }
-            None => unassigned.push(KeyCount {
-                key: uri.clone(),
-                count: *pageviews,
+            None => unassigned.push(SourceSummary {
+                uri: uri.clone(),
+                visitors: *visitors,
+                pageviews: *pageviews,
             }),
         }
     }
@@ -108,7 +112,7 @@ pub fn overview(
         })
         .collect();
     project_summaries.sort_by_key(|p| std::cmp::Reverse(p.pageviews));
-    unassigned.sort_by_key(|u| std::cmp::Reverse(u.count));
+    unassigned.sort_by_key(|u| std::cmp::Reverse(u.pageviews));
 
     Ok(Overview {
         summary,
@@ -184,24 +188,40 @@ pub fn exception_groups(
         .collect())
 }
 
-/// Recent occurrences of a single exception group.
-pub fn exception_occurrences(
+/// A single exception group with its most-recent occurrences, derived from **one**
+/// scan filtered to that group. Looked up by id directly (no top-N cap), so a linked
+/// or bookmarked group opens regardless of how many fingerprints a project has.
+/// Returns `None` if the group has no occurrences in `[from_ms, to_ms]`.
+pub fn exception_detail(
     store: &Store,
     parquet_dir: &str,
     sources: &[String],
     group_id: &str,
     from_ms: i64,
     to_ms: i64,
-    limit: u32,
-) -> Result<Vec<ExceptionOccurrence>> {
+    limit: usize,
+) -> Result<Option<(ExceptionGroup, Vec<ExceptionOccurrence>)>> {
     let df = combined(store, parquet_dir, from_ms, to_ms)?
         .filter(source_filter(sources))
         .filter(col("kind").eq(lit("exception")))
         .filter(col("exc_group").eq(lit(group_id.to_string())))
+        .select([
+            col("exc_type"),
+            col("exc_message"),
+            col("exc_stack"),
+            col("exc_handled"),
+            col("received_ms").cast(DataType::Int64).alias("received_ms"),
+            col("ua_browser"),
+            col("ua_os"),
+        ])
         .sort(["received_ms"], SortMultipleOptions::default().with_order_descending(true))
-        .limit(limit)
         .collect()
         .or_system_err(ADVICE)?;
+
+    let height = df.height();
+    if height == 0 {
+        return Ok(None);
+    }
 
     let exc_type = df.column("exc_type").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
     let message = df.column("exc_message").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
@@ -211,7 +231,20 @@ pub fn exception_occurrences(
     let browser = df.column("ua_browser").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
     let os = df.column("ua_os").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
 
-    Ok((0..df.height())
+    // Rows are newest-first: index 0 is the most recent occurrence, the last index the
+    // oldest. The aggregate spans every row; the returned occurrences keep `limit`.
+    let group = ExceptionGroup {
+        group_id: group_id.to_string(),
+        exc_type: exc_type.get(0).unwrap_or("").to_string(),
+        sample_message: message.get(0).unwrap_or("").to_string(),
+        count: height as i64,
+        first_seen_ms: received.get(height - 1).unwrap_or(0),
+        last_seen_ms: received.get(0).unwrap_or(0),
+        status: ExceptionStatus::Unresolved,
+        note: None,
+    };
+
+    let occurrences = (0..height.min(limit))
         .map(|i| ExceptionOccurrence {
             exc_type: exc_type.get(i).unwrap_or("").to_string(),
             message: message.get(i).unwrap_or("").to_string(),
@@ -221,7 +254,9 @@ pub fn exception_occurrences(
             ua_browser: browser.get(i).map(str::to_string),
             ua_os: os.get(i).map(str::to_string),
         })
-        .collect())
+        .collect();
+
+    Ok(Some((group, occurrences)))
 }
 
 // ----------------------------------------------------------------- internals
@@ -229,12 +264,13 @@ pub fn exception_occurrences(
 /// The time-filtered union of the cold Parquet partitions and the redb hot store.
 fn combined(store: &Store, parquet_dir: &str, from_ms: i64, to_ms: i64) -> Result<LazyFrame> {
     let mut frames: Vec<LazyFrame> = Vec::new();
-    for file in parquet_files(Path::new(parquet_dir)) {
+    for file in parquet_files_in_range(Path::new(parquet_dir), from_ms, to_ms) {
         let path = file.to_string_lossy();
-        if let Ok(lf) =
-            LazyFrame::scan_parquet(PlRefPath::from(path.as_ref()), ScanArgsParquet::default())
-        {
-            frames.push(lf);
+        match LazyFrame::scan_parquet(PlRefPath::from(path.as_ref()), ScanArgsParquet::default()) {
+            Ok(lf) => frames.push(lf),
+            // A corrupt/unreadable partition must surface in the logs, not silently
+            // drop events from every query that touches its date range.
+            Err(err) => warn!("skipping unreadable parquet partition {path}: {err}"),
         }
     }
     frames.push(store.hot_dataframe()?.lazy());
@@ -252,11 +288,18 @@ fn combined(store: &Store, parquet_dir: &str, from_ms: i64, to_ms: i64) -> Resul
         .or_system_err(ADVICE)?
     };
 
-    Ok(combined.filter(
-        col("received_ms")
-            .gt_eq(lit(from_ms))
-            .and(col("received_ms").lt_eq(lit(to_ms))),
-    ))
+    // De-duplicate the union: if a crash leaves a compaction window present in both
+    // Parquet and redb, the same events appear twice. Every row carries the globally
+    // unique per-event `seq`, so two *distinct* events can never be all-columns-equal;
+    // a full-row unique therefore collapses exactly the crash duplicates and nothing
+    // else.
+    Ok(combined
+        .filter(
+            col("received_ms")
+                .gt_eq(lit(from_ms))
+                .and(col("received_ms").lt_eq(lit(to_ms))),
+        )
+        .unique(None, UniqueKeepStrategy::Any))
 }
 
 /// An OR-chain matching any of the given source URIs (empty set matches nothing).
@@ -367,9 +410,17 @@ fn breakdown(pageloads: LazyFrame, column: &str) -> Result<Vec<KeyCount>> {
         .collect())
 }
 
+/// Per-source `(uri, visitors, pageviews)` totals. Page loads, pixel hits, and
+/// custom events all count toward `pageviews` so pixel-only and application sources
+/// still surface on the overview; `visitors` stays page-load specific (only page
+/// loads carry the daily-unique flag).
 fn per_source_totals(base: LazyFrame) -> Result<Vec<(String, i64, i64)>> {
+    let counted = col("kind")
+        .eq(lit("page_load"))
+        .or(col("kind").eq(lit("pixel")))
+        .or(col("kind").eq(lit("custom")));
     let df = base
-        .filter(col("kind").eq(lit("page_load")))
+        .filter(counted)
         .group_by([col("source")])
         .agg([
             len().cast(DataType::Int64).alias("pageviews"),
@@ -406,21 +457,56 @@ fn scalar_i64(df: &DataFrame, name: &str) -> i64 {
         .unwrap_or(0)
 }
 
-/// Recursively collect `*.parquet` files under `dir`.
-fn parquet_files(dir: &Path) -> Vec<std::path::PathBuf> {
+/// Parquet partition files whose `YYYY/MM/DD` directory overlaps `[from_ms, to_ms]`.
+/// Partitions are date-partitioned, so pruning whole day directories keeps a wide
+/// query range from scanning the entire archive.
+fn parquet_files_in_range(dir: &Path, from_ms: i64, to_ms: i64) -> Vec<std::path::PathBuf> {
+    let (from, to) = (day_of(from_ms), day_of(to_ms));
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            out.extend(parquet_files(&path));
-        } else if path.extension().is_some_and(|e| e == "parquet") {
-            out.push(path);
+    for year in numeric_subdirs::<i32>(dir) {
+        let year_dir = dir.join(format!("{year:04}"));
+        for month in numeric_subdirs::<u32>(&year_dir) {
+            let month_dir = year_dir.join(format!("{month:02}"));
+            for day in numeric_subdirs::<u32>(&month_dir) {
+                let date = (year, month, day);
+                if date < from || date > to {
+                    continue;
+                }
+                let day_dir = month_dir.join(format!("{day:02}"));
+                let Ok(entries) = std::fs::read_dir(&day_dir) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|e| e == "parquet") {
+                        out.push(path);
+                    }
+                }
+            }
         }
     }
     out
+}
+
+/// `(year, month, day)` in UTC for an epoch-millis instant (epoch on overflow).
+fn day_of(ms: i64) -> (i32, u32, u32) {
+    let dt = Utc
+        .timestamp_millis_opt(ms)
+        .single()
+        .unwrap_or_else(|| Utc.timestamp_opt(0, 0).single().unwrap());
+    (dt.year(), dt.month(), dt.day())
+}
+
+/// Numeric subdirectory names (a year/month/day component) directly under `dir`.
+fn numeric_subdirs<T: std::str::FromStr>(dir: &Path) -> Vec<T> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().to_str().and_then(|n| n.parse::<T>().ok()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -482,6 +568,135 @@ mod tests {
         assert_eq!(stats.summary.visitors, 2); // two unique loads for a.com
         assert_eq!(stats.pages.first().map(|p| p.key.as_str()), Some("/home"));
         assert_eq!(stats.pages.first().map(|p| p.count), Some(3));
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    fn typed(source: &str, received_ms: i64, kind: EventKind) -> StoredEvent {
+        StoredEvent {
+            created_ms: received_ms,
+            received_ms,
+            source: source.into(),
+            kind,
+            is_unique_user: false,
+            ..Default::default()
+        }
+    }
+
+    fn exc(group: &str, received_ms: i64) -> StoredEvent {
+        StoredEvent {
+            created_ms: received_ms,
+            received_ms,
+            kind: EventKind::Exception,
+            source: "https://a.com".into(),
+            exc_type: Some("TypeError".into()),
+            exc_message: Some("boom".into()),
+            exc_group: Some(group.into()),
+            exc_handled: Some(false),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn union_deduplicates_a_crash_duplicated_window() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        store
+            .append_events(&[
+                load("https://a.com", 1_000, true, None),
+                load("https://a.com", 2_000, false, None),
+            ])
+            .unwrap();
+
+        // Simulate a crash between archive and delete: the same window now lives in
+        // both Parquet and the hot store. The archived rows carry the stamped `seq`.
+        let archived = store.all_events().unwrap();
+        let parquet_dir =
+            std::env::temp_dir().join(format!("analytics-dedup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parquet_dir);
+        let partition = parquet_dir
+            .join("1970")
+            .join("01")
+            .join("01")
+            .join("events-1.parquet");
+        crate::store::write_partition(&archived, &partition).unwrap();
+
+        let stats = stats_for_sources(
+            &store,
+            parquet_dir.to_str().unwrap(),
+            &["https://a.com".to_string()],
+            0,
+            10_000,
+            86_400_000,
+        )
+        .unwrap();
+
+        // Without dedup this would double to 4 pageviews / 2 visitors.
+        assert_eq!(stats.summary.pageviews, 2);
+        assert_eq!(stats.summary.visitors, 1);
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+        let _ = std::fs::remove_dir_all(&parquet_dir);
+    }
+
+    #[test]
+    fn exception_group_lookup_ignores_the_recency_cap() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        let events: Vec<_> = (1..=205).map(|i| exc(&format!("g{i}"), i * 1_000)).collect();
+        store.append_events(&events).unwrap();
+        let sources = ["https://a.com".to_string()];
+
+        // g1 is the oldest, so it falls outside the top-200-by-recency listing...
+        let listed = exception_groups(&store, "/none", &sources, 0, 10_000_000).unwrap();
+        assert_eq!(listed.len(), 200);
+        assert!(!listed.iter().any(|g| g.group_id == "g1"));
+
+        // ...but a direct lookup still resolves it (group + occurrences in one scan).
+        let g1 = exception_detail(&store, "/none", &sources, "g1", 0, 10_000_000, 10).unwrap();
+        let (group, occurrences) = g1.expect("g1 resolves");
+        assert_eq!(group.group_id, "g1");
+        assert_eq!(group.count, 1);
+        assert_eq!(occurrences.len(), 1);
+        // An unknown group resolves to None.
+        assert!(
+            exception_detail(&store, "/none", &sources, "nope", 0, 10_000_000, 10)
+                .unwrap()
+                .is_none()
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    #[test]
+    fn overview_surfaces_pixel_and_custom_sources() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        store
+            .append_events(&[
+                load("https://a.com", 1_000, true, None),
+                typed("pixel://p1", 2_000, EventKind::Pixel),
+                typed("app://svc", 3_000, EventKind::Custom),
+            ])
+            .unwrap();
+
+        let overview = overview(&store, "/none", 0, 10_000, 86_400_000).unwrap();
+        let uris: Vec<&str> = overview.unassigned.iter().map(|u| u.uri.as_str()).collect();
+        assert!(uris.contains(&"https://a.com"));
+        assert!(uris.contains(&"pixel://p1")); // previously invisible
+        assert!(uris.contains(&"app://svc")); // previously invisible
+
+        // The website keeps its visitor count; pixel/custom add views, not visitors.
+        let site = overview
+            .unassigned
+            .iter()
+            .find(|u| u.uri == "https://a.com")
+            .unwrap();
+        assert_eq!(site.visitors, 1);
+        assert_eq!(site.pageviews, 1);
 
         drop(store);
         let _ = std::fs::remove_file(&redb);

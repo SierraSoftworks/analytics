@@ -37,6 +37,16 @@ impl Store {
         self.delete_key(SOURCES, uri)
     }
 
+    /// Apply `f` to an existing source and persist it in one write transaction.
+    /// Returns the updated source, or `None` if the URI is unknown.
+    pub fn mutate_source<F: FnOnce(&mut Source)>(
+        &self,
+        uri: &str,
+        f: F,
+    ) -> Result<Option<Source>> {
+        self.mutate_json(SOURCES, uri, f)
+    }
+
     /// Register a newly-seen source as unassigned, if it does not already exist.
     /// Called from the single-threaded ingest writer, so the check-then-insert is
     /// race-free.

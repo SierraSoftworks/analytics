@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn take_before_drains_old_events() {
+    fn events_before_with_keys_then_delete_keys() {
         let store = temp_store();
         store
             .append_events(&[
@@ -199,10 +199,38 @@ mod tests {
                 event("https://c", 3000),
             ])
             .unwrap();
-        let drained = store.take_before(2500).unwrap();
-        assert_eq!(drained.len(), 2);
+        let pairs = store.events_before_with_keys(2500).unwrap();
+        assert_eq!(pairs.len(), 2);
+        let keys: Vec<Vec<u8>> = pairs.into_iter().map(|(key, _)| key).collect();
+        store.delete_keys(&keys).unwrap();
         assert_eq!(store.event_count().unwrap(), 1);
         assert_eq!(store.all_events().unwrap()[0].received_ms, 3000);
+    }
+
+    #[test]
+    fn mutate_source_is_atomic_and_reports_absence() {
+        use analytics_api::Source;
+        let store = temp_store();
+        store.register_source_if_absent("https://a.com").unwrap();
+
+        let updated: Option<Source> = store
+            .mutate_source("https://a.com", |s| {
+                s.project_id = Some("p1".to_string());
+                s.display_name = Some("A".to_string());
+            })
+            .unwrap();
+        assert_eq!(updated.unwrap().project_id.as_deref(), Some("p1"));
+        assert_eq!(
+            store.get_source("https://a.com").unwrap().unwrap().project_id.as_deref(),
+            Some("p1")
+        );
+
+        // A missing URI returns None and does not create a row.
+        let missing = store
+            .mutate_source("https://missing", |s| s.project_id = Some("x".to_string()))
+            .unwrap();
+        assert!(missing.is_none());
+        assert!(store.get_source("https://missing").unwrap().is_none());
     }
 
     #[test]

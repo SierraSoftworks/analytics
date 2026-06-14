@@ -44,17 +44,22 @@ fn compact_once(store: &Store, storage: &StorageConfig) -> Result<usize> {
 }
 
 /// Seal every event older than `cutoff_ms` into date-partitioned Parquet, then drop
-/// it from redb. Reads then writes then deletes, so a write failure loses nothing.
-/// `stamp` disambiguates partition filenames within a run.
+/// exactly those keys from redb. Read-keys -> write-Parquet -> delete-those-keys, so
+/// an event committed after the read is never deleted without being archived; and if
+/// a crash leaves a window in both stores, the per-event `seq` lets queries
+/// de-duplicate it. `stamp` disambiguates partition filenames within a run.
 fn compact_window(store: &Store, parquet_dir: &Path, cutoff_ms: i64, stamp: i64) -> Result<usize> {
-    let events = store.events_before(cutoff_ms)?;
-    if events.is_empty() {
+    let pairs = store.events_before_with_keys(cutoff_ms)?;
+    if pairs.is_empty() {
         return Ok(0);
     }
 
-    // Group by UTC date so each partition holds one day's events.
+    // Group by UTC date so each partition holds one day's events; remember the exact
+    // keys to delete once they are safely archived.
+    let mut keys: Vec<Vec<u8>> = Vec::with_capacity(pairs.len());
     let mut by_date: BTreeMap<(i32, u32, u32), Vec<StoredEvent>> = BTreeMap::new();
-    for event in events {
+    for (key, event) in pairs {
+        keys.push(key);
         let date = Utc
             .timestamp_millis_opt(event.received_ms)
             .single()
@@ -76,8 +81,7 @@ fn compact_window(store: &Store, parquet_dir: &Path, cutoff_ms: i64, stamp: i64)
         total += group.len();
     }
 
-    // Only drop the window once every partition is safely written.
-    store.delete_before(cutoff_ms)?;
+    store.delete_keys(&keys)?;
     Ok(total)
 }
 

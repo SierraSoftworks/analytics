@@ -5,6 +5,7 @@ use yew_router::prelude::*;
 
 use crate::api::{self, ApiError};
 use crate::app::Route;
+use crate::components::ApiErrorAlert;
 use crate::pages::project::{status_class, status_label};
 
 #[derive(Properties, PartialEq)]
@@ -22,7 +23,9 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
     {
         let detail = detail.clone();
         let (project, group) = (project.clone(), group.clone());
-        use_effect_with((group.clone(), *reload), move |_| {
+        // `project` is part of the deps: two projects can share a fingerprint, so
+        // navigating between same-group exceptions across projects must refetch.
+        use_effect_with((project.clone(), group.clone(), *reload), move |_| {
             spawn_local(async move {
                 detail.set(Some(api::exception_detail(&group, &project).await));
             });
@@ -58,7 +61,7 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
             {
                 match &*detail {
                     None => html! { <p class="muted">{ "Loading…" }</p> },
-                    Some(Err(err)) => html! { <div class="alert alert--error">{ err.to_string() }</div> },
+                    Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
                     Some(Ok(detail)) => html! {
                         <>
                             <div class="exc-header">

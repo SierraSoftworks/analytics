@@ -13,7 +13,7 @@ use crate::analytics;
 use crate::state::AppState;
 use crate::store::ExceptionTriage;
 
-const OCCURRENCE_LIMIT: u32 = 50;
+const OCCURRENCE_LIMIT: usize = 50;
 
 /// `GET /api/v1/projects/{id}/exceptions` — grouped exceptions with triage status.
 pub async fn list(
@@ -72,18 +72,7 @@ pub async fn detail(
 
     let result = web::block(move || -> crate::errors::Result<Option<ExceptionGroupDetail>> {
         let sources = analytics::project_source_uris(&store, &project_id)?;
-        let mut group = match analytics::exception_groups(&store, &parquet_dir, &sources, from, to)?
-            .into_iter()
-            .find(|g| g.group_id == group_id)
-        {
-            Some(group) => group,
-            None => return Ok(None),
-        };
-        if let Some(triage) = store.get_triage(&project_id, &group_id)? {
-            group.status = triage.status;
-            group.note = triage.note;
-        }
-        let occurrences = analytics::exception_occurrences(
+        let Some((mut group, occurrences)) = analytics::exception_detail(
             &store,
             &parquet_dir,
             &sources,
@@ -91,7 +80,14 @@ pub async fn detail(
             from,
             to,
             OCCURRENCE_LIMIT,
-        )?;
+        )?
+        else {
+            return Ok(None);
+        };
+        if let Some(triage) = store.get_triage(&project_id, &group_id)? {
+            group.status = triage.status;
+            group.note = triage.note;
+        }
         Ok(Some(ExceptionGroupDetail { group, occurrences }))
     })
     .await;

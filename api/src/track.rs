@@ -43,9 +43,3 @@ pub enum BeaconKind {
     Unload,
     Custom,
 }
-
-/// Response from `GET /track/ping`: whether this is a unique visit today.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PingResponse {
-    pub unique: bool,
-}

@@ -41,6 +41,8 @@ pub struct AuthHandle {
     pub user: Option<AdminUser>,
     pub login: Callback<()>,
     pub signout: Callback<()>,
+    /// Drop back to the sign-in screen, e.g. when a request 401s mid-session.
+    pub relogin: Callback<()>,
 }
 
 #[hook]
@@ -67,6 +69,10 @@ fn use_auth() -> AuthHandle {
             auth::logout().await;
         })
     });
+    let relogin = {
+        let status = status.clone();
+        Callback::from(move |_| status.set(AuthStatus::NeedsLogin))
+    };
     let user = match &*status {
         AuthStatus::SignedIn(user) => Some(user.clone()),
         _ => None,
@@ -77,6 +83,7 @@ fn use_auth() -> AuthHandle {
         user,
         login,
         signout,
+        relogin,
     }
 }
 

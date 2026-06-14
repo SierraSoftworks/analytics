@@ -35,8 +35,10 @@
         gifDataFilter = path: _type: builtins.match ".*/.*\.gif$" path != null;
         # Include the built frontend bundle so the agent can embed it via include_dir!.
         uiDistFilter = path: _type: builtins.match ".*/ui/dist/.*" path != null;
+        # Likewise the built tracking beacon, embedded via include_str!.
+        trackerDistFilter = path: _type: builtins.match ".*/tracker/dist/.*" path != null;
         sourceFilter = path: type:
-          (gifDataFilter path type) || (uiDistFilter path type) || (craneLib.filterCargoSources path type);
+          (gifDataFilter path type) || (uiDistFilter path type) || (trackerDistFilter path type) || (craneLib.filterCargoSources path type);
 
         src = lib.cleanSourceWith {
           src = ./.;

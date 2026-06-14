@@ -25,5 +25,7 @@ pub use source::{
     Source, SourceInput, SourceKind, SourceScheme, app_source, default_kind, pixel_id_of,
     pixel_source, source_label, source_scheme, website_source,
 };
-pub use stats::{KeyCount, MetricSummary, Overview, ProjectSummary, Stats, TimeSeriesPoint};
-pub use track::{BeaconKind, PingResponse, TrackEvent};
+pub use stats::{
+    KeyCount, MetricSummary, Overview, ProjectSummary, SourceSummary, Stats, TimeSeriesPoint,
+};
+pub use track::{BeaconKind, TrackEvent};

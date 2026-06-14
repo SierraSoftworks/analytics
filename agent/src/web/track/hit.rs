@@ -13,13 +13,7 @@ pub async fn hit(
     state: web::Data<AppState>,
     payload: web::Json<TrackEvent>,
 ) -> HttpResponse {
-    if state.config.ratelimit.enabled {
-        let ip = extract::client_ip(&req, state.config.web.trust_proxy);
-        if !state.tracking_limiter.check(&ip) {
-            return HttpResponse::TooManyRequests().finish();
-        }
-    }
-
+    // Rate limiting + body size cap are applied by the /track scope middleware.
     // Respect Do-Not-Track / GPC (the tracker also checks client-side).
     if state.config.privacy.honor_dnt && extract::privacy_signal(&req) {
         return HttpResponse::NoContent().finish();

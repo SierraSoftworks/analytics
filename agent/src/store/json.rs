@@ -52,6 +52,40 @@ impl Store {
         Ok(out)
     }
 
+    /// Read, mutate, and write back a value in a single write transaction, so two
+    /// concurrent edits can't clobber each other via a read-modify-write split across
+    /// transactions. `f` runs only when the key exists; returns the updated value, or
+    /// `None` if it was absent.
+    pub(super) fn mutate_json<T, F>(&self, def: JsonTable, key: &str, f: F) -> Result<Option<T>>
+    where
+        T: Serialize + DeserializeOwned,
+        F: FnOnce(&mut T),
+    {
+        let txn = self.db.begin_write().or_system_err(STORAGE_ADVICE)?;
+        let updated = {
+            let mut table = txn.open_table(def).or_system_err(STORAGE_ADVICE)?;
+            let current: Option<T> = match table.get(key).or_system_err(STORAGE_ADVICE)? {
+                Some(value) => {
+                    Some(serde_json::from_slice(value.value()).or_system_err(STORAGE_ADVICE)?)
+                }
+                None => None,
+            };
+            match current {
+                Some(mut value) => {
+                    f(&mut value);
+                    let bytes = serde_json::to_vec(&value).or_system_err(STORAGE_ADVICE)?;
+                    table
+                        .insert(key, bytes.as_slice())
+                        .or_system_err(STORAGE_ADVICE)?;
+                    Some(value)
+                }
+                None => None,
+            }
+        };
+        txn.commit().or_system_err(STORAGE_ADVICE)?;
+        Ok(updated)
+    }
+
     pub(super) fn delete_key(&self, def: JsonTable, key: &str) -> Result<bool> {
         let txn = self.db.begin_write().or_system_err(STORAGE_ADVICE)?;
         let existed = {

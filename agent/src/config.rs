@@ -106,6 +106,12 @@ pub struct StorageConfig {
     /// How long Parquet partitions are retained before deletion.
     #[serde(with = "humantime_serde")]
     pub retention: Duration,
+    /// Ceiling on auto-registered (unassigned) sources. Unknown reporting hostnames
+    /// register automatically so nothing is dropped from the overview, but a flood of
+    /// attacker-rotated hostnames must not grow the source table without bound. Once
+    /// this many sources exist, new ones stop auto-registering (their events are still
+    /// stored). Raise it if you legitimately track more distinct sources.
+    pub max_auto_sources: usize,
 }
 
 impl Default for StorageConfig {
@@ -116,6 +122,7 @@ impl Default for StorageConfig {
             hot_window: Duration::from_secs(48 * 60 * 60),
             rollup_interval: Duration::from_secs(60 * 60),
             retention: Duration::from_secs(365 * 24 * 60 * 60),
+            max_auto_sources: 10_000,
         }
     }
 }

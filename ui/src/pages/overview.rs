@@ -6,7 +6,7 @@ use yew_router::prelude::*;
 
 use crate::api::{self, ApiError};
 use crate::app::Route;
-use crate::components::{MetricCards, TimeSeriesChart};
+use crate::components::{ApiErrorAlert, MetricCards, TimeSeriesChart};
 
 #[function_component(Overview)]
 pub fn overview() -> Html {
@@ -50,7 +50,7 @@ pub fn overview() -> Html {
 
     match &*data {
         None => html! { <p class="muted">{ "Loading…" }</p> },
-        Some(Err(err)) => html! { <div class="alert alert--error">{ err.to_string() }</div> },
+        Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
         Some(Ok(overview)) => html! {
             <div class="page">
                 <h1>{ "Overview" }</h1>
@@ -100,9 +100,10 @@ pub fn overview() -> Html {
                         <h2>{ "Unassigned sources" }</h2>
                         <p class="muted">{ "Reporting hostnames not yet grouped into a project." }</p>
                         <table class="list">
+                            <thead><tr><th>{ "Source" }</th><th>{ "Visitors" }</th><th>{ "Page views" }</th></tr></thead>
                             <tbody>
                             { for overview.unassigned.iter().map(|u| html! {
-                                <tr><td>{ &u.key }</td><td>{ u.count }</td></tr>
+                                <tr><td>{ &u.uri }</td><td>{ u.visitors }</td><td>{ u.pageviews }</td></tr>
                             }) }
                             </tbody>
                         </table>

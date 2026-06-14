@@ -4,7 +4,7 @@ use analytics_api::{ExceptionReport, website_source};
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use super::ua;
+use super::{truncate, ua};
 use crate::store::{EventKind, StoredEvent};
 
 const TOP_FRAMES: usize = 5;
@@ -133,18 +133,6 @@ fn normalize_noise(input: &str) -> String {
         }
     }
     out.trim().to_string()
-}
-
-fn truncate(value: &str, max: usize) -> String {
-    if value.len() <= max {
-        value.to_string()
-    } else {
-        let mut end = max;
-        while end > 0 && !value.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}…", &value[..end])
-    }
 }
 
 #[cfg(test)]

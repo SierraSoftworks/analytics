@@ -61,14 +61,22 @@ A Cargo workspace, mirroring [grey](https://github.com/SierraSoftworks/grey) and
   embedded into the binary via `include_dir!`.
 - **`ui/`** — a client-side-rendered [Yew](https://yew.rs) dashboard, built with
   [Trunk](https://trunkrs.dev).
+- **`tracker/`** — the tracking beacon: a dependency-free, pure-JavaScript snippet
+  built into a single heavily-minified artifact with
+  [esbuild](https://esbuild.github.io) and served at `/tracker.js`. One build, no
+  variants — behaviour is toggled by `data-*` attributes at runtime. Unit-tested with
+  [Vitest](https://vitest.dev).
 
 ## Quick start
 
 ```bash
-# 1. Build the frontend bundle (embedded into the server binary).
+# 1. Build the tracking beacon (embedded into the server binary).
+cd tracker && npm install && npm run build && cd ..
+
+# 2. Build the frontend bundle (embedded into the server binary).
 cd ui && trunk build --release && cd ..
 
-# 2. Build and run the server.
+# 3. Build and run the server.
 cargo build --release -p analytics
 cp config.example.yaml config.yaml   # then edit to taste
 ./target/release/analytics --config config.yaml
@@ -90,7 +98,9 @@ Add the tracker script to your pages, pointing `data-api` at your server:
 ```
 
 The script reports page views (and, with `data-auto-capture-exceptions`, unhandled
-errors). It also exposes `window.analytics.event(name, data)` and
+errors and promise rejections). It follows SPA navigations automatically by
+intercepting the History API; add `data-hash` if your app routes with the URL hash
+instead. It also exposes `window.analytics.event(name, data)` and
 `window.analytics.captureException(error, meta)` for manual reporting. Sources are
 identified purely by their hostname — no per-site key to embed.
 
@@ -104,8 +114,21 @@ can't run (email opens, RSS, docs).
 
 All configuration lives in a YAML file (see
 [`config.example.yaml`](config.example.yaml)). Secrets can be injected from the
-environment with `${{ env.VAR_NAME }}` placeholders. Authentication is disabled
-when the `web.admin.oidc` block is omitted (handy for local development).
+environment with `${{ env.VAR_NAME }}` placeholders.
+
+Omitting the `web.admin.oidc` block disables the sign-in flow, but the dashboard is
+still gated by the `web.admin.acl` filter expression — which **defaults to `"false"`
+(deny all)**. To run locally without authentication, omit OIDC *and* set an
+allow-all ACL so the API is reachable:
+
+```yaml
+web:
+  admin:
+    acl: "true"   # local development only — grants everyone full access
+```
+
+With the default deny-all ACL and no OIDC, the dashboard cannot be signed into (the
+sign-in page explains this rather than looping).
 
 ## API
 

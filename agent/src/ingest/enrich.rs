@@ -7,8 +7,15 @@ use std::collections::BTreeMap;
 use analytics_api::{BeaconKind, TrackEvent, website_source};
 use url::Url;
 
-use super::{geo, language, referrer, ua};
+use super::{geo, language, referrer, truncate, ua};
 use crate::store::{EventKind, StoredEvent};
+
+/// Caps on attacker-controlled hit-path text, mirroring the exception path. Bounds
+/// what a single beacon can persist even within the request body limit.
+const MAX_FIELD: usize = 256; // bid, event_name, each UTM tag
+const MAX_PATH: usize = 1_024;
+const MAX_METADATA_ENTRIES: usize = 32;
+const MAX_METADATA_VALUE: usize = 1_024;
 
 /// Build an enriched event from a beacon payload. Returns `None` when the event
 /// should be dropped (bot, or an unparseable/host-less URL).
@@ -48,10 +55,10 @@ pub fn build_event(
     Some(StoredEvent {
         created_ms: received_ms,
         received_ms,
-        bid: track.beacon,
+        bid: truncate(&track.beacon, MAX_FIELD),
         kind,
         source: website_source(&hostname),
-        pathname: Some(normalize_path(url.path())),
+        pathname: Some(truncate(&normalize_path(url.path()), MAX_PATH)),
         is_unique_user: track.unique_visit,
         is_unique_page: track.unique_page,
         referrer_host: referrer.host,
@@ -65,7 +72,7 @@ pub fn build_event(
         utm_medium,
         utm_campaign,
         duration_ms: track.duration_ms,
-        event_name: track.event_name,
+        event_name: track.event_name.map(|n| truncate(&n, MAX_FIELD)),
         metadata_json: track.metadata.as_ref().and_then(serialize_metadata),
         ..Default::default()
     })
@@ -74,10 +81,11 @@ pub fn build_event(
 fn extract_utm(url: &Url) -> (Option<String>, Option<String>, Option<String>) {
     let (mut source, mut medium, mut campaign) = (None, None, None);
     for (key, value) in url.query_pairs() {
-        let value = value.trim().to_string();
+        let value = value.trim();
         if value.is_empty() {
             continue;
         }
+        let value = truncate(value, MAX_FIELD);
         match key.as_ref() {
             "utm_source" => source = Some(value),
             "utm_medium" => medium = Some(value),
@@ -98,12 +106,19 @@ fn normalize_path(path: &str) -> String {
     }
 }
 
+/// Serialize metadata to JSON, capping the entry count and each key/value length so
+/// a client can't persist an oversized blob. The map is sorted, so the retained
+/// subset is deterministic.
 fn serialize_metadata(meta: &BTreeMap<String, String>) -> Option<String> {
     if meta.is_empty() {
-        None
-    } else {
-        serde_json::to_string(meta).ok()
+        return None;
     }
+    let capped: BTreeMap<String, String> = meta
+        .iter()
+        .take(MAX_METADATA_ENTRIES)
+        .map(|(k, v)| (truncate(k, MAX_FIELD), truncate(v, MAX_METADATA_VALUE)))
+        .collect();
+    serde_json::to_string(&capped).ok()
 }
 
 #[cfg(test)]
@@ -152,5 +167,28 @@ mod tests {
     fn drops_bots_and_bad_urls() {
         assert!(build_event(base("https://example.com/"), "Googlebot/2.1", None, 1).is_none());
         assert!(build_event(base("not a url"), chrome(), None, 1).is_none());
+    }
+
+    #[test]
+    fn caps_oversized_hit_fields() {
+        let mut track = base("https://example.com/");
+        track.beacon = "b".repeat(10_000);
+        track.event_name = Some("n".repeat(10_000));
+        let mut metadata = BTreeMap::new();
+        for i in 0..100 {
+            metadata.insert(format!("key{i}"), "v".repeat(10_000));
+        }
+        track.metadata = Some(metadata);
+
+        let e = build_event(track, chrome(), None, 1).expect("event");
+
+        // The ellipsis marker adds 3 bytes to a byte-boundary truncation.
+        assert!(e.bid.len() <= MAX_FIELD + 3);
+        assert!(e.event_name.unwrap().len() <= MAX_FIELD + 3);
+
+        let parsed: BTreeMap<String, String> =
+            serde_json::from_str(&e.metadata_json.unwrap()).unwrap();
+        assert_eq!(parsed.len(), MAX_METADATA_ENTRIES);
+        assert!(parsed.values().all(|v| v.len() <= MAX_METADATA_VALUE + 3));
     }
 }

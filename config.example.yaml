@@ -4,9 +4,9 @@
 
 web:
   # host:port the server listens on.
-  address: "127.0.0.1:8080"
+  address: "127.0.0.1:8085"
   # Externally visible base URL, used to build OIDC redirect URIs.
-  base_url: "http://127.0.0.1:8080"
+  base_url: "http://127.0.0.1:8085"
   # Trust X-Forwarded-* headers from an upstream reverse proxy.
   trust_proxy: false
   admin:
@@ -14,7 +14,7 @@ web:
     # Default "false" denies everything. Examples:
     #   acl: "'analytics-admins' in claims.groups"
     #   acl: "claims.email == 'you@example.com'"
-    acl: "false"
+    acl: "true"
     # Omit this block entirely to disable authentication (local development).
     # oidc:
     #   endpoint: "https://idp.example.com"
@@ -28,6 +28,10 @@ storage:
   hot_window: "48h"
   rollup_interval: "1h"
   retention: "365d"
+  # Ceiling on auto-registered (unassigned) sources. Unknown reporting hostnames
+  # register automatically, but this bounds how far a flood of rotated hostnames can
+  # grow the source list. Events are stored regardless once the ceiling is reached.
+  max_auto_sources: 10000
 
 privacy:
   salt_rotation: "24h"

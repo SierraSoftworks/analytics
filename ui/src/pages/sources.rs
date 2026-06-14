@@ -4,6 +4,7 @@ use web_sys::HtmlSelectElement;
 use yew::prelude::*;
 
 use crate::api::{self, ApiError};
+use crate::components::ApiErrorAlert;
 
 #[function_component(Sources)]
 pub fn sources() -> Html {
@@ -31,7 +32,7 @@ pub fn sources() -> Html {
             {
                 match &*sources {
                     None => html! { <p class="muted">{ "Loading…" }</p> },
-                    Some(Err(err)) => html! { <div class="alert alert--error">{ err.to_string() }</div> },
+                    Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
                     Some(Ok(list)) if list.is_empty() => html! {
                         <p class="muted">{ "No sources yet. They appear automatically once a site starts reporting." }</p>
                     },

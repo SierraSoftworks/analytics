@@ -30,5 +30,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     // dependency, so re-run (and re-embed) whenever the built frontend changes.
     println!("cargo:rerun-if-changed=../ui/dist");
 
+    // The tracking beacon is built separately (`npm run build` in `tracker/`) and
+    // embedded via `include_str!`. Ensure the artifact exists with a placeholder so
+    // the agent always compiles, even before the beacon has been built. A real build
+    // overwrites this placeholder.
+    let tracker_dist = manifest_dir.join("..").join("tracker").join("dist");
+    fs::create_dir_all(&tracker_dist)?;
+    let tracker_js = tracker_dist.join("tracker.js");
+    if !tracker_js.exists() {
+        fs::write(
+            &tracker_js,
+            "/* The analytics tracker has not been built. \
+             Run `npm install && npm run build` in `tracker/`. */\n",
+        )?;
+    }
+    println!("cargo:rerun-if-changed=../tracker/dist/tracker.js");
+
     Ok(())
 }

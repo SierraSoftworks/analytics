@@ -217,6 +217,22 @@ pub async fn discovery(
     Ok(document)
 }
 
+/// Fetch the JSON Web Key Set from the provider (no caching).
+async fn fetch_jwks(
+    http: &reqwest::Client,
+    discovery: &OidcDiscovery,
+) -> Result<jsonwebtoken::jwk::JwkSet> {
+    http.get(&discovery.jwks_uri)
+        .send()
+        .await
+        .wrap_system_err("Failed to fetch the OIDC signing keys (JWKS).", ADVICE_PROVIDER)?
+        .error_for_status()
+        .wrap_system_err("The OIDC provider returned an error for its signing keys.", ADVICE_PROVIDER)?
+        .json()
+        .await
+        .wrap_system_err("Failed to parse the OIDC signing keys.", ADVICE_PROVIDER)
+}
+
 /// Fetch (and cache) the JSON Web Key Set used to verify token signatures.
 async fn jwks(
     http: &reqwest::Client,
@@ -226,18 +242,14 @@ async fn jwks(
     if let Some(cached) = cache.jwks() {
         return Ok(cached);
     }
-    let keys: jsonwebtoken::jwk::JwkSet = http
-        .get(&discovery.jwks_uri)
-        .send()
-        .await
-        .wrap_system_err("Failed to fetch the OIDC signing keys (JWKS).", ADVICE_PROVIDER)?
-        .error_for_status()
-        .wrap_system_err("The OIDC provider returned an error for its signing keys.", ADVICE_PROVIDER)?
-        .json()
-        .await
-        .wrap_system_err("Failed to parse the OIDC signing keys.", ADVICE_PROVIDER)?;
+    let keys = fetch_jwks(http, discovery).await?;
     cache.store_jwks(keys.clone());
     Ok(keys)
+}
+
+/// The `kid` (key id) from a token header, if present.
+fn token_kid(token: &str) -> Option<String> {
+    jsonwebtoken::decode_header(token).ok().and_then(|h| h.kid)
 }
 
 /// Validate an ID token's signature and registered claims, returning the claims.
@@ -248,7 +260,17 @@ pub async fn validate_token(
     token: &str,
 ) -> Result<serde_json::Map<String, serde_json::Value>> {
     let discovery = discovery(http, cache, oidc).await?;
-    let key_set = jwks(http, cache, &discovery).await?;
+    let mut key_set = jwks(http, cache, &discovery).await?;
+
+    // If the token's signing key isn't in the cached set, the provider may have
+    // rotated keys; refetch once (bypassing the cache) before rejecting it.
+    if let Some(kid) = token_kid(token)
+        && key_set.find(&kid).is_none()
+    {
+        key_set = fetch_jwks(http, &discovery).await?;
+        cache.store_jwks(key_set.clone());
+    }
+
     verify_token(&oidc.client_id, &discovery.issuer, &key_set, token)
 }
 

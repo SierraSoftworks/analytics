@@ -6,7 +6,7 @@ use yew_router::prelude::*;
 
 use crate::api::{self, ApiError};
 use crate::app::Route;
-use crate::components::{Breakdown, MetricCards, TimeSeriesChart};
+use crate::components::{ApiErrorAlert, Breakdown, MetricCards, TimeSeriesChart};
 
 #[derive(Properties, PartialEq)]
 pub struct ProjectProps {
@@ -56,7 +56,7 @@ pub fn project(props: &ProjectProps) -> Html {
             <p class="crumb"><Link<Route> to={Route::Overview}>{ "← Overview" }</Link<Route>></p>
             <h1>{ name }</h1>
             if let Some(Err(err)) = &*project {
-                <div class="alert alert--error">{ err.to_string() }</div>
+                <ApiErrorAlert error={err.clone()} />
             }
             <div class="tabs">
                 { tab_button(Tab::Stats, "Statistics") }
@@ -96,7 +96,7 @@ fn project_stats(props: &IdProps) -> Html {
 
     match &*stats {
         None => html! { <p class="muted">{ "Loading…" }</p> },
-        Some(Err(err)) => html! { <div class="alert alert--error">{ err.to_string() }</div> },
+        Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
         Some(Ok(s)) => html! {
             <>
                 <MetricCards summary={s.summary.clone()} />
@@ -176,7 +176,7 @@ fn project_pixels(props: &IdProps) -> Html {
             {
                 match &*pixels {
                     None => html! { <p class="muted">{ "Loading…" }</p> },
-                    Some(Err(err)) => html! { <div class="alert alert--error">{ err.to_string() }</div> },
+                    Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
                     Some(Ok(list)) if list.is_empty() => html! { <p class="muted">{ "No pixels yet." }</p> },
                     Some(Ok(list)) => html! {
                         <table class="list">
@@ -230,7 +230,7 @@ fn project_exceptions(props: &IdProps) -> Html {
 
     match &*groups {
         None => html! { <p class="muted">{ "Loading…" }</p> },
-        Some(Err(err)) => html! { <div class="alert alert--error">{ err.to_string() }</div> },
+        Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
         Some(Ok(list)) if list.is_empty() => html! { <p class="muted">{ "No exceptions reported." }</p> },
         Some(Ok(list)) => html! {
             <table class="list">

@@ -2,29 +2,18 @@
 //! rejected (404), so there is no open pixel.
 
 use actix_web::http::header::CACHE_CONTROL;
-use actix_web::{HttpRequest, HttpResponse, web};
+use actix_web::{HttpResponse, web};
 use analytics_api::pixel_source;
 use chrono::Utc;
 
-use crate::store::{EventKind, StoredEvent};
 use crate::state::AppState;
-use crate::web::extract;
+use crate::store::{EventKind, StoredEvent};
 
 /// A 1x1 transparent GIF.
 const BLANK_GIF: &[u8] = include_bytes!("../../../assets/blank.gif");
 
-pub async fn gif(
-    req: HttpRequest,
-    state: web::Data<AppState>,
-    path: web::Path<String>,
-) -> HttpResponse {
-    if state.config.ratelimit.enabled {
-        let ip = extract::client_ip(&req, state.config.web.trust_proxy);
-        if !state.tracking_limiter.check(&ip) {
-            return HttpResponse::TooManyRequests().finish();
-        }
-    }
-
+// Rate limiting is applied by the /track scope middleware in `super`.
+pub async fn gif(state: web::Data<AppState>, path: web::Path<String>) -> HttpResponse {
     // Strip the trailing `.gif` the route captures as part of the id.
     let id = path.into_inner();
     let id = id.strip_suffix(".gif").unwrap_or(&id);

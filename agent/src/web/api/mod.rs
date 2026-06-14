@@ -153,10 +153,11 @@ pub async fn api_auth(
     };
 
     let filterable = claims.as_ref().map(filterable_claims);
+    let acl_ip = crate::web::extract::client_ip(req.request(), state.config.web.trust_proxy);
     let filter = AdminRequestFilter {
         method: req.method().as_str(),
         path: req.path(),
-        client_ip: req.peer_addr().map(|addr| addr.ip().to_string()),
+        client_ip: (!acl_ip.is_empty()).then_some(acl_ip.clone()),
         headers: req.headers(),
         claims: filterable.as_ref(),
     };
@@ -183,7 +184,7 @@ pub async fn api_auth(
 /// by IP (the IP is a transient limiter key only — never stored or logged).
 fn unauthenticated(state: &AppState, req: &ServiceRequest) -> HttpResponse {
     if state.config.ratelimit.enabled {
-        let ip = client_ip(req, state.config.web.trust_proxy);
+        let ip = crate::web::extract::client_ip(req.request(), state.config.web.trust_proxy);
         if !state.unauth_limiter.check(&ip) {
             return json_error(
                 StatusCode::TOO_MANY_REQUESTS,
@@ -195,25 +196,6 @@ fn unauthenticated(state: &AppState, req: &ServiceRequest) -> HttpResponse {
         StatusCode::UNAUTHORIZED,
         "Authentication is required to access this resource.",
     )
-}
-
-fn client_ip(req: &ServiceRequest, trust_proxy: bool) -> String {
-    if trust_proxy {
-        if let Some(forwarded) = req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok())
-            && let Some(first) = forwarded.split(',').next()
-            && !first.trim().is_empty()
-        {
-            return first.trim().to_string();
-        }
-        if let Some(real) = req.headers().get("x-real-ip").and_then(|v| v.to_str().ok())
-            && !real.trim().is_empty()
-        {
-            return real.trim().to_string();
-        }
-    }
-    req.peer_addr()
-        .map(|addr| addr.ip().to_string())
-        .unwrap_or_default()
 }
 
 /// Double-submit CSRF check: the `X-CSRF-Token` header must equal the CSRF cookie.

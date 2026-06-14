@@ -29,6 +29,7 @@ pub fn build_dataframe(events: &[StoredEvent]) -> PolarsResult<DataFrame> {
     df![
         "created_ms" => col!(created_ms),
         "received_ms" => col!(received_ms),
+        "seq" => col!(seq),
         "bid" => col!(bid),
         "kind" => kind,
         "source" => col!(source),
@@ -57,15 +58,24 @@ pub fn build_dataframe(events: &[StoredEvent]) -> PolarsResult<DataFrame> {
 }
 
 /// Write a batch of events to a Parquet partition file, creating parent dirs.
+/// The file is written to a `.tmp` sibling and atomically renamed into place, so a
+/// concurrent reader never sees a half-written partition (and the `.tmp` extension
+/// keeps any crash-orphaned temp out of the `*.parquet` scan).
 pub fn write_partition(events: &[StoredEvent], path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).or_system_err(STORAGE_ADVICE)?;
     }
     let mut df = build_dataframe(events).or_system_err(STORAGE_ADVICE)?;
-    let file = std::fs::File::create(path).or_system_err(STORAGE_ADVICE)?;
-    ParquetWriter::new(file)
-        .finish(&mut df)
-        .or_system_err(STORAGE_ADVICE)?;
+
+    let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = path.with_file_name(format!("{file_name}.tmp"));
+    {
+        let file = std::fs::File::create(&tmp).or_system_err(STORAGE_ADVICE)?;
+        ParquetWriter::new(file)
+            .finish(&mut df)
+            .or_system_err(STORAGE_ADVICE)?;
+    }
+    std::fs::rename(&tmp, path).or_system_err(STORAGE_ADVICE)?;
     Ok(())
 }
 

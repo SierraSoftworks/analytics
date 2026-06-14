@@ -5,13 +5,18 @@ use actix_web::HttpRequest;
 
 /// The client IP, honouring `X-Forwarded-For`/`X-Real-IP` only when the operator
 /// has opted into trusting a reverse proxy. For rate limiting only.
+///
+/// The **rightmost** `X-Forwarded-For` entry is used: a trusted reverse proxy
+/// *appends* the address it observed, so the last entry is the hop it saw, while
+/// any leftmost entries are client-supplied and spoofable. (This assumes a single
+/// trusted proxy directly in front; chains would need a configurable hop count.)
 pub fn client_ip(req: &HttpRequest, trust_proxy: bool) -> String {
     if trust_proxy {
         if let Some(forwarded) = header(req, "x-forwarded-for")
-            && let Some(first) = forwarded.split(',').next()
-            && !first.trim().is_empty()
+            && let Some(last) = forwarded.rsplit(',').next()
+            && !last.trim().is_empty()
         {
-            return first.trim().to_string();
+            return last.trim().to_string();
         }
         if let Some(real) = header(req, "x-real-ip")
             && !real.trim().is_empty()

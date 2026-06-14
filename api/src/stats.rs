@@ -54,12 +54,21 @@ pub struct ProjectSummary {
     pub pageviews: i64,
 }
 
+/// Totals for a single source URI on the global overview (used for sources not yet
+/// assigned to a project).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceSummary {
+    pub uri: String,
+    pub visitors: i64,
+    pub pageviews: i64,
+}
+
 /// The global overview across all projects (plus any unassigned sources).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Overview {
     pub summary: MetricSummary,
     pub timeseries: Vec<TimeSeriesPoint>,
     pub projects: Vec<ProjectSummary>,
-    /// Sources not yet assigned to a project, with their totals.
-    pub unassigned: Vec<KeyCount>,
+    /// Sources not yet assigned to a project, each with its visitor and view totals.
+    pub unassigned: Vec<SourceSummary>,
 }

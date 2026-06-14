@@ -38,6 +38,12 @@ pub struct StoredEvent {
     pub created_ms: i64,
     /// Server receive time (epoch millis); also the basis for the storage key.
     pub received_ms: i64,
+    /// Monotonic per-event sequence (the low half of the redb key), unique forever.
+    /// Carried into Parquet so the hot∪cold union can be de-duplicated if a crash
+    /// causes a compaction window to be archived twice. Assigned by the store on
+    /// append; ignore the value before then.
+    #[serde(default)]
+    pub seq: u64,
     /// Per-page-load beacon id linking the events of a single page view.
     pub bid: String,
     pub kind: EventKind,

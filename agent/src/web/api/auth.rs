@@ -50,7 +50,10 @@ pub async fn auth_login(
     query: web::Query<LoginQuery>,
 ) -> HttpResponse {
     let Some(oidc) = state.config.web.admin.oidc.as_ref() else {
-        return redirect_to("/");
+        // No identity provider configured: send back a distinguishable marker so the
+        // sign-in page can explain the situation instead of bouncing /auth/login → /
+        // → 401 → sign-in forever.
+        return redirect_to("/?auth_error=oidc_disabled");
     };
 
     let Some(base) = base_url(&state.config.web, &req) else {
@@ -207,11 +210,34 @@ pub async fn auth_callback(
         .finish()
 }
 
-/// `POST /api/v1/auth/logout` — clear the session cookie.
-pub async fn auth_logout() -> HttpResponse {
+/// `POST /api/v1/auth/logout` — clear the session cookie. This endpoint is public
+/// (outside `api_auth`), so it enforces the double-submit CSRF check itself to
+/// prevent a cross-site forced logout.
+pub async fn auth_logout(req: HttpRequest) -> HttpResponse {
+    if !csrf_ok(&req) {
+        return json_error(
+            actix_web::http::StatusCode::FORBIDDEN,
+            "The request could not be verified. Please refresh the page and try again.",
+        );
+    }
     let mut removal = Cookie::build(SESSION_COOKIE, "").path(COOKIE_PATH).finish();
     removal.make_removal();
     HttpResponse::NoContent().cookie(removal).finish()
+}
+
+/// Double-submit CSRF check against an `HttpRequest` (the middleware version in
+/// `super` operates on a `ServiceRequest`).
+fn csrf_ok(req: &HttpRequest) -> bool {
+    let header = req
+        .headers()
+        .get(super::CSRF_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let cookie = req.cookie(super::CSRF_COOKIE).map(|c| c.value().to_string());
+    match (header, cookie) {
+        (Some(header), Some(cookie)) => !header.is_empty() && header == cookie,
+        _ => false,
+    }
 }
 
 /// `GET /api/v1/csrf` — issue a double-submit CSRF token (body + matching cookie).
@@ -251,7 +277,10 @@ fn clear_oauth_and_redirect(location: &str) -> HttpResponse {
 fn sanitize_return_to(value: Option<&str>) -> String {
     match value {
         Some(path)
-            if path.starts_with('/') && !path.starts_with("//") && !path.starts_with("/\\") =>
+            if path.starts_with('/')
+                && !path.starts_with("//")
+                && !path.starts_with("/\\")
+                && !path.chars().any(|c| c.is_control()) =>
         {
             path.to_string()
         }

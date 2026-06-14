@@ -3,28 +3,20 @@
 //!
 //! The browser caches the response per ping URL (the tracker includes the hostname),
 //! revalidating on every page load because of `Cache-Control: no-cache`. The server
-//! always returns 200 with a freshly-computed body and resets `Last-Modified` to
-//! today's UTC midnight, so the conditional `If-Modified-Since` reveals whether the
-//! browser has already pinged today.
+//! always returns 200 with a freshly-computed 1-byte `text/plain` body (`1` = first
+//! visit today, `0` = returning) and resets `Last-Modified` to today's UTC midnight,
+//! so the conditional `If-Modified-Since` reveals whether the browser has already
+//! pinged today.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use actix_web::http::header::{CACHE_CONTROL, IF_MODIFIED_SINCE, LAST_MODIFIED};
-use actix_web::{HttpRequest, HttpResponse, web};
-use analytics_api::PingResponse;
+use actix_web::{HttpRequest, HttpResponse};
 use chrono::{Datelike, TimeZone, Utc};
 
-use crate::state::AppState;
-use crate::web::extract;
-
-pub async fn ping(req: HttpRequest, state: web::Data<AppState>) -> HttpResponse {
-    if state.config.ratelimit.enabled {
-        let ip = extract::client_ip(&req, state.config.web.trust_proxy);
-        if !state.tracking_limiter.check(&ip) {
-            return HttpResponse::TooManyRequests().finish();
-        }
-    }
-
+// Rate limiting and (for POST endpoints) body limits are applied by the /track
+// scope middleware in `super`.
+pub async fn ping(req: HttpRequest) -> HttpResponse {
     let today_midnight = today_midnight_ms();
     let last_seen = req
         .headers()
@@ -43,7 +35,10 @@ pub async fn ping(req: HttpRequest, state: web::Data<AppState>) -> HttpResponse 
             httpdate::fmt_http_date(ms_to_system_time(today_midnight)),
         ))
         .insert_header((CACHE_CONTROL, "no-cache, private"))
-        .json(PingResponse { unique })
+        // A 1-byte body keeps the response tiny and lets it be served as text/plain;
+        // the cache-trick headers above do the real work.
+        .content_type("text/plain; charset=utf-8")
+        .body(if unique { "1" } else { "0" })
 }
 
 fn today_midnight_ms() -> i64 {
