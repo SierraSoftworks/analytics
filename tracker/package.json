@@ -13,8 +13,8 @@
     "check": "npm run test && npm run build"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.1",
     "jsdom": "^26.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.8"
   }
 }
