@@ -1,0 +1,53 @@
+// Signed-out / public chrome: the brand header wrapper and centred auth card used
+// by the sign-in and 404 screens (see components/layout.rs and pages/misc.rs).
+@use '../styles/variables' as *;
+
+.public-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.public-header {
+  padding: 1.5rem 2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+
+  img {
+    height: 26px;
+    width: 26px;
+  }
+
+  span {
+    font-weight: 600;
+  }
+}
+
+.center-screen {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.auth-card {
+  @include card;
+  width: min(92vw, 26rem);
+  padding: 2.25rem 2.5rem;
+  text-align: center;
+
+  h1 {
+    font-size: 1.5rem;
+  }
+
+  p {
+    margin: 0.75rem 0 1.5rem;
+    color: var(--text-3);
+  }
+
+  code {
+    color: var(--brand-2);
+  }
+}

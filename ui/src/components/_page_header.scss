@@ -1,0 +1,77 @@
+// The page header — breadcrumb, title row, and page/section scaffolding
+// (see components/page_header.rs).
+@use '../styles/variables' as *;
+
+.page {
+  display: block;
+}
+
+section + section,
+.section {
+  margin-top: 2.25rem;
+}
+
+.section__title {
+  font-size: 1.02rem;
+  font-weight: 600;
+  margin: 0 0 0.9rem;
+}
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+  font-size: 0.82rem;
+  color: var(--text-3);
+
+  &__sep {
+    color: var(--text-4);
+  }
+
+  &__item {
+    color: var(--text-3);
+
+    &:hover {
+      color: var(--text-2);
+    }
+
+    &--current {
+      color: var(--text-2);
+      font-weight: 500;
+    }
+  }
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.75rem;
+  padding-bottom: 1.1rem;
+  border-bottom: 1px solid var(--border);
+
+  &__text {
+    min-width: 0;
+  }
+
+  &__title {
+    font-size: 1.4rem;
+    font-weight: 650;
+  }
+
+  &__subtitle {
+    margin: 0.3rem 0 0;
+    font-size: 0.88rem;
+    color: var(--text-3);
+  }
+
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+  }
+}

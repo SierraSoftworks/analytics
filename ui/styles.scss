@@ -1,0 +1,28 @@
+// =============================================================================
+// Analytics dashboard stylesheet
+//
+// A dark, typography-centric theme: the Element Plus palette and component shapes
+// remapped onto a dark canvas, with the restrained colour and generous whitespace
+// of tools like Linear. The styles are decomposed into per-component partials (see
+// SierraSoftworks/grey): design tokens + foundation under `src/styles/`, one
+// partial per component/area under `src/components/`, all assembled here.
+// =============================================================================
+
+// Foundation — tokens, reset, structural layout.
+@use 'src/styles/variables';
+@use 'src/styles/base';
+@use 'src/styles/layout';
+
+// Components & page areas.
+@use 'src/components/controls';
+@use 'src/components/alert';
+@use 'src/components/app_bar';
+@use 'src/components/sidebar';
+@use 'src/components/page_header';
+@use 'src/components/stats';
+@use 'src/components/tables';
+@use 'src/components/drawer';
+@use 'src/components/dropdown';
+@use 'src/components/settings';
+@use 'src/components/exceptions';
+@use 'src/components/auth';

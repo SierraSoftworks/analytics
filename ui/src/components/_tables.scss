@@ -1,0 +1,157 @@
+// Tabular data: breakdown cards, list tables, tabs, and shared table utilities.
+@use '../styles/variables' as *;
+
+.breakdowns {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+
+.breakdown {
+  @include card;
+  padding: 1.1rem 1.2rem;
+
+  h3 {
+    margin: 0 0 0.75rem;
+    font-size: 0.92rem;
+    font-weight: 600;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  td {
+    padding: 0.32rem 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.85rem;
+  }
+
+  tr:last-child td {
+    border-bottom: none;
+  }
+
+  &__key {
+    max-width: 0;
+    width: 78%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-2);
+  }
+
+  &__count {
+    text-align: right;
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.list {
+  width: 100%;
+  border-collapse: collapse;
+
+  th {
+    text-align: left;
+    color: var(--text-3);
+    font-weight: 500;
+    font-size: 0.78rem;
+    letter-spacing: 0.02em;
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  td {
+    padding: 0.6rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.87rem;
+    color: var(--text-2);
+  }
+
+  tbody tr {
+    transition: background var(--transition);
+
+    &:hover {
+      background: var(--surface);
+    }
+  }
+}
+
+.card-table {
+  @include card;
+  overflow: hidden;
+
+  .list th:first-child,
+  .list td:first-child {
+    padding-left: 1.1rem;
+  }
+  .list th:last-child,
+  .list td:last-child {
+    padding-right: 1.1rem;
+  }
+}
+
+.ellipsis {
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.embed {
+  font-size: 0.78rem;
+  color: var(--text-3);
+  word-break: break-all;
+}
+
+.row-actions {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+.empty {
+  @include card;
+  padding: 2.5rem;
+  text-align: center;
+  color: var(--text-3);
+}
+
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  margin: 0 0 1.5rem;
+}
+
+.tab {
+  background: none;
+  border: none;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 500;
+  padding: 0.6rem 0.9rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color var(--transition), border-color var(--transition);
+
+  &:hover {
+    color: var(--text);
+  }
+
+  &--active {
+    color: var(--brand-2);
+    border-bottom-color: var(--brand);
+  }
+}
+
+@media (max-width: $bp-md) {
+  .breakdowns {
+    grid-template-columns: 1fr;
+  }
+}

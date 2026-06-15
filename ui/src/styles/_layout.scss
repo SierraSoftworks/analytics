@@ -1,0 +1,43 @@
+// Structural chrome: the signed-in shell (app bar row, sidebar + main columns,
+// content column, footer). Component-specific styling lives in its own partial.
+@use 'variables' as *;
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+// Two-column body: sidebar + main.
+.app-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  align-items: start;
+  min-height: 0;
+}
+
+.app-main {
+  min-width: 0;
+}
+
+.app-content {
+  max-width: var(--content-max);
+  padding: 1.75rem 2.25rem 4rem;
+}
+
+.app-footer {
+  padding: 1.5rem 2.25rem;
+  font-size: 0.78rem;
+  color: var(--text-3);
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: $bp-sm) {
+  .app-body {
+    grid-template-columns: 1fr;
+  }
+  .app-content {
+    padding: 1.25rem 1.25rem 3rem;
+  }
+}

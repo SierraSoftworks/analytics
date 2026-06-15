@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "analytics-smoke",
+      "runtimeExecutable": "./target/debug/analytics",
+      "runtimeArgs": ["--config", "target/smoke/config.yaml"],
+      "port": 8099,
+      "autoPort": false
+    }
+  ]
+}

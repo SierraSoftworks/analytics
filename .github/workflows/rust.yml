@@ -33,6 +33,66 @@ jobs:
           name: cargofile
           path: Cargo.toml
 
+  ui:
+    name: Build UI
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install Trunk
+        run: cargo binstall --no-confirm trunk
+
+      - name: Setup Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build UI
+        working-directory: ui
+        run: trunk build --release
+
+      - name: Upload UI bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/dist
+
+  tracker:
+    name: Build Tracker
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tracker/package-lock.json
+
+      - name: Install dependencies
+        working-directory: tracker
+        run: npm ci
+
+      - name: Test
+        working-directory: tracker
+        run: npm test
+
+      - name: Build
+        working-directory: tracker
+        run: npm run build
+
+      - name: Upload tracker bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: tracker-dist
+          path: tracker/dist
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -48,6 +108,9 @@ jobs:
         uses: SierraSoftworks/setup-grcov@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Run tests
         run: cargo test --no-fail-fast
@@ -70,6 +133,8 @@ jobs:
 
     needs:
       - version
+      - ui
+      - tracker
 
     strategy:
       matrix:
@@ -117,6 +182,8 @@ jobs:
 
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Check out code
         uses: actions/checkout@v6
@@ -125,6 +192,18 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: cargofile
+
+      - name: Fetch UI bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/dist
+
+      - name: Fetch tracker bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: tracker-dist
+          path: tracker/dist
 
       - name: Install Cross
         if: matrix.builder == 'cross'
@@ -140,15 +219,15 @@ jobs:
         uses: SierraSoftworks/gh-releases@v1.0.9
         if: github.event_name == 'release'
         with:
-          files: "target/${{ matrix.target }}/release/github-backup${{ matrix.extension }} | github-backup-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}"
+          files: "target/${{ matrix.target }}/release/analytics${{ matrix.extension }} | analytics-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}"
           token: ${{ secrets.GITHUB_TOKEN }}
           overwrite: "true"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: github-backup-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}
-          path: target/${{ matrix.target }}/release/github-backup${{ matrix.extension }}
+          name: analytics-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}
+          path: target/${{ matrix.target }}/release/analytics${{ matrix.extension }}
 
   docker-build:
     name: Docker Build
@@ -205,11 +284,11 @@ jobs:
       - name: Pull in platform artifact
         uses: actions/download-artifact@v8
         with:
-          name: github-backup-${{ env.PLATFORM_PAIR }}
+          name: analytics-${{ env.PLATFORM_PAIR }}
 
       - name: mark artifact as executable
         run: |
-          chmod +x github-backup
+          chmod +x analytics
 
       - name: Build and push by digest
         id: build
@@ -218,7 +297,7 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=${{ env.FULL_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true,annotation-index.org.opencontainers.image.description=Backup your GitHub repositories and releases automatically
+          outputs: type=image,name=${{ env.FULL_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true,annotation-index.org.opencontainers.image.description=Lightweight, privacy-preserving analytics for your websites and applications
 
       - name: Export digest
         run: |

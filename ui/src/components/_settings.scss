@@ -1,0 +1,76 @@
+// The Settings page: cards, key/value rows, and the copyable install snippet
+// (see pages/settings.rs).
+@use '../styles/variables' as *;
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  max-width: 760px;
+}
+
+.settings-card {
+  @include card;
+  padding: 1.25rem 1.4rem;
+
+  &__title {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0 0 0.25rem;
+  }
+
+  &__desc {
+    margin: 0 0 1rem;
+    font-size: 0.85rem;
+    color: var(--text-3);
+  }
+
+  &--danger {
+    border-color: var(--danger-soft);
+  }
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 0.55rem 1rem;
+  font-size: 0.88rem;
+
+  &__key {
+    color: var(--text-3);
+  }
+  &__val {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    word-break: break-word;
+  }
+}
+
+.snippet {
+  position: relative;
+  margin: 0;
+  padding: 0.9rem 1rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--text-2);
+  overflow-x: auto;
+  white-space: pre;
+
+  &__copy {
+    position: absolute;
+    top: 0.55rem;
+    right: 0.55rem;
+  }
+}
+
+@media (max-width: $bp-sm) {
+  .kv {
+    grid-template-columns: 1fr;
+    gap: 0.15rem 0;
+    margin-bottom: 0.5rem;
+  }
+}
