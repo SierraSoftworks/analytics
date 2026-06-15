@@ -1,0 +1,69 @@
+// Statistic cards and the time-series chart panel (see components/widgets.rs).
+@use '../styles/variables' as *;
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+}
+
+.stat {
+  @include card;
+  padding: 1.1rem 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  transition: border-color var(--transition);
+
+  &__label {
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--text-3);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  &__value {
+    font-size: 1.85rem;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+
+  &__suffix {
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: var(--text-3);
+    margin-left: 0.15rem;
+  }
+}
+
+.panel {
+  @include card;
+  padding: 1.1rem 1.2rem;
+  margin-top: 1.25rem;
+}
+
+.chart {
+  width: 100%;
+  height: 180px;
+  display: block;
+
+  .bar {
+    fill: var(--brand);
+    opacity: 0.8;
+    transition: opacity var(--transition);
+
+    &:hover {
+      opacity: 1;
+    }
+  }
+}
+
+@media (max-width: $bp-md) {
+  .stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

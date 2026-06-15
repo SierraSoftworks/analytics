@@ -6,6 +6,7 @@ use yew::prelude::*;
 
 use crate::api::ApiError;
 use crate::app::AuthHandle;
+use crate::components::{Alert, AlertKind};
 
 #[derive(Properties, PartialEq)]
 pub struct ApiErrorAlertProps {
@@ -20,18 +21,22 @@ pub fn api_error_alert(props: &ApiErrorAlertProps) -> Html {
     {
         let relogin = auth.as_ref().map(|a| a.relogin.clone());
         use_effect_with(unauthorized, move |&unauthorized| {
-            if unauthorized {
-                if let Some(relogin) = relogin {
-                    relogin.emit(());
-                }
+            if unauthorized && let Some(relogin) = relogin {
+                relogin.emit(());
             }
             || ()
         });
     }
 
     if unauthorized {
-        html! { <p class="muted">{ "Your session expired. Returning to sign in…" }</p> }
+        html! {
+            <Alert kind={AlertKind::Info} title="Your session expired"
+                message="Returning you to sign in…" />
+        }
     } else {
-        html! { <div class="alert alert--error">{ props.error.to_string() }</div> }
+        html! {
+            <Alert kind={AlertKind::Error} title="Something went wrong"
+                message={AttrValue::from(props.error.to_string())} />
+        }
     }
 }

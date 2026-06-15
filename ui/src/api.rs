@@ -8,8 +8,8 @@
 use std::cell::RefCell;
 
 use analytics_api::{
-    AdminUser, CsrfToken, ExceptionGroup, ExceptionGroupDetail, Overview, Pixel, PixelInput,
-    Project, ProjectInput, Source, SourceInput, Stats, TriageInput,
+    AdminUser, CsrfToken, ExceptionGroup, ExceptionGroupDetail, GlobalException, Instance, Overview,
+    Pixel, PixelInput, Project, ProjectInput, Source, SourceInput, Stats, TriageInput,
 };
 use gloo_net::http::Request;
 use serde::Serialize;
@@ -174,6 +174,15 @@ pub async fn overview(range: &str) -> Result<Overview, ApiError> {
     get_json(&format!("/overview?{range}")).await
 }
 
+pub async fn instance() -> Result<Instance, ApiError> {
+    get_json("/instance").await
+}
+
+/// Every pixel across all projects (for the global Tracking Pixels page).
+pub async fn list_all_pixels() -> Result<Vec<Pixel>, ApiError> {
+    get_json("/pixels").await
+}
+
 pub async fn list_projects() -> Result<Vec<Project>, ApiError> {
     get_json("/projects").await
 }
@@ -202,16 +211,12 @@ pub async fn update_source(uri: &str, input: &SourceInput) -> Result<Source, Api
     put_json(&format!("/sources?uri={}", enc(uri)), input).await
 }
 
-pub async fn delete_source(uri: &str) -> Result<(), ApiError> {
-    delete(&format!("/sources?uri={}", enc(uri))).await
-}
-
-pub async fn list_pixels(project_id: &str) -> Result<Vec<Pixel>, ApiError> {
-    get_json(&format!("/projects/{}/pixels", enc(project_id))).await
-}
-
 pub async fn create_pixel(project_id: &str, input: &PixelInput) -> Result<Pixel, ApiError> {
     post_json(&format!("/projects/{}/pixels", enc(project_id)), input).await
+}
+
+pub async fn update_pixel(id: &str, input: &PixelInput) -> Result<Pixel, ApiError> {
+    put_json(&format!("/pixels/{}", enc(id)), input).await
 }
 
 pub async fn delete_pixel(id: &str) -> Result<(), ApiError> {
@@ -220,6 +225,11 @@ pub async fn delete_pixel(id: &str) -> Result<(), ApiError> {
 
 pub async fn list_exceptions(project_id: &str, range: &str) -> Result<Vec<ExceptionGroup>, ApiError> {
     get_json(&format!("/projects/{}/exceptions?{range}", enc(project_id))).await
+}
+
+/// Exception groups across every project (and unassigned sources).
+pub async fn list_all_exceptions(range: &str) -> Result<Vec<GlobalException>, ApiError> {
+    get_json(&format!("/exceptions?{range}")).await
 }
 
 pub async fn exception_detail(

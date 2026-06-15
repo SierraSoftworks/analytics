@@ -3,7 +3,7 @@ name = "analytics-ui"
 description = "Client-side-rendered Yew dashboard for the analytics service."
 version = "0.1.0"
 authors = ["Benjamin Pannell <benjamin@pannell.dev>"]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 repository = "https://github.com/SierraSoftworks/analytics"
 publish = false
@@ -27,9 +27,14 @@ js-sys = "0.3"
 web-sys = { version = "0.3", features = [
     "Window",
     "Location",
+    "Navigator",
+    "Clipboard",
     "Event",
     "EventTarget",
     "InputEvent",
+    "Element",
+    "DomRect",
+    "HtmlElement",
     "HtmlInputElement",
     "HtmlSelectElement",
 ] }

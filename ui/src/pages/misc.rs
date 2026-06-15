@@ -19,16 +19,16 @@ pub fn login() -> Html {
     // the configuration requirement instead of offering a dead-end button.
     if oidc_disabled() {
         return html! {
-            <div class="centered">
-                <h1>{ "Sign-in unavailable" }</h1>
-                <p class="muted">
-                    { "This server has no identity provider configured, so it cannot sign you in." }
-                </p>
-                <p class="muted">
-                    { "To run without OIDC, set an allow-expression admin ACL (e.g. " }
-                    <code>{ "acl: \"true\"" }</code>
-                    { ") so the dashboard is reachable without authentication." }
-                </p>
+            <div class="center-screen">
+                <div class="auth-card">
+                    <h1>{ "Sign-in unavailable" }</h1>
+                    <p>{ "This server has no identity provider configured, so it cannot sign you in." }</p>
+                    <p>
+                        { "To run without OIDC, set an allow-all admin ACL (" }
+                        <code>{ "acl: \"true\"" }</code>
+                        { ") so the dashboard is reachable without authentication." }
+                    </p>
+                </div>
             </div>
         };
     }
@@ -42,10 +42,12 @@ pub fn login() -> Html {
         })
     };
     html! {
-        <div class="centered">
-            <h1>{ "Sign in" }</h1>
-            <p class="muted">{ "Authentication is required to view the dashboard." }</p>
-            <button class="btn btn--primary" {onclick}>{ "Sign in" }</button>
+        <div class="center-screen">
+            <div class="auth-card">
+                <h1>{ "Sign in" }</h1>
+                <p>{ "Authentication is required to view the dashboard." }</p>
+                <button class="btn btn--primary" {onclick}>{ "Sign in with your identity provider" }</button>
+            </div>
         </div>
     }
 }
@@ -53,9 +55,11 @@ pub fn login() -> Html {
 #[function_component(NotFound)]
 pub fn not_found() -> Html {
     html! {
-        <div class="centered">
-            <h1>{ "404" }</h1>
-            <p class="muted">{ "That page could not be found." }</p>
+        <div class="center-screen">
+            <div class="auth-card">
+                <h1>{ "404" }</h1>
+                <p>{ "That page could not be found." }</p>
+            </div>
         </div>
     }
 }
