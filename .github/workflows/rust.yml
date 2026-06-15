@@ -189,13 +189,13 @@ jobs:
           name: cargofile
 
       - name: Fetch UI bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ui-dist
           path: ui/dist
 
       - name: Fetch tracker bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: tracker-dist
           path: tracker/dist
