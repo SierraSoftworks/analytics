@@ -13,5 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: release-drafter/release-drafter@v7.1.1
+        with:
+          # On pull requests, only run the autolabeler — don't try to write the
+          # draft release. Updating a release with the PR merge ref as
+          # `target_commitish` (refs/pull/N/merge) is rejected by the GitHub API.
+          disable-releaser: ${{ github.event_name == 'pull_request' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
