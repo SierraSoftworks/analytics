@@ -58,7 +58,7 @@ jobs:
         run: trunk build --release
 
       - name: Upload UI bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-dist
           path: ui/dist
@@ -88,7 +88,7 @@ jobs:
         run: npm run build
 
       - name: Upload tracker bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tracker-dist
           path: tracker/dist
