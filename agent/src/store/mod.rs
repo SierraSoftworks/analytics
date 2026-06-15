@@ -54,20 +54,27 @@ impl Store {
 /// Touch every table so it exists for later read transactions.
 fn ensure_tables(db: &Database) -> Result<()> {
     let txn = db.begin_write().or_system_err(tables::OPEN_ADVICE)?;
-    txn.open_table(tables::EVENTS).or_system_err(tables::OPEN_ADVICE)?;
-    txn.open_table(tables::PROJECTS).or_system_err(tables::OPEN_ADVICE)?;
-    txn.open_table(tables::SOURCES).or_system_err(tables::OPEN_ADVICE)?;
-    txn.open_table(tables::PIXELS).or_system_err(tables::OPEN_ADVICE)?;
+    txn.open_table(tables::EVENTS)
+        .or_system_err(tables::OPEN_ADVICE)?;
+    txn.open_table(tables::PROJECTS)
+        .or_system_err(tables::OPEN_ADVICE)?;
+    txn.open_table(tables::SOURCES)
+        .or_system_err(tables::OPEN_ADVICE)?;
+    txn.open_table(tables::PIXELS)
+        .or_system_err(tables::OPEN_ADVICE)?;
     txn.open_table(tables::EXCEPTION_TRIAGE)
         .or_system_err(tables::OPEN_ADVICE)?;
-    txn.open_table(tables::META).or_system_err(tables::OPEN_ADVICE)?;
+    txn.open_table(tables::META)
+        .or_system_err(tables::OPEN_ADVICE)?;
     txn.commit().or_system_err(tables::OPEN_ADVICE)?;
     Ok(())
 }
 
 fn read_next_seq(db: &Database) -> Result<u64> {
     let txn = db.begin_read().or_system_err(tables::OPEN_ADVICE)?;
-    let table = txn.open_table(tables::META).or_system_err(tables::OPEN_ADVICE)?;
+    let table = txn
+        .open_table(tables::META)
+        .or_system_err(tables::OPEN_ADVICE)?;
     match table
         .get(tables::META_NEXT_SEQ)
         .or_system_err(tables::STORAGE_ADVICE)?
@@ -166,7 +173,9 @@ mod tests {
         store
             .append_events(&[event("https://a.com", 1000), event("https://b.com", 2000)])
             .unwrap();
-        store.append_events(&[event("https://a.com", 3000)]).unwrap();
+        store
+            .append_events(&[event("https://a.com", 3000)])
+            .unwrap();
         assert_eq!(store.event_count().unwrap(), 3);
         let all = store.all_events().unwrap();
         assert_eq!(all.len(), 3);
@@ -176,12 +185,14 @@ mod tests {
 
     #[test]
     fn sequence_is_monotonic_across_reopen() {
-        let path = std::env::temp_dir()
-            .join(format!("analytics-test-{}-reopen.redb", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("analytics-test-{}-reopen.redb", std::process::id()));
         let _ = std::fs::remove_file(&path);
         {
             let store = Store::open(&path).unwrap();
-            store.append_events(&[event("https://a.com", 1000)]).unwrap();
+            store
+                .append_events(&[event("https://a.com", 1000)])
+                .unwrap();
         }
         let reopened = Store::open(&path).unwrap();
         assert!(reopened.next_seq.load(Ordering::SeqCst) >= 1);
@@ -221,7 +232,12 @@ mod tests {
             .unwrap();
         assert_eq!(updated.unwrap().project_id.as_deref(), Some("p1"));
         assert_eq!(
-            store.get_source("https://a.com").unwrap().unwrap().project_id.as_deref(),
+            store
+                .get_source("https://a.com")
+                .unwrap()
+                .unwrap()
+                .project_id
+                .as_deref(),
             Some("p1")
         );
 
@@ -271,7 +287,14 @@ mod tests {
 
         assert!(store.delete_project_cascade("p1").unwrap());
         assert!(store.get_project("p1").unwrap().is_none());
-        assert_eq!(store.get_source("https://a.com").unwrap().unwrap().project_id, None);
+        assert_eq!(
+            store
+                .get_source("https://a.com")
+                .unwrap()
+                .unwrap()
+                .project_id,
+            None
+        );
         assert!(store.get_pixel("px1").unwrap().is_none());
         // A second source not on the project is left untouched; unknown id -> false.
         assert!(!store.delete_project_cascade("nope").unwrap());
@@ -282,8 +305,10 @@ mod tests {
         let store = temp_store();
         let events = vec![event("https://a.com", 1000), event("pixel://01HX", 2000)];
         store.append_events(&events).unwrap();
-        let path = std::env::temp_dir()
-            .join(format!("analytics-test-{}-part.parquet", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "analytics-test-{}-part.parquet",
+            std::process::id()
+        ));
         super::write_partition(&events, &path).unwrap();
         let df = super::read_partition(&path).unwrap();
         assert_eq!(df.height(), 2);

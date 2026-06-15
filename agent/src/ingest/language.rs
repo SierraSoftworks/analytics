@@ -19,7 +19,10 @@ mod tests {
 
     #[test]
     fn extracts_primary_language() {
-        assert_eq!(primary_language("en-US,en;q=0.9,fr;q=0.8").as_deref(), Some("en"));
+        assert_eq!(
+            primary_language("en-US,en;q=0.9,fr;q=0.8").as_deref(),
+            Some("en")
+        );
         assert_eq!(primary_language("de").as_deref(), Some("de"));
         assert_eq!(primary_language("*").as_deref(), None);
         assert_eq!(primary_language("").as_deref(), None);

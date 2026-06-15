@@ -42,11 +42,7 @@ pub fn spawn(store: Arc<Store>, storage: StorageConfig) -> Ingest {
     Ingest { tx }
 }
 
-async fn writer_loop(
-    store: Arc<Store>,
-    mut rx: mpsc::Receiver<StoredEvent>,
-    max_sources: usize,
-) {
+async fn writer_loop(store: Arc<Store>, mut rx: mpsc::Receiver<StoredEvent>, max_sources: usize) {
     // Track already-registered sources in memory to avoid a store hit per event;
     // seed it once from the persisted sources.
     let mut known_sources: HashSet<String> = {

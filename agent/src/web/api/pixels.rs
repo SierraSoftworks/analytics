@@ -13,8 +13,10 @@ pub async fn list(state: web::Data<AppState>, path: web::Path<String>) -> HttpRe
     let project_id = path.into_inner();
     match state.store.list_pixels() {
         Ok(pixels) => {
-            let mut pixels: Vec<Pixel> =
-                pixels.into_iter().filter(|p| p.project_id == project_id).collect();
+            let mut pixels: Vec<Pixel> = pixels
+                .into_iter()
+                .filter(|p| p.project_id == project_id)
+                .collect();
             pixels.sort_by_key(|p| p.name.to_lowercase());
             HttpResponse::Ok().json(pixels)
         }

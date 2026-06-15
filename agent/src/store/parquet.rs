@@ -67,7 +67,10 @@ pub fn write_partition(events: &[StoredEvent], path: &Path) -> Result<()> {
     }
     let mut df = build_dataframe(events).or_system_err(STORAGE_ADVICE)?;
 
-    let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let tmp = path.with_file_name(format!("{file_name}.tmp"));
     {
         let file = std::fs::File::create(&tmp).or_system_err(STORAGE_ADVICE)?;
@@ -83,5 +86,7 @@ pub fn write_partition(events: &[StoredEvent], path: &Path) -> Result<()> {
 /// queries).
 pub fn read_partition(path: &Path) -> Result<DataFrame> {
     let file = std::fs::File::open(path).or_system_err(STORAGE_ADVICE)?;
-    ParquetReader::new(file).finish().or_system_err(STORAGE_ADVICE)
+    ParquetReader::new(file)
+        .finish()
+        .or_system_err(STORAGE_ADVICE)
 }

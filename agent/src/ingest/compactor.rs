@@ -134,7 +134,12 @@ mod tests {
     fn temp(suffix: &str) -> std::path::PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        std::env::temp_dir().join(format!("analytics-compact-{}-{}-{}", std::process::id(), n, suffix))
+        std::env::temp_dir().join(format!(
+            "analytics-compact-{}-{}-{}",
+            std::process::id(),
+            n,
+            suffix
+        ))
     }
 
     fn event(received_ms: i64) -> StoredEvent {

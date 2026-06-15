@@ -20,23 +20,24 @@ const MAX_TRACK_BODY: usize = 16 * 1024;
 
 /// Register `/tracker.js` and the CORS-enabled `/track/*` endpoints.
 pub fn configure(cfg: &mut web::ServiceConfig) {
-    cfg.route("/tracker.js", web::get().to(tracker::tracker_js)).service(
-        // Beacons are sent cross-origin from tracked sites. Hits and exceptions are
-        // posted as `text/plain` so they are CORS "simple requests" (no preflight) and
-        // can be sent with `mode: "no-cors"`; `beacon_json_config` makes the JSON
-        // extractor accept that content type. The `/ping` GET still needs CORS to
-        // expose its JSON response to the page, so the scope stays permissively
-        // CORS-enabled. No credentials are involved. Rate limiting runs as middleware
-        // so over-limit requests are rejected before their bodies are read/parsed.
-        web::scope("/track")
-            .app_data(beacon_json_config())
-            .wrap(from_fn(rate_limit))
-            .wrap(Cors::permissive())
-            .route("/ping", web::get().to(ping::ping))
-            .route("/hit", web::post().to(hit::hit))
-            .route("/exception", web::post().to(exception::exception))
-            .route("/gif/{id}", web::get().to(gif::gif)),
-    );
+    cfg.route("/tracker.js", web::get().to(tracker::tracker_js))
+        .service(
+            // Beacons are sent cross-origin from tracked sites. Hits and exceptions are
+            // posted as `text/plain` so they are CORS "simple requests" (no preflight) and
+            // can be sent with `mode: "no-cors"`; `beacon_json_config` makes the JSON
+            // extractor accept that content type. The `/ping` GET still needs CORS to
+            // expose its JSON response to the page, so the scope stays permissively
+            // CORS-enabled. No credentials are involved. Rate limiting runs as middleware
+            // so over-limit requests are rejected before their bodies are read/parsed.
+            web::scope("/track")
+                .app_data(beacon_json_config())
+                .wrap(from_fn(rate_limit))
+                .wrap(Cors::permissive())
+                .route("/ping", web::get().to(ping::ping))
+                .route("/hit", web::post().to(hit::hit))
+                .route("/exception", web::post().to(exception::exception))
+                .route("/gif/{id}", web::get().to(gif::gif)),
+        );
 }
 
 /// JSON body configuration for the beacon endpoints. Caps the body well below actix's

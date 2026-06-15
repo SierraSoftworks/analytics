@@ -37,8 +37,11 @@ pub async fn list_all(state: web::Data<AppState>, query: web::Query<StatsQuery>)
         for pixel in store.list_pixels()? {
             uri_project.insert(pixel_source(&pixel.id), pixel.project_id);
         }
-        let project_names: HashMap<String, String> =
-            store.list_projects()?.into_iter().map(|p| (p.id, p.name)).collect();
+        let project_names: HashMap<String, String> = store
+            .list_projects()?
+            .into_iter()
+            .map(|p| (p.id, p.name))
+            .collect();
 
         // Fold per-(fingerprint, source) rows up to per-(fingerprint, project) rows
         // so a project's count matches its detail page. Unassigned sources are keyed
@@ -57,7 +60,12 @@ pub async fn list_all(state: web::Data<AppState>, query: web::Query<StatsQuery>)
                     g.last_seen_ms = g.last_seen_ms.max(group.last_seen_ms);
                 }
                 Entry::Vacant(e) => {
-                    e.insert(GlobalException { group, project_id, project_name: None, source });
+                    e.insert(GlobalException {
+                        group,
+                        project_id,
+                        project_name: None,
+                        source,
+                    });
                 }
             }
         }
@@ -83,7 +91,10 @@ pub async fn list_all(state: web::Data<AppState>, query: web::Query<StatsQuery>)
         Ok(Err(err)) => internal_error(err),
         Err(err) => {
             error!("global exception listing task failed: {err}");
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to load exceptions.")
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to load exceptions.",
+            )
         }
     }
 }
@@ -117,7 +128,10 @@ pub async fn list(
         Ok(Err(err)) => internal_error(err),
         Err(err) => {
             error!("exception listing task failed: {err}");
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to load exceptions.")
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to load exceptions.",
+            )
         }
     }
 }
@@ -143,26 +157,28 @@ pub async fn detail(
     let store = state.store.clone();
     let parquet_dir = state.config.storage.parquet_dir.clone();
 
-    let result = web::block(move || -> crate::errors::Result<Option<ExceptionGroupDetail>> {
-        let sources = analytics::project_source_uris(&store, &project_id)?;
-        let Some((mut group, occurrences)) = analytics::exception_detail(
-            &store,
-            &parquet_dir,
-            &sources,
-            &group_id,
-            from,
-            to,
-            OCCURRENCE_LIMIT,
-        )?
-        else {
-            return Ok(None);
-        };
-        if let Some(triage) = store.get_triage(&project_id, &group_id)? {
-            group.status = triage.status;
-            group.note = triage.note;
-        }
-        Ok(Some(ExceptionGroupDetail { group, occurrences }))
-    })
+    let result = web::block(
+        move || -> crate::errors::Result<Option<ExceptionGroupDetail>> {
+            let sources = analytics::project_source_uris(&store, &project_id)?;
+            let Some((mut group, occurrences)) = analytics::exception_detail(
+                &store,
+                &parquet_dir,
+                &sources,
+                &group_id,
+                from,
+                to,
+                OCCURRENCE_LIMIT,
+            )?
+            else {
+                return Ok(None);
+            };
+            if let Some(triage) = store.get_triage(&project_id, &group_id)? {
+                group.status = triage.status;
+                group.note = triage.note;
+            }
+            Ok(Some(ExceptionGroupDetail { group, occurrences }))
+        },
+    )
     .await;
 
     match result {
@@ -171,7 +187,10 @@ pub async fn detail(
         Ok(Err(err)) => internal_error(err),
         Err(err) => {
             error!("exception detail task failed: {err}");
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to load the exception.")
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to load the exception.",
+            )
         }
     }
 }
@@ -197,7 +216,10 @@ pub async fn triage(
         updated_by,
     };
 
-    match state.store.put_triage(&input.project_id, &group_id, &triage) {
+    match state
+        .store
+        .put_triage(&input.project_id, &group_id, &triage)
+    {
         Ok(()) => HttpResponse::NoContent().finish(),
         Err(err) => internal_error(err),
     }

@@ -22,7 +22,10 @@ pub async fn overview(state: web::Data<AppState>, query: web::Query<StatsQuery>)
         Ok(Err(err)) => internal_error(err),
         Err(err) => {
             error!("overview computation task failed: {err}");
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to compute the overview.")
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to compute the overview.",
+            )
         }
     }
 }

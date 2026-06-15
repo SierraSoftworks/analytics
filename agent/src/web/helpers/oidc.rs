@@ -28,7 +28,17 @@ const ADVICE_REAUTH: &[&str] = &["Sign in again to obtain a fresh session."];
 
 /// JWT claims carrying protocol semantics, hidden from the ACL filter.
 const EXCLUDED_CLAIMS: &[&str] = &[
-    "exp", "nbf", "iat", "iss", "aud", "jti", "nonce", "at_hash", "c_hash", "azp", "auth_time",
+    "exp",
+    "nbf",
+    "iat",
+    "iss",
+    "aud",
+    "jti",
+    "nonce",
+    "at_hash",
+    "c_hash",
+    "azp",
+    "auth_time",
 ];
 
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60);
@@ -98,7 +108,10 @@ pub fn generate_pkce() -> PkcePair {
         uuid::Uuid::new_v4().simple()
     );
     let challenge = base64url(Sha256::digest(verifier.as_bytes()).as_slice());
-    PkcePair { verifier, challenge }
+    PkcePair {
+        verifier,
+        challenge,
+    }
 }
 
 /// Generate an opaque random token for use as OAuth `state` or a CSRF token.
@@ -181,7 +194,10 @@ fn json_to_filter_value(value: &serde_json::Value) -> FilterValue<'static> {
     match value {
         serde_json::Value::Null => FilterValue::Null,
         serde_json::Value::Bool(b) => FilterValue::Bool(*b),
-        serde_json::Value::Number(n) => n.as_f64().map(FilterValue::Number).unwrap_or(FilterValue::Null),
+        serde_json::Value::Number(n) => n
+            .as_f64()
+            .map(FilterValue::Number)
+            .unwrap_or(FilterValue::Null),
         serde_json::Value::String(s) => FilterValue::String(Cow::Owned(s.clone())),
         serde_json::Value::Array(items) => {
             FilterValue::Tuple(items.iter().map(json_to_filter_value).collect())
@@ -207,12 +223,21 @@ pub async fn discovery(
         .get(&url)
         .send()
         .await
-        .wrap_system_err("Failed to fetch the OIDC discovery document.", ADVICE_PROVIDER)?
+        .wrap_system_err(
+            "Failed to fetch the OIDC discovery document.",
+            ADVICE_PROVIDER,
+        )?
         .error_for_status()
-        .wrap_system_err("The OIDC provider returned an error for its discovery document.", ADVICE_PROVIDER)?
+        .wrap_system_err(
+            "The OIDC provider returned an error for its discovery document.",
+            ADVICE_PROVIDER,
+        )?
         .json()
         .await
-        .wrap_system_err("Failed to parse the OIDC discovery document.", ADVICE_PROVIDER)?;
+        .wrap_system_err(
+            "Failed to parse the OIDC discovery document.",
+            ADVICE_PROVIDER,
+        )?;
     cache.store_discovery(document.clone());
     Ok(document)
 }
@@ -225,9 +250,15 @@ async fn fetch_jwks(
     http.get(&discovery.jwks_uri)
         .send()
         .await
-        .wrap_system_err("Failed to fetch the OIDC signing keys (JWKS).", ADVICE_PROVIDER)?
+        .wrap_system_err(
+            "Failed to fetch the OIDC signing keys (JWKS).",
+            ADVICE_PROVIDER,
+        )?
         .error_for_status()
-        .wrap_system_err("The OIDC provider returned an error for its signing keys.", ADVICE_PROVIDER)?
+        .wrap_system_err(
+            "The OIDC provider returned an error for its signing keys.",
+            ADVICE_PROVIDER,
+        )?
         .json()
         .await
         .wrap_system_err("Failed to parse the OIDC signing keys.", ADVICE_PROVIDER)
@@ -281,8 +312,10 @@ fn verify_token(
     key_set: &jsonwebtoken::jwk::JwkSet,
     token: &str,
 ) -> Result<serde_json::Map<String, serde_json::Value>> {
-    let header = jsonwebtoken::decode_header(token)
-        .wrap_user_err("The admin session token could not be decoded.", ADVICE_REAUTH)?;
+    let header = jsonwebtoken::decode_header(token).wrap_user_err(
+        "The admin session token could not be decoded.",
+        ADVICE_REAUTH,
+    )?;
 
     // Reject symmetric algorithms to prevent algorithm-confusion attacks against
     // the asymmetric keys published via JWKS.
@@ -299,10 +332,16 @@ fn verify_token(
     }
 
     let kid = header.kid.ok_or_else(|| {
-        human_errors::user("The admin session token does not identify a signing key.", ADVICE_REAUTH)
+        human_errors::user(
+            "The admin session token does not identify a signing key.",
+            ADVICE_REAUTH,
+        )
     })?;
     let jwk = key_set.find(&kid).ok_or_else(|| {
-        human_errors::user("The admin session token was signed with an unknown key.", ADVICE_REAUTH)
+        human_errors::user(
+            "The admin session token was signed with an unknown key.",
+            ADVICE_REAUTH,
+        )
     })?;
     let decoding_key = jsonwebtoken::DecodingKey::from_jwk(jwk).wrap_system_err(
         "Failed to construct a verification key from the provider's JWKS.",
@@ -347,7 +386,10 @@ pub async fn exchange_code(
         .form(&params)
         .send()
         .await
-        .wrap_system_err("Failed to exchange the authorization code.", ADVICE_PROVIDER)?
+        .wrap_system_err(
+            "Failed to exchange the authorization code.",
+            ADVICE_PROVIDER,
+        )?
         .error_for_status()
         .wrap_user_err(
             "The OIDC provider rejected the authorization code exchange.",
@@ -355,7 +397,10 @@ pub async fn exchange_code(
         )?
         .json()
         .await
-        .wrap_system_err("Failed to parse the token response from the provider.", ADVICE_PROVIDER)?;
+        .wrap_system_err(
+            "Failed to parse the token response from the provider.",
+            ADVICE_PROVIDER,
+        )?;
     Ok(response.id_token)
 }
 
