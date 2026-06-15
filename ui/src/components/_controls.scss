@@ -1,0 +1,154 @@
+// Form primitives shared across the app: buttons, inputs, fields, and badges.
+@use '../styles/variables' as *;
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1;
+  min-height: 36px;
+  padding: 0.55rem 0.95rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--transition), background var(--transition),
+    border-color var(--transition), box-shadow var(--transition),
+    opacity var(--transition);
+
+  &:hover:not(:disabled) {
+    color: var(--text);
+    border-color: var(--brand-border);
+    background: var(--surface-3);
+  }
+
+  &:focus-visible {
+    @include focus-ring;
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  &--small {
+    font-size: 0.78rem;
+    min-height: 30px;
+    padding: 0.38rem 0.65rem;
+  }
+
+  &--primary {
+    color: #fff;
+    background: var(--brand-strong);
+    border-color: var(--brand-strong);
+
+    &:hover:not(:disabled) {
+      color: #fff;
+      background: var(--brand-strong-2);
+      border-color: var(--brand-strong-2);
+    }
+  }
+
+  &--ghost {
+    background: transparent;
+    border-color: transparent;
+
+    &:hover:not(:disabled) {
+      background: var(--surface-2);
+      border-color: var(--border);
+    }
+  }
+
+  &--danger {
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-color: transparent;
+
+    &:hover:not(:disabled) {
+      color: #fff;
+      background: var(--danger);
+      border-color: var(--danger);
+    }
+  }
+}
+
+.input,
+select.input {
+  font: inherit;
+  font-size: 0.85rem;
+  min-height: 36px;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  transition: border-color var(--transition), box-shadow var(--transition);
+
+  &::placeholder {
+    color: var(--text-4);
+  }
+
+  &:focus {
+    @include focus-ring;
+  }
+}
+
+select.input {
+  cursor: pointer;
+}
+
+.form-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 0.75rem 0 1.25rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+
+  &__label {
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--text-3);
+  }
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+
+  &--ok {
+    color: var(--ok);
+    background: var(--ok-soft);
+  }
+  &--warn {
+    color: var(--warn);
+    background: var(--warn-soft);
+  }
+  &--muted {
+    color: var(--text-3);
+    background: var(--info-soft);
+  }
+  &--brand {
+    color: var(--brand-2);
+    background: var(--brand-soft);
+  }
+}

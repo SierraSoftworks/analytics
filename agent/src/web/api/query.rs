@@ -10,7 +10,7 @@ pub struct StatsQuery {
     pub from: Option<i64>,
     /// Range end (epoch millis); defaults to now.
     pub to: Option<i64>,
-    /// Time-series bucket: `minute` | `hour` | `day` (default).
+    /// Time-series bucket: `minute` | `hour` | `6h` | `day` (default) | `week`.
     pub interval: Option<String>,
     /// Comma-separated subset of source URIs to filter to.
     pub sources: Option<String>,
@@ -24,6 +24,8 @@ pub fn resolve_range(query: &StatsQuery) -> (i64, i64, i64) {
     let bucket = match query.interval.as_deref() {
         Some("minute") => 60_000,
         Some("hour") => 3_600_000,
+        Some("6h") => 6 * 3_600_000,
+        Some("week") => 7 * DAY_MS,
         _ => DAY_MS,
     };
     (from, to, bucket)

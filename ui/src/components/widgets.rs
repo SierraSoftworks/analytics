@@ -6,6 +6,7 @@ pub struct MetricCardsProps {
     pub summary: MetricSummary,
 }
 
+/// The four headline metrics, rendered as Element-Plus-style statistic cards.
 #[function_component(MetricCards)]
 pub fn metric_cards(props: &MetricCardsProps) -> Html {
     let s = &props.summary;
@@ -19,22 +20,35 @@ pub fn metric_cards(props: &MetricCardsProps) -> Html {
         .unwrap_or_else(|| "—".to_string());
 
     html! {
-        <div class="cards">
-            { card(&s.visitors.to_string(), "Visitors") }
-            { card(&s.pageviews.to_string(), "Page views") }
-            { card(&bounce, "Bounce rate") }
-            { card(&duration, "Median time") }
+        <div class="stats">
+            { stat("Visitors", &group_thousands(s.visitors)) }
+            { stat("Page views", &group_thousands(s.pageviews)) }
+            { stat("Bounce rate", &bounce) }
+            { stat("Median time", &duration) }
         </div>
     }
 }
 
-fn card(value: &str, label: &str) -> Html {
+fn stat(label: &str, value: &str) -> Html {
     html! {
-        <div class="card">
-            <div class="card__value">{ value }</div>
-            <div class="card__label">{ label }</div>
+        <div class="stat">
+            <span class="stat__label">{ label }</span>
+            <span class="stat__value">{ value }</span>
         </div>
     }
+}
+
+/// Group an integer with thin thousands separators, e.g. `12,345`.
+fn group_thousands(n: i64) -> String {
+    let s = n.abs().to_string();
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    if n < 0 { format!("-{out}") } else { out }
 }
 
 fn format_duration(ms: i64) -> String {
@@ -59,18 +73,20 @@ pub fn time_series_chart(props: &TimeSeriesChartProps) -> Html {
 
     let max = points.iter().map(|p| p.pageviews).max().unwrap_or(1).max(1) as f64;
     let slot = 100.0 / points.len() as f64;
+    // Cap the bar width and centre it in its slot so a single (or few) data point(s)
+    // render as discrete bars rather than one block stretched across the whole chart.
+    const MAX_BAR: f64 = 7.0;
+    let bar_w = (slot * 0.8).min(MAX_BAR);
 
     let bars = points.iter().enumerate().map(|(i, p)| {
         let height = (p.pageviews as f64 / max) * 100.0;
-        let x = i as f64 * slot;
+        let x = i as f64 * slot + (slot - bar_w) / 2.0;
         html! {
-            <rect
-                class="bar"
+            <rect class="bar" rx="0.4"
                 x={format!("{:.3}", x)}
                 y={format!("{:.3}", 100.0 - height)}
-                width={format!("{:.3}", slot * 0.8)}
-                height={format!("{:.3}", height)}
-            >
+                width={format!("{:.3}", bar_w)}
+                height={format!("{:.3}", height)}>
                 <title>{ format!("{} views · {} visitors", p.pageviews, p.visitors) }</title>
             </rect>
         }
@@ -97,7 +113,7 @@ pub fn breakdown(props: &BreakdownProps) -> Html {
             if props.rows.is_empty() {
                 <p class="muted">{ "No data." }</p>
             } else {
-                <table>
+                <table aria-label={props.title.clone()}>
                     { for props.rows.iter().map(|row| html! {
                         <tr>
                             <td class="breakdown__key" title={row.key.clone()}>{ &row.key }</td>

@@ -1,8 +1,10 @@
 //! Exception groups (Sentry-style): per-project listing, group detail, and triage.
 
+use std::collections::HashMap;
+
 use actix_web::http::StatusCode;
 use actix_web::{HttpMessage, HttpRequest, HttpResponse, web};
-use analytics_api::{ExceptionGroupDetail, TriageInput};
+use analytics_api::{ExceptionGroupDetail, GlobalException, TriageInput, pixel_source};
 use chrono::Utc;
 use serde::Deserialize;
 use tracing_batteries::prelude::*;
@@ -14,6 +16,77 @@ use crate::state::AppState;
 use crate::store::ExceptionTriage;
 
 const OCCURRENCE_LIMIT: usize = 50;
+
+/// `GET /api/v1/exceptions` — exception groups across every project (and
+/// unassigned sources), each annotated with its project, for the global inbox.
+pub async fn list_all(state: web::Data<AppState>, query: web::Query<StatsQuery>) -> HttpResponse {
+    let (from, to, _) = resolve_range(&query);
+    let store = state.store.clone();
+    let parquet_dir = state.config.storage.parquet_dir.clone();
+
+    let result = web::block(move || -> crate::errors::Result<Vec<GlobalException>> {
+        let per_source = analytics::global_exception_groups(&store, &parquet_dir, from, to)?;
+
+        // Resolve a source URI to its owning project, and project ids to names.
+        let mut uri_project: HashMap<String, String> = HashMap::new();
+        for source in store.list_sources()? {
+            if let Some(project_id) = source.project_id {
+                uri_project.insert(source.uri, project_id);
+            }
+        }
+        for pixel in store.list_pixels()? {
+            uri_project.insert(pixel_source(&pixel.id), pixel.project_id);
+        }
+        let project_names: HashMap<String, String> =
+            store.list_projects()?.into_iter().map(|p| (p.id, p.name)).collect();
+
+        // Fold per-(fingerprint, source) rows up to per-(fingerprint, project) rows
+        // so a project's count matches its detail page. Unassigned sources are keyed
+        // by source so each stays its own row (no project to merge into).
+        use std::collections::hash_map::Entry;
+        let mut acc: HashMap<(String, String), GlobalException> = HashMap::new();
+        for (group, source) in per_source {
+            let project_id = uri_project.get(&source).cloned();
+            let bucket = project_id.clone().unwrap_or_else(|| format!("@{source}"));
+            let key = (group.group_id.clone(), bucket);
+            match acc.entry(key) {
+                Entry::Occupied(mut e) => {
+                    let g = &mut e.get_mut().group;
+                    g.count += group.count;
+                    g.first_seen_ms = g.first_seen_ms.min(group.first_seen_ms);
+                    g.last_seen_ms = g.last_seen_ms.max(group.last_seen_ms);
+                }
+                Entry::Vacant(e) => {
+                    e.insert(GlobalException { group, project_id, project_name: None, source });
+                }
+            }
+        }
+
+        let mut out: Vec<GlobalException> = Vec::with_capacity(acc.len());
+        for (_, mut item) in acc {
+            if let Some(pid) = &item.project_id {
+                if let Some(triage) = store.get_triage(pid, &item.group.group_id)? {
+                    item.group.status = triage.status;
+                    item.group.note = triage.note;
+                }
+                item.project_name = project_names.get(pid).cloned();
+            }
+            out.push(item);
+        }
+        out.sort_by_key(|e| std::cmp::Reverse(e.group.last_seen_ms));
+        Ok(out)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(groups)) => HttpResponse::Ok().json(groups),
+        Ok(Err(err)) => internal_error(err),
+        Err(err) => {
+            error!("global exception listing task failed: {err}");
+            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to load exceptions.")
+        }
+    }
+}
 
 /// `GET /api/v1/projects/{id}/exceptions` — grouped exceptions with triage status.
 pub async fn list(

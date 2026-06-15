@@ -1,0 +1,197 @@
+// The top app bar: brand mark, the unified search with autocomplete, and the
+// signed-in user chip (see components/app_bar.rs).
+@use '../styles/variables' as *;
+
+.app-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: var(--bar-h);
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 0 1.25rem;
+  background: rgba(14, 16, 20, 0.82);
+  backdrop-filter: saturate(160%) blur(10px);
+  border-bottom: 1px solid var(--border);
+
+  &__brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    width: calc(var(--sidebar-w) - 1.25rem);
+    flex-shrink: 0;
+    color: var(--text);
+
+    &:hover {
+      color: var(--text);
+    }
+
+    img {
+      height: 24px;
+      width: 24px;
+    }
+  }
+
+  &__brand-name {
+    font-weight: 600;
+    font-size: 1rem;
+    letter-spacing: -0.01em;
+  }
+
+  &__brand-by {
+    font-size: 0.72rem;
+    color: var(--text-3);
+  }
+
+  &__spacer {
+    flex: 1;
+  }
+
+  // Unified search field hosted in the app bar.
+  &__search {
+    position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    max-width: 30rem;
+    margin: 0 auto;
+  }
+
+  &__search-icon {
+    position: absolute;
+    left: 0.7rem;
+    display: inline-flex;
+    color: var(--text-4);
+    pointer-events: none;
+  }
+
+  &__search-input {
+    width: 100%;
+    font: inherit;
+    font-size: 0.86rem;
+    padding: 0.5rem 0.8rem 0.5rem 2.1rem;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text);
+    transition: border-color var(--transition), box-shadow var(--transition);
+
+    &::placeholder {
+      color: var(--text-4);
+    }
+    &:focus {
+      @include focus-ring;
+    }
+  }
+
+  &__suggestions {
+    position: absolute;
+    top: calc(100% + 0.4rem);
+    left: 0;
+    right: 0;
+    z-index: 40;
+    margin: 0;
+    padding: 0.3rem;
+    list-style: none;
+    background: var(--overlay);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
+    max-height: 22rem;
+    overflow-y: auto;
+  }
+
+  &__suggestion {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+
+    &--active {
+      background: var(--brand-soft);
+    }
+
+    &-token {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--brand-2);
+    }
+
+    &-desc {
+      font-size: 0.8rem;
+      color: var(--text-3);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+}
+
+// Signed-in user chip.
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-shrink: 0;
+
+  &__avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--brand-strong);
+    color: #fff;
+    font-size: 0.78rem;
+    font-weight: 600;
+  }
+
+  &__meta {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.25;
+  }
+
+  &__name {
+    font-size: 0.83rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  &__email {
+    font-size: 0.74rem;
+    color: var(--text-3);
+  }
+
+  &__signout {
+    margin-left: 0.4rem;
+    padding: 0.35rem 0.55rem;
+    font-size: 0.76rem;
+    color: var(--text-3);
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+
+    &:hover {
+      color: var(--danger);
+      background: var(--danger-soft);
+    }
+  }
+}
+
+@media (max-width: $bp-sm) {
+  .app-bar__brand {
+    width: auto;
+  }
+  .app-bar__brand-by,
+  .user-chip__meta {
+    display: none;
+  }
+}

@@ -7,19 +7,23 @@ use yew_router::prelude::*;
 
 use crate::api::{self, ApiError};
 use crate::auth;
-use crate::components::Layout;
+use crate::components::{AppShell, PublicLayout};
 use crate::pages;
 
 #[derive(Clone, Routable, PartialEq)]
 pub enum Route {
     #[at("/")]
     Overview,
+    #[at("/exceptions")]
+    Exceptions,
     #[at("/projects/:id")]
     Project { id: String },
     #[at("/projects/:project/exceptions/:group")]
     Exception { project: String, group: String },
-    #[at("/sources")]
-    Sources,
+    #[at("/pixels")]
+    Pixels,
+    #[at("/settings")]
+    Settings,
     #[not_found]
     #[at("/404")]
     NotFound,
@@ -101,35 +105,47 @@ fn app_inner() -> Html {
     let auth = use_auth();
     html! {
         <ContextProvider<AuthHandle> context={auth.clone()}>
-            <Layout>{ gate(&auth) }</Layout>
+            { gate(&auth) }
         </ContextProvider<AuthHandle>>
     }
 }
 
-/// Render the routed content once access is resolved.
+/// Render the routed app once access is resolved, falling back to the public
+/// chrome (sign-in / status) while it is not.
 fn gate(auth: &AuthHandle) -> Html {
     match &auth.status {
-        AuthStatus::Loading => html! { <p class="muted">{ "Loading…" }</p> },
-        AuthStatus::NeedsLogin => html! { <pages::Login /> },
-        AuthStatus::Error(message) => html! {
-            <div class="alert alert--error">
-                { format!("Couldn't verify your session: {message}") }
-            </div>
+        AuthStatus::Loading => html! {
+            <PublicLayout>
+                <div class="center-screen"><p class="muted">{ "Loading…" }</p></div>
+            </PublicLayout>
         },
-        AuthStatus::SignedIn(_) | AuthStatus::Disabled => {
-            html! { <Switch<Route> render={switch} /> }
-        }
+        AuthStatus::NeedsLogin => html! { <PublicLayout><pages::Login /></PublicLayout> },
+        AuthStatus::Error(message) => html! {
+            <PublicLayout>
+                <div class="center-screen">
+                    <div class="auth-card">
+                        <h1>{ "Couldn't verify your session" }</h1>
+                        <p>{ message.clone() }</p>
+                    </div>
+                </div>
+            </PublicLayout>
+        },
+        AuthStatus::SignedIn(_) | AuthStatus::Disabled => html! {
+            <AppShell><Switch<Route> render={switch} /></AppShell>
+        },
     }
 }
 
 fn switch(route: Route) -> Html {
     match route {
         Route::Overview => html! { <pages::Overview /> },
+        Route::Exceptions => html! { <pages::Exceptions /> },
         Route::Project { id } => html! { <pages::Project {id} /> },
         Route::Exception { project, group } => {
             html! { <pages::ExceptionDetail {project} {group} /> }
         }
-        Route::Sources => html! { <pages::Sources /> },
+        Route::Pixels => html! { <pages::Pixels /> },
+        Route::Settings => html! { <pages::Settings /> },
         Route::NotFound => html! { <pages::NotFound /> },
     }
 }

@@ -75,6 +75,20 @@ pub struct ExceptionGroupDetail {
     pub occurrences: Vec<ExceptionOccurrence>,
 }
 
+/// An exception group annotated with the project it belongs to, for the global
+/// Exceptions inbox. `project_id`/`project_name` are absent when the originating
+/// source is unassigned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GlobalException {
+    pub group: ExceptionGroup,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
+    /// A representative source URI the group was seen on.
+    pub source: String,
+}
+
 /// Payload for updating an exception group's triage state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TriageInput {

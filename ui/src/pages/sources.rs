@@ -1,70 +1,50 @@
-use analytics_api::{Project, Source, SourceInput, source_label};
+//! The per-project Sources tab: a summary of the sources assigned to this project,
+//! plus a "Manage sources" drawer for toggling membership.
+
+use analytics_api::{Source, SourceInput, SourceKind, source_label};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlSelectElement;
 use yew::prelude::*;
 
 use crate::api::{self, ApiError};
-use crate::components::ApiErrorAlert;
+use crate::components::{ApiErrorAlert, Drawer};
 
-#[function_component(Sources)]
-pub fn sources() -> Html {
-    let projects = use_state(Vec::<Project>::new);
+/// A human label for a source kind (avoids leaking Rust `Debug` formatting).
+fn kind_label(kind: &SourceKind) -> &'static str {
+    match kind {
+        SourceKind::Website => "Website",
+        SourceKind::Application => "Application",
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct ProjectSourcesProps {
+    pub id: String,
+}
+
+#[function_component(ProjectSources)]
+pub fn project_sources(props: &ProjectSourcesProps) -> Html {
+    let id = props.id.clone();
     let sources = use_state(|| None::<Result<Vec<Source>, ApiError>>);
     let reload = use_state(|| 0u32);
+    let drawer_open = use_state(|| false);
 
     {
-        let (projects, sources) = (projects.clone(), sources.clone());
+        let sources = sources.clone();
         use_effect_with(*reload, move |_| {
             spawn_local(async move {
-                if let Ok(list) = api::list_projects().await {
-                    projects.set(list);
-                }
                 sources.set(Some(api::list_sources().await));
             });
             || ()
         });
     }
 
-    html! {
-        <div class="page">
-            <h1>{ "Sources" }</h1>
-            <p class="muted">{ "Group reporting hostnames into projects." }</p>
-            {
-                match &*sources {
-                    None => html! { <p class="muted">{ "Loading…" }</p> },
-                    Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
-                    Some(Ok(list)) if list.is_empty() => html! {
-                        <p class="muted">{ "No sources yet. They appear automatically once a site starts reporting." }</p>
-                    },
-                    Some(Ok(list)) => html! {
-                        <table class="list">
-                            <thead><tr><th>{ "Source" }</th><th>{ "Kind" }</th><th>{ "Project" }</th><th></th></tr></thead>
-                            <tbody>
-                            { for list.iter().map(|s| source_row(s, &projects, &reload)) }
-                            </tbody>
-                        </table>
-                    },
-                }
-            }
-        </div>
-    }
-}
-
-fn source_row(source: &Source, projects: &[Project], reload: &UseStateHandle<u32>) -> Html {
-    let uri = source.uri.clone();
-    let current = source.project_id.clone().unwrap_or_default();
-
-    let on_assign = {
-        let (uri, reload) = (uri.clone(), reload.clone());
-        Callback::from(move |e: Event| {
-            let select: HtmlSelectElement = e.target_unchecked_into();
-            let project_id = select.value();
-            let input = SourceInput {
-                project_id: Some(project_id),
-                ..Default::default()
-            };
-            let (uri, reload) = (uri.clone(), reload.clone());
+    // Assign (`Some(project)`) or release (`Some("")`, which the server unassigns).
+    let set_project: Callback<(String, String)> = {
+        let reload = reload.clone();
+        Callback::from(move |(uri, project_id): (String, String)| {
+            let reload = reload.clone();
             spawn_local(async move {
+                let input = SourceInput { project_id: Some(project_id), ..Default::default() };
                 if api::update_source(&uri, &input).await.is_ok() {
                     reload.set(*reload + 1);
                 }
@@ -72,31 +52,84 @@ fn source_row(source: &Source, projects: &[Project], reload: &UseStateHandle<u32
         })
     };
 
-    let on_delete = {
-        let (uri, reload) = (uri.clone(), reload.clone());
-        Callback::from(move |_| {
-            let (uri, reload) = (uri.clone(), reload.clone());
-            spawn_local(async move {
-                if api::delete_source(&uri).await.is_ok() {
-                    reload.set(*reload + 1);
-                }
-            });
-        })
+    let open_drawer = {
+        let drawer_open = drawer_open.clone();
+        Callback::from(move |_| drawer_open.set(true))
+    };
+    let close_drawer = {
+        let drawer_open = drawer_open.clone();
+        Callback::from(move |_| drawer_open.set(false))
     };
 
-    html! {
-        <tr>
-            <td><code>{ source_label(&source.uri) }</code></td>
-            <td>{ format!("{:?}", source.kind).to_lowercase() }</td>
-            <td>
-                <select class="input" onchange={on_assign}>
-                    <option value="" selected={current.is_empty()}>{ "Unassigned" }</option>
-                    { for projects.iter().map(|p| html! {
-                        <option value={p.id.clone()} selected={p.id == current}>{ &p.name }</option>
-                    }) }
-                </select>
-            </td>
-            <td><button class="btn btn--ghost" onclick={on_delete}>{ "Delete" }</button></td>
-        </tr>
+    match &*sources {
+        None => html! { <p class="muted">{ "Loading…" }</p> },
+        Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
+        Some(Ok(list)) => {
+            let mine: Vec<&Source> =
+                list.iter().filter(|s| s.project_id.as_deref() == Some(id.as_str())).collect();
+
+            let assigned = if mine.is_empty() {
+                html! { <div class="empty">{ "No sources assigned to this project yet." }</div> }
+            } else {
+                html! {
+                    <div class="card-table">
+                        <table class="list">
+                            <thead><tr><th>{ "Source" }</th><th>{ "Kind" }</th></tr></thead>
+                            <tbody>
+                                { for mine.iter().map(|s| html! {
+                                    <tr>
+                                        <td><code>{ source_label(&s.uri) }</code></td>
+                                        <td>{ kind_label(&s.kind) }</td>
+                                    </tr>
+                                }) }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            };
+
+            let rows = list.iter().map(|s| {
+                let member = s.project_id.as_deref() == Some(id.as_str());
+                let elsewhere = s.project_id.is_some() && !member;
+                let onclick = {
+                    let (set_project, uri, id) = (set_project.clone(), s.uri.clone(), id.clone());
+                    Callback::from(move |_| {
+                        let target = if member { String::new() } else { id.clone() };
+                        set_project.emit((uri.clone(), target));
+                    })
+                };
+                let (label, class) = if member {
+                    ("Remove", "btn btn--small btn--ghost")
+                } else {
+                    ("Add", "btn btn--small")
+                };
+                html! {
+                    <div class="toggle-row">
+                        <span class="toggle-row__label" title={s.uri.clone()}>{ source_label(&s.uri) }</span>
+                        if elsewhere {
+                            <span class="badge badge--muted">{ "Assigned elsewhere" }</span>
+                        }
+                        <button class={class} {onclick}>{ label }</button>
+                    </div>
+                }
+            }).collect::<Html>();
+
+            html! {
+                <>
+                    <div class="form-row">
+                        <button class="btn" onclick={open_drawer}>{ "Manage sources" }</button>
+                    </div>
+                    { assigned }
+                    <Drawer open={*drawer_open} title="Manage sources" on_close={close_drawer}>
+                        <p class="drawer__hint">{ "Toggle which reporting sources belong to this project." }</p>
+                        if list.is_empty() {
+                            <div class="empty">{ "No sources have reported yet." }</div>
+                        } else {
+                            { rows }
+                        }
+                    </Drawer>
+                </>
+            }
+        }
     }
 }

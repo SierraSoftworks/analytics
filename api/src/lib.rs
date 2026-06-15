@@ -7,6 +7,7 @@
 mod auth;
 mod exception;
 mod health;
+mod instance;
 mod pixel;
 mod project;
 mod source;
@@ -16,9 +17,10 @@ mod track;
 pub use auth::{AdminUser, CsrfToken};
 pub use exception::{
     ExceptionGroup, ExceptionGroupDetail, ExceptionOccurrence, ExceptionReport, ExceptionStatus,
-    TriageInput,
+    GlobalException, TriageInput,
 };
 pub use health::Health;
+pub use instance::Instance;
 pub use pixel::{Pixel, PixelInput};
 pub use project::{Project, ProjectInput};
 pub use source::{

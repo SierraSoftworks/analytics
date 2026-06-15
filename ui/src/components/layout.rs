@@ -1,44 +1,25 @@
-use yew::prelude::*;
-use yew_router::prelude::*;
+//! The minimal public chrome (brand header) wrapping the signed-out screens:
+//! the sign-in page and the 404. The signed-in app uses [`AppShell`] instead.
+//!
+//! [`AppShell`]: crate::components::AppShell
 
-use crate::app::{AuthHandle, Route};
+use yew::prelude::*;
 
 #[derive(Properties, PartialEq)]
-pub struct LayoutProps {
+pub struct PublicLayoutProps {
     #[prop_or_default]
     pub children: Html,
 }
 
-#[function_component(Layout)]
-pub fn layout(props: &LayoutProps) -> Html {
-    let auth = use_context::<AuthHandle>();
-    let user = auth.as_ref().and_then(|a| a.user.clone());
-    let signout = auth.as_ref().map(|a| a.signout.clone());
-
+#[function_component(PublicLayout)]
+pub fn public_layout(props: &PublicLayoutProps) -> Html {
     html! {
-        <>
-            <header class="topbar">
-                <div class="topbar__brand">
-                    <Link<Route> to={Route::Overview} classes="brand">{ "Analytics" }</Link<Route>>
-                    <span class="brand__by">{ "by Sierra Softworks" }</span>
-                </div>
-                <nav class="topbar__nav">
-                    <Link<Route> to={Route::Overview}>{ "Overview" }</Link<Route>>
-                    <Link<Route> to={Route::Sources}>{ "Sources" }</Link<Route>>
-                </nav>
-                <div class="topbar__user">
-                    if let Some(user) = user {
-                        <span class="muted">{ user.name }</span>
-                        if let Some(signout) = signout {
-                            <button
-                                class="btn btn--ghost"
-                                onclick={Callback::from(move |_| signout.emit(()))}
-                            >{ "Sign out" }</button>
-                        }
-                    }
-                </div>
-            </header>
-            <main class="content">{ props.children.clone() }</main>
-        </>
+        <div class="public-shell">
+            <div class="public-header">
+                <img src="https://cdn.sierrasoftworks.com/logos/icon.svg" alt="Sierra Softworks" />
+                <span>{ "Analytics" }</span>
+            </div>
+            { props.children.clone() }
+        </div>
     }
 }

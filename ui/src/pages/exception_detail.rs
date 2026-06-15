@@ -1,11 +1,10 @@
 use analytics_api::{ExceptionGroupDetail, ExceptionStatus, TriageInput};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
-use yew_router::prelude::*;
 
 use crate::api::{self, ApiError};
 use crate::app::Route;
-use crate::components::ApiErrorAlert;
+use crate::components::{ApiErrorAlert, Crumb, PageHeader};
 use crate::pages::project::{status_class, status_label};
 
 #[derive(Properties, PartialEq)]
@@ -23,7 +22,7 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
     {
         let detail = detail.clone();
         let (project, group) = (project.clone(), group.clone());
-        // `project` is part of the deps: two projects can share a fingerprint, so
+        // `project` is a dependency: two projects can share a fingerprint, so
         // navigating between same-group exceptions across projects must refetch.
         use_effect_with((project.clone(), group.clone(), *reload), move |_| {
             spawn_local(async move {
@@ -36,11 +35,7 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
     let set_status = {
         let (project, group, reload) = (project.clone(), group.clone(), reload.clone());
         move |status: ExceptionStatus| {
-            let input = TriageInput {
-                project_id: project.clone(),
-                status,
-                note: None,
-            };
+            let input = TriageInput { project_id: project.clone(), status, note: None };
             let (group, reload) = (group.clone(), reload.clone());
             Callback::from(move |_| {
                 let (group, input, reload) = (group.clone(), input.clone(), reload.clone());
@@ -53,11 +48,19 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
         }
     };
 
+    let title = match &*detail {
+        Some(Ok(d)) => d.group.exc_type.clone(),
+        _ => "Exception".to_string(),
+    };
+    let crumbs = vec![
+        Crumb::link("Overview", Route::Overview),
+        Crumb::link("Project", Route::Project { id: project.clone() }),
+        Crumb::current(title.clone()),
+    ];
+
     html! {
         <div class="page">
-            <p class="crumb">
-                <Link<Route> to={Route::Project { id: project.clone() }}>{ "← Back to project" }</Link<Route>>
-            </p>
+            <PageHeader crumbs={crumbs} title={title} />
             {
                 match &*detail {
                     None => html! { <p class="muted">{ "Loading…" }</p> },
@@ -65,17 +68,16 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
                     Some(Ok(detail)) => html! {
                         <>
                             <div class="exc-header">
-                                <h1>{ &detail.group.exc_type }</h1>
                                 <span class={status_class(detail.group.status)}>{ status_label(detail.group.status) }</span>
+                                <span class="muted">{ format!("{} occurrences", detail.group.count) }</span>
                             </div>
                             <p class="exc-message">{ &detail.group.sample_message }</p>
-                            <p class="muted">{ format!("{} occurrences", detail.group.count) }</p>
                             <div class="form-row">
                                 <button class="btn" onclick={set_status(ExceptionStatus::Resolved)}>{ "Mark resolved" }</button>
                                 <button class="btn" onclick={set_status(ExceptionStatus::Ignored)}>{ "Ignore" }</button>
                                 <button class="btn btn--ghost" onclick={set_status(ExceptionStatus::Unresolved)}>{ "Reopen" }</button>
                             </div>
-                            <h2>{ "Recent occurrences" }</h2>
+                            <h2 class="section__title">{ "Recent occurrences" }</h2>
                             { for detail.occurrences.iter().map(occurrence) }
                         </>
                     },
@@ -93,7 +95,7 @@ fn occurrence(o: &analytics_api::ExceptionOccurrence) -> Html {
     };
     html! {
         <div class="occurrence">
-            <div class="occurrence__meta muted">{ format!("{} · {}", ua, if o.handled { "handled" } else { "unhandled" }) }</div>
+            <div class="occurrence__meta">{ format!("{} · {}", ua, if o.handled { "handled" } else { "unhandled" }) }</div>
             <div>{ &o.message }</div>
             if let Some(stack) = &o.stack {
                 <pre class="stack">{ stack }</pre>

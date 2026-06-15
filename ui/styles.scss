@@ -1,131 +1,28 @@
-:root {
-  --bg: #0f1115;
-  --fg: #e6e8eb;
-  --muted: #9aa0a6;
-  --accent: #4c8bf5;
-  --panel: #181b21;
-  --panel2: #1f232b;
-  --border: #272b33;
-  --ok: #3fb950;
-  --warn: #d29922;
-  --err: #f85149;
-}
+// =============================================================================
+// Analytics dashboard stylesheet
+//
+// A dark, typography-centric theme: the Element Plus palette and component shapes
+// remapped onto a dark canvas, with the restrained colour and generous whitespace
+// of tools like Linear. The styles are decomposed into per-component partials (see
+// SierraSoftworks/grey): design tokens + foundation under `src/styles/`, one
+// partial per component/area under `src/components/`, all assembled here.
+// =============================================================================
 
-* { box-sizing: border-box; }
+// Foundation — tokens, reset, structural layout.
+@use 'src/styles/variables';
+@use 'src/styles/base';
+@use 'src/styles/layout';
 
-body {
-  margin: 0;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  background: var(--bg);
-  color: var(--fg);
-  font-size: 14px;
-}
-
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
-.muted { color: var(--muted); }
-
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
-  padding: 0.75rem 1.5rem;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
-}
-.topbar__brand { display: flex; align-items: baseline; gap: 0.5rem; }
-.brand { font-weight: 700; font-size: 1.1rem; color: var(--fg); }
-.brand__by { color: var(--muted); font-size: 0.8rem; }
-.topbar__nav { display: flex; gap: 1rem; }
-.topbar__nav a { color: var(--muted); }
-.topbar__nav a:hover { color: var(--fg); text-decoration: none; }
-.topbar__user { margin-left: auto; display: flex; align-items: center; gap: 0.75rem; }
-
-.content { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
-.page h1 { font-size: 1.5rem; margin: 0 0 1rem; }
-.page h2 { font-size: 1.1rem; margin: 1.75rem 0 0.75rem; }
-.crumb { margin: 0 0 0.5rem; }
-.centered { text-align: center; padding: 4rem 1rem; }
-
-.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
-.card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1rem;
-}
-.card__value { font-size: 1.75rem; font-weight: 700; }
-.card__label { color: var(--muted); margin-top: 0.25rem; }
-
-.panel {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1rem;
-  margin-top: 1rem;
-}
-.chart { width: 100%; height: 160px; display: block; }
-.chart .bar { fill: var(--accent); opacity: 0.85; }
-.chart .bar:hover { opacity: 1; }
-
-.breakdowns { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-top: 1rem; }
-.breakdown {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1rem;
-}
-.breakdown h3 { margin: 0 0 0.5rem; font-size: 0.95rem; }
-.breakdown table { width: 100%; border-collapse: collapse; }
-.breakdown td { padding: 0.2rem 0; border-bottom: 1px solid var(--border); }
-.breakdown__key { max-width: 0; width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.breakdown__count { text-align: right; color: var(--muted); }
-
-.list { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
-.list th { text-align: left; color: var(--muted); font-weight: 500; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); }
-.list td { padding: 0.5rem; border-bottom: 1px solid var(--border); }
-.ellipsis { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--border); margin: 1rem 0; }
-.tab {
-  background: none; border: none; color: var(--muted);
-  padding: 0.5rem 0.9rem; cursor: pointer; border-bottom: 2px solid transparent;
-}
-.tab--active { color: var(--fg); border-bottom-color: var(--accent); }
-
-.btn {
-  background: var(--panel2); color: var(--fg);
-  border: 1px solid var(--border); border-radius: 6px;
-  padding: 0.4rem 0.8rem; cursor: pointer; font-size: 0.85rem;
-}
-.btn:hover { border-color: var(--accent); }
-.btn--primary { background: var(--accent); border-color: var(--accent); color: white; }
-.btn--ghost { background: none; }
-
-.input {
-  background: var(--panel2); color: var(--fg);
-  border: 1px solid var(--border); border-radius: 6px;
-  padding: 0.4rem 0.6rem; font-size: 0.85rem;
-}
-.form-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin: 0.75rem 0; }
-
-.alert { padding: 0.75rem 1rem; border-radius: 6px; border: 1px solid var(--border); }
-.alert--error { border-color: var(--err); color: var(--err); background: rgba(248, 81, 73, 0.08); }
-
-.badge { padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.75rem; }
-.badge--ok { background: rgba(63, 185, 80, 0.15); color: var(--ok); }
-.badge--warn { background: rgba(210, 153, 34, 0.15); color: var(--warn); }
-.badge--muted { background: var(--panel2); color: var(--muted); }
-
-.embed { font-size: 0.75rem; color: var(--muted); word-break: break-all; }
-
-.exc-header { display: flex; align-items: center; gap: 0.75rem; }
-.exc-message { font-family: ui-monospace, monospace; color: var(--fg); }
-.occurrence { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
-.occurrence__meta { font-size: 0.8rem; margin-bottom: 0.25rem; }
-.stack { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; overflow-x: auto; font-size: 0.8rem; white-space: pre-wrap; }
-
-@media (max-width: 720px) {
-  .cards { grid-template-columns: repeat(2, 1fr); }
-  .breakdowns { grid-template-columns: 1fr; }
-}
+// Components & page areas.
+@use 'src/components/controls';
+@use 'src/components/alert';
+@use 'src/components/app_bar';
+@use 'src/components/sidebar';
+@use 'src/components/page_header';
+@use 'src/components/stats';
+@use 'src/components/tables';
+@use 'src/components/drawer';
+@use 'src/components/dropdown';
+@use 'src/components/settings';
+@use 'src/components/exceptions';
+@use 'src/components/auth';

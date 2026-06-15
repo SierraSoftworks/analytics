@@ -1,0 +1,108 @@
+// The cohesively-themed dropdown that replaces native <select> (see
+// components/dropdown.rs). Its menu is positioned `fixed` against the trigger rect
+// (set inline) so a scrolling ancestor — e.g. a drawer body — never clips it.
+@use '../styles/variables' as *;
+
+.dropdown {
+  position: relative;
+  display: inline-block;
+
+  &--block {
+    display: block;
+  }
+
+  &__trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    width: 100%;
+    min-width: 9rem;
+    min-height: 36px;
+    font: inherit;
+    font-size: 0.85rem;
+    padding: 0.5rem 0.7rem;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text);
+    cursor: pointer;
+    transition: border-color var(--transition), background var(--transition);
+
+    &:hover:not(:disabled) {
+      border-color: var(--brand-border);
+      background: var(--surface-3);
+    }
+
+    &:focus-visible {
+      @include focus-ring;
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  }
+
+  &--block &__trigger {
+    min-width: 0;
+  }
+
+  &__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__caret {
+    color: var(--text-3);
+    flex-shrink: 0;
+  }
+
+  &__backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 109;
+  }
+
+  &__menu {
+    position: fixed;
+    z-index: 110;
+    margin: 0;
+    padding: 0.3rem;
+    list-style: none;
+    background: var(--overlay);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
+    max-height: 18rem;
+    overflow-y: auto;
+  }
+
+  &__option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.85rem;
+    color: var(--text-2);
+    cursor: pointer;
+    white-space: nowrap;
+
+    &:hover {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    &--selected {
+      color: var(--brand-2);
+    }
+  }
+
+  &__check {
+    color: var(--brand-2);
+    flex-shrink: 0;
+  }
+}

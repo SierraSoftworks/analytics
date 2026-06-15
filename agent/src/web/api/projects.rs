@@ -72,10 +72,22 @@ pub async fn update(
 }
 
 pub async fn delete(state: web::Data<AppState>, path: web::Path<String>) -> HttpResponse {
-    match state.store.delete_project(&path.into_inner()) {
-        Ok(true) => HttpResponse::NoContent().finish(),
-        Ok(false) => json_error(StatusCode::NOT_FOUND, "Project not found."),
-        Err(err) => internal_error(err),
+    let id = path.into_inner();
+    let store = state.store.clone();
+    // Atomic cascade: unassign the project's sources and delete its pixels in the
+    // same write transaction that removes the project, so a partial failure can't
+    // leave a half-deleted project. Historical events remain under their (now
+    // unassigned) sources.
+    let result = web::block(move || store.delete_project_cascade(&id)).await;
+
+    match result {
+        Ok(Ok(true)) => HttpResponse::NoContent().finish(),
+        Ok(Ok(false)) => json_error(StatusCode::NOT_FOUND, "Project not found."),
+        Ok(Err(err)) => internal_error(err),
+        Err(err) => {
+            error!("project delete task failed: {err}");
+            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete the project.")
+        }
     }
 }
 

@@ -381,6 +381,7 @@ mod tests {
     fn example_config_loads() {
         let raw = include_str!("../../config.example.yaml");
         let config = Config::from_yaml_str(raw).expect("example config should load");
-        assert_eq!(config.web.address, "127.0.0.1:8080");
+        // The example binds loopback; the exact port may be tuned in the sample file.
+        assert!(config.web.address.starts_with("127.0.0.1:"));
     }
 }

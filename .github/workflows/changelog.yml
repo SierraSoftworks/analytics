@@ -13,5 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: release-drafter/release-drafter@v7.1.1
+        with:
+          # On pull requests, compute the draft without writing it. Updating a
+          # release with the PR merge ref as `target_commitish` (refs/pull/N/merge)
+          # is rejected by the GitHub API; the release is still drafted on push to
+          # main, where dry-run is false.
+          dry-run: ${{ github.event_name == 'pull_request' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

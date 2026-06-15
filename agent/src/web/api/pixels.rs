@@ -22,6 +22,18 @@ pub async fn list(state: web::Data<AppState>, path: web::Path<String>) -> HttpRe
     }
 }
 
+/// `GET /api/v1/pixels` — every pixel across all projects, for the global Tracking
+/// Pixels page. Each pixel carries its `project_id` so the UI can label it.
+pub async fn list_all(state: web::Data<AppState>) -> HttpResponse {
+    match state.store.list_pixels() {
+        Ok(mut pixels) => {
+            pixels.sort_by_key(|p| p.name.to_lowercase());
+            HttpResponse::Ok().json(pixels)
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
 pub async fn create(
     state: web::Data<AppState>,
     path: web::Path<String>,
