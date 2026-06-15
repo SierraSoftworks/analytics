@@ -60,7 +60,10 @@ fn apply(_db: &Database, version: u32) -> Result<()> {
 fn read_version(db: &Database) -> Result<u32> {
     let txn = db.begin_read().or_system_err(OPEN_ADVICE)?;
     let table = txn.open_table(META).or_system_err(OPEN_ADVICE)?;
-    match table.get(META_SCHEMA_VERSION).or_system_err(STORAGE_ADVICE)? {
+    match table
+        .get(META_SCHEMA_VERSION)
+        .or_system_err(STORAGE_ADVICE)?
+    {
         Some(value) => Ok(u32_from_be(value.value())),
         None => Ok(0),
     }
@@ -86,8 +89,11 @@ mod tests {
     fn temp_db() -> (Database, std::path::PathBuf) {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path = std::env::temp_dir()
-            .join(format!("analytics-schema-{}-{}.redb", std::process::id(), n));
+        let path = std::env::temp_dir().join(format!(
+            "analytics-schema-{}-{}.redb",
+            std::process::id(),
+            n
+        ));
         let _ = std::fs::remove_file(&path);
         let db = Database::create(&path).unwrap();
         // The meta table must exist before version reads/writes.

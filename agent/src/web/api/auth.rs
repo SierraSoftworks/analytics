@@ -77,8 +77,13 @@ pub async fn auth_login(
 
     let pkce = generate_pkce();
     let csrf_state = random_token();
-    let authorize = match authorize_url(oidc, &discovery, &redirect_uri, &csrf_state, &pkce.challenge)
-    {
+    let authorize = match authorize_url(
+        oidc,
+        &discovery,
+        &redirect_uri,
+        &csrf_state,
+        &pkce.challenge,
+    ) {
         Ok(url) => url,
         Err(err) => {
             error!("Failed to build the OIDC authorization URL: {err}");
@@ -233,7 +238,9 @@ fn csrf_ok(req: &HttpRequest) -> bool {
         .get(super::CSRF_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    let cookie = req.cookie(super::CSRF_COOKIE).map(|c| c.value().to_string());
+    let cookie = req
+        .cookie(super::CSRF_COOKIE)
+        .map(|c| c.value().to_string());
     match (header, cookie) {
         (Some(header), Some(cookie)) => !header.is_empty() && header == cookie,
         _ => false,

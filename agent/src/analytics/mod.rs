@@ -102,8 +102,7 @@ pub fn overview(
     let mut project_summaries: Vec<ProjectSummary> = projects
         .into_iter()
         .map(|project| {
-            let (visitors, pageviews) =
-                project_totals.get(&project.id).copied().unwrap_or((0, 0));
+            let (visitors, pageviews) = project_totals.get(&project.id).copied().unwrap_or((0, 0));
             ProjectSummary {
                 project,
                 visitors,
@@ -155,22 +154,55 @@ pub fn exception_groups(
         .group_by([col("exc_group")])
         .agg([
             len().cast(DataType::Int64).alias("count"),
-            col("received_ms").min().cast(DataType::Int64).alias("first_seen"),
-            col("received_ms").max().cast(DataType::Int64).alias("last_seen"),
+            col("received_ms")
+                .min()
+                .cast(DataType::Int64)
+                .alias("first_seen"),
+            col("received_ms")
+                .max()
+                .cast(DataType::Int64)
+                .alias("last_seen"),
             col("exc_type").first().alias("exc_type"),
             col("exc_message").first().alias("sample_message"),
         ])
-        .sort(["last_seen"], SortMultipleOptions::default().with_order_descending(true))
+        .sort(
+            ["last_seen"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
         .limit(200)
         .collect()
         .or_system_err(ADVICE)?;
 
-    let group_id = df.column("exc_group").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let count = df.column("count").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let first = df.column("first_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let last = df.column("last_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let exc_type = df.column("exc_type").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let message = df.column("sample_message").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let group_id = df
+        .column("exc_group")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let count = df
+        .column("count")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let first = df
+        .column("first_seen")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let last = df
+        .column("last_seen")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let exc_type = df
+        .column("exc_type")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let message = df
+        .column("sample_message")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
 
     Ok((0..df.height())
         .filter_map(|i| {
@@ -205,23 +237,60 @@ pub fn global_exception_groups(
         .group_by([col("exc_group"), col("source")])
         .agg([
             len().cast(DataType::Int64).alias("count"),
-            col("received_ms").min().cast(DataType::Int64).alias("first_seen"),
-            col("received_ms").max().cast(DataType::Int64).alias("last_seen"),
+            col("received_ms")
+                .min()
+                .cast(DataType::Int64)
+                .alias("first_seen"),
+            col("received_ms")
+                .max()
+                .cast(DataType::Int64)
+                .alias("last_seen"),
             col("exc_type").first().alias("exc_type"),
             col("exc_message").first().alias("sample_message"),
         ])
-        .sort(["last_seen"], SortMultipleOptions::default().with_order_descending(true))
+        .sort(
+            ["last_seen"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
         .limit(500)
         .collect()
         .or_system_err(ADVICE)?;
 
-    let group_id = df.column("exc_group").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let count = df.column("count").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let first = df.column("first_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let last = df.column("last_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let exc_type = df.column("exc_type").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let message = df.column("sample_message").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let source = df.column("source").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let group_id = df
+        .column("exc_group")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let count = df
+        .column("count")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let first = df
+        .column("first_seen")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let last = df
+        .column("last_seen")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let exc_type = df
+        .column("exc_type")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let message = df
+        .column("sample_message")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let source = df
+        .column("source")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
 
     Ok((0..df.height())
         .filter_map(|i| {
@@ -266,11 +335,16 @@ pub fn exception_detail(
             col("exc_message"),
             col("exc_stack"),
             col("exc_handled"),
-            col("received_ms").cast(DataType::Int64).alias("received_ms"),
+            col("received_ms")
+                .cast(DataType::Int64)
+                .alias("received_ms"),
             col("ua_browser"),
             col("ua_os"),
         ])
-        .sort(["received_ms"], SortMultipleOptions::default().with_order_descending(true))
+        .sort(
+            ["received_ms"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
         .collect()
         .or_system_err(ADVICE)?;
 
@@ -279,13 +353,41 @@ pub fn exception_detail(
         return Ok(None);
     }
 
-    let exc_type = df.column("exc_type").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let message = df.column("exc_message").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let stack = df.column("exc_stack").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let handled = df.column("exc_handled").or_system_err(ADVICE)?.bool().or_system_err(ADVICE)?;
-    let received = df.column("received_ms").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let browser = df.column("ua_browser").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let os = df.column("ua_os").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let exc_type = df
+        .column("exc_type")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let message = df
+        .column("exc_message")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let stack = df
+        .column("exc_stack")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let handled = df
+        .column("exc_handled")
+        .or_system_err(ADVICE)?
+        .bool()
+        .or_system_err(ADVICE)?;
+    let received = df
+        .column("received_ms")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let browser = df
+        .column("ua_browser")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let os = df
+        .column("ua_os")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
 
     // Rows are newest-first: index 0 is the most recent occurrence, the last index the
     // oldest. The aggregate spans every row; the returned occurrences keep `limit`.
@@ -416,7 +518,12 @@ fn summary(base: LazyFrame) -> Result<MetricSummary> {
 /// A continuous time series over `[from_ms, to_ms]` at `bucket_ms` resolution.
 /// Buckets with no events are emitted as zeros so the chart shows a gap-free line
 /// across the whole window instead of collapsing absent periods.
-fn timeseries(base: LazyFrame, from_ms: i64, to_ms: i64, bucket_ms: i64) -> Result<Vec<TimeSeriesPoint>> {
+fn timeseries(
+    base: LazyFrame,
+    from_ms: i64,
+    to_ms: i64,
+    bucket_ms: i64,
+) -> Result<Vec<TimeSeriesPoint>> {
     let bucket_ms = bucket_ms.max(1);
     let df = base
         .filter(col("kind").eq(lit("page_load")))
@@ -432,15 +539,30 @@ fn timeseries(base: LazyFrame, from_ms: i64, to_ms: i64, bucket_ms: i64) -> Resu
         .collect()
         .or_system_err(ADVICE)?;
 
-    let bucket = df.column("bucket").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let pageviews = df.column("pageviews").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let visitors = df.column("visitors").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let bucket = df
+        .column("bucket")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let pageviews = df
+        .column("pageviews")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let visitors = df
+        .column("visitors")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
 
     // Index the populated buckets, then walk every bucket in the window.
     let mut counts: std::collections::HashMap<i64, (i64, i64)> = std::collections::HashMap::new();
     for i in 0..df.height() {
         if let Some(b) = bucket.get(i) {
-            counts.insert(b, (pageviews.get(i).unwrap_or(0), visitors.get(i).unwrap_or(0)));
+            counts.insert(
+                b,
+                (pageviews.get(i).unwrap_or(0), visitors.get(i).unwrap_or(0)),
+            );
         }
     }
 
@@ -452,7 +574,11 @@ fn timeseries(base: LazyFrame, from_ms: i64, to_ms: i64, bucket_ms: i64) -> Resu
         // Fall back to the populated buckets only (sorted).
         let mut points: Vec<TimeSeriesPoint> = counts
             .into_iter()
-            .map(|(b, (p, v))| TimeSeriesPoint { timestamp_ms: b, pageviews: p, visitors: v })
+            .map(|(b, (p, v))| TimeSeriesPoint {
+                timestamp_ms: b,
+                pageviews: p,
+                visitors: v,
+            })
             .collect();
         points.sort_by_key(|p| p.timestamp_ms);
         return Ok(points);
@@ -462,7 +588,11 @@ fn timeseries(base: LazyFrame, from_ms: i64, to_ms: i64, bucket_ms: i64) -> Resu
     let mut b = first;
     while b <= last {
         let (pageviews, visitors) = counts.get(&b).copied().unwrap_or((0, 0));
-        points.push(TimeSeriesPoint { timestamp_ms: b, pageviews, visitors });
+        points.push(TimeSeriesPoint {
+            timestamp_ms: b,
+            pageviews,
+            visitors,
+        });
         b += bucket_ms;
     }
     Ok(points)
@@ -473,13 +603,24 @@ fn breakdown(pageloads: LazyFrame, column: &str) -> Result<Vec<KeyCount>> {
         .filter(col(column).is_not_null())
         .group_by([col(column)])
         .agg([len().cast(DataType::Int64).alias("count")])
-        .sort(["count"], SortMultipleOptions::default().with_order_descending(true))
+        .sort(
+            ["count"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
         .limit(BREAKDOWN_LIMIT)
         .collect()
         .or_system_err(ADVICE)?;
 
-    let keys = df.column(column).or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let counts = df.column("count").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let keys = df
+        .column(column)
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let counts = df
+        .column("count")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
 
     Ok((0..df.height())
         .filter_map(|i| {
@@ -513,9 +654,21 @@ fn per_source_totals(base: LazyFrame) -> Result<Vec<(String, i64, i64)>> {
         .collect()
         .or_system_err(ADVICE)?;
 
-    let sources = df.column("source").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let pageviews = df.column("pageviews").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let visitors = df.column("visitors").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let sources = df
+        .column("source")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let pageviews = df
+        .column("pageviews")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let visitors = df
+        .column("visitors")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
 
     Ok((0..df.height())
         .filter_map(|i| {
@@ -680,7 +833,11 @@ mod tests {
         // Buckets at 0, 1d, 2d, 3d — empty days filled with zeros, not dropped.
         assert_eq!(stats.timeseries.len(), 4);
         assert_eq!(stats.timeseries[0].pageviews, 2);
-        assert!(stats.timeseries[1..].iter().all(|p| p.pageviews == 0 && p.visitors == 0));
+        assert!(
+            stats.timeseries[1..]
+                .iter()
+                .all(|p| p.pageviews == 0 && p.visitors == 0)
+        );
 
         drop(store);
         let _ = std::fs::remove_file(&redb);
@@ -788,7 +945,9 @@ mod tests {
     fn exception_group_lookup_ignores_the_recency_cap() {
         let redb = temp_redb();
         let store = Store::open(&redb).unwrap();
-        let events: Vec<_> = (1..=205).map(|i| exc(&format!("g{i}"), i * 1_000)).collect();
+        let events: Vec<_> = (1..=205)
+            .map(|i| exc(&format!("g{i}"), i * 1_000))
+            .collect();
         store.append_events(&events).unwrap();
         let sources = ["https://a.com".to_string()];
 

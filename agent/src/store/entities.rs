@@ -56,7 +56,9 @@ impl Store {
                     }
                 }
                 for (key, bytes) in updates {
-                    sources.insert(key.as_str(), bytes.as_slice()).or_system_err(STORAGE_ADVICE)?;
+                    sources
+                        .insert(key.as_str(), bytes.as_slice())
+                        .or_system_err(STORAGE_ADVICE)?;
                 }
             }
             // Delete every pixel belonging to this project.
@@ -96,11 +98,7 @@ impl Store {
 
     /// Apply `f` to an existing source and persist it in one write transaction.
     /// Returns the updated source, or `None` if the URI is unknown.
-    pub fn mutate_source<F: FnOnce(&mut Source)>(
-        &self,
-        uri: &str,
-        f: F,
-    ) -> Result<Option<Source>> {
+    pub fn mutate_source<F: FnOnce(&mut Source)>(&self, uri: &str, f: F) -> Result<Option<Source>> {
         self.mutate_json(SOURCES, uri, f)
     }
 
@@ -146,11 +144,7 @@ impl Store {
     ) -> Result<()> {
         self.put_json(EXCEPTION_TRIAGE, &triage_key(project_id, group_id), triage)
     }
-    pub fn get_triage(
-        &self,
-        project_id: &str,
-        group_id: &str,
-    ) -> Result<Option<ExceptionTriage>> {
+    pub fn get_triage(&self, project_id: &str, group_id: &str) -> Result<Option<ExceptionTriage>> {
         self.get_json(EXCEPTION_TRIAGE, &triage_key(project_id, group_id))
     }
 }

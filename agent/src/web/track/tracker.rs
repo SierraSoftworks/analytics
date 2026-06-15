@@ -5,11 +5,13 @@
 //! exists (with a placeholder) even when the beacon has not been built, so the agent
 //! always compiles.
 
-use actix_web::http::header::CACHE_CONTROL;
 use actix_web::HttpResponse;
+use actix_web::http::header::CACHE_CONTROL;
 
-const TRACKER_JS: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../tracker/dist/tracker.js"));
+const TRACKER_JS: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../tracker/dist/tracker.js"
+));
 
 pub async fn tracker_js() -> HttpResponse {
     HttpResponse::Ok()

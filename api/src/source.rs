@@ -59,7 +59,10 @@ pub struct SourceInput {
 
 /// Canonical website source URI for a hostname.
 pub fn website_source(hostname: &str) -> String {
-    format!("https://{}", hostname.trim().trim_end_matches('.').to_lowercase())
+    format!(
+        "https://{}",
+        hostname.trim().trim_end_matches('.').to_lowercase()
+    )
 }
 
 /// Source URI for an application.
