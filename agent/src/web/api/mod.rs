@@ -7,6 +7,7 @@
 
 mod auth;
 mod exceptions;
+mod instance;
 mod me;
 mod overview;
 mod pixels;
@@ -68,6 +69,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                     .wrap(from_fn(api_auth))
                     .route("/csrf", web::get().to(auth::csrf_token))
                     .route("/me", web::get().to(me::me))
+                    .route("/instance", web::get().to(instance::instance))
                     .route("/overview", web::get().to(overview::overview))
                     .route("/projects", web::get().to(projects::list))
                     .route("/projects", web::post().to(projects::create))
@@ -78,11 +80,13 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                     .route("/sources", web::get().to(sources::list))
                     .route("/sources", web::put().to(sources::update))
                     .route("/sources", web::delete().to(sources::delete))
+                    .route("/pixels", web::get().to(pixels::list_all))
                     .route("/projects/{id}/pixels", web::get().to(pixels::list))
                     .route("/projects/{id}/pixels", web::post().to(pixels::create))
                     .route("/pixels/{id}", web::get().to(pixels::get))
                     .route("/pixels/{id}", web::put().to(pixels::update))
                     .route("/pixels/{id}", web::delete().to(pixels::delete))
+                    .route("/exceptions", web::get().to(exceptions::list_all))
                     .route("/projects/{id}/exceptions", web::get().to(exceptions::list))
                     .route("/exceptions/{group}", web::get().to(exceptions::detail))
                     .route("/exceptions/{group}", web::patch().to(exceptions::triage)),

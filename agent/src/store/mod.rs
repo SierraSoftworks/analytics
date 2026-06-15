@@ -234,6 +234,50 @@ mod tests {
     }
 
     #[test]
+    fn delete_project_cascade_unassigns_sources_and_removes_pixels() {
+        use analytics_api::{Pixel, Source, SourceKind};
+        let store = temp_store();
+        let now = Utc::now();
+        store
+            .put_project(&Project {
+                id: "p1".to_string(),
+                name: "P".to_string(),
+                slug: "p".to_string(),
+                created_at: now,
+            })
+            .unwrap();
+        store
+            .put_source(&Source {
+                uri: "https://a.com".to_string(),
+                project_id: Some("p1".to_string()),
+                kind: SourceKind::Website,
+                display_name: None,
+                created_at: now,
+                first_seen: Some(now),
+                last_seen: Some(now),
+            })
+            .unwrap();
+        store
+            .put_pixel(&Pixel {
+                id: "px1".to_string(),
+                project_id: "p1".to_string(),
+                name: "n".to_string(),
+                event_name: "pixel".to_string(),
+                metadata: Default::default(),
+                created_at: now,
+                last_hit: None,
+            })
+            .unwrap();
+
+        assert!(store.delete_project_cascade("p1").unwrap());
+        assert!(store.get_project("p1").unwrap().is_none());
+        assert_eq!(store.get_source("https://a.com").unwrap().unwrap().project_id, None);
+        assert!(store.get_pixel("px1").unwrap().is_none());
+        // A second source not on the project is left untouched; unknown id -> false.
+        assert!(!store.delete_project_cascade("nope").unwrap());
+    }
+
+    #[test]
     fn parquet_roundtrip() {
         let store = temp_store();
         let events = vec![event("https://a.com", 1000), event("pixel://01HX", 2000)];

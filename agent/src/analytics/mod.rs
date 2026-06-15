@@ -38,7 +38,7 @@ pub fn stats_for_sources(
 
     Ok(Stats {
         summary: summary(base.clone())?,
-        timeseries: timeseries(base, bucket_ms)?,
+        timeseries: timeseries(base, from_ms, to_ms, bucket_ms)?,
         pages: breakdown(pageloads.clone(), "pathname")?,
         referrers: breakdown(pageloads.clone(), "referrer_host")?,
         browsers: breakdown(pageloads.clone(), "ua_browser")?,
@@ -63,7 +63,7 @@ pub fn overview(
 
     let base = combined(store, parquet_dir, from_ms, to_ms)?;
     let summary = summary(base.clone())?;
-    let timeseries = timeseries(base.clone(), bucket_ms)?;
+    let timeseries = timeseries(base.clone(), from_ms, to_ms, bucket_ms)?;
     let per_source = per_source_totals(base)?;
 
     // Build a source-URI -> project map from assigned sources and pixels.
@@ -183,6 +183,62 @@ pub fn exception_groups(
                 last_seen_ms: last.get(i).unwrap_or(0),
                 status: ExceptionStatus::Unresolved,
                 note: None,
+            })
+        })
+        .collect())
+}
+
+/// Like [`exception_groups`] but across **every** source, grouped by
+/// `(fingerprint, source)`. A fingerprint is computed from the error alone, so the
+/// same `exc_group` legitimately occurs on multiple sources/projects; keeping the
+/// source in the key keeps those occurrences separate. The caller folds per-source
+/// rows up to per-project rows for the global Exceptions inbox.
+pub fn global_exception_groups(
+    store: &Store,
+    parquet_dir: &str,
+    from_ms: i64,
+    to_ms: i64,
+) -> Result<Vec<(ExceptionGroup, String)>> {
+    let df = combined(store, parquet_dir, from_ms, to_ms)?
+        .filter(col("kind").eq(lit("exception")))
+        .filter(col("exc_group").is_not_null())
+        .group_by([col("exc_group"), col("source")])
+        .agg([
+            len().cast(DataType::Int64).alias("count"),
+            col("received_ms").min().cast(DataType::Int64).alias("first_seen"),
+            col("received_ms").max().cast(DataType::Int64).alias("last_seen"),
+            col("exc_type").first().alias("exc_type"),
+            col("exc_message").first().alias("sample_message"),
+        ])
+        .sort(["last_seen"], SortMultipleOptions::default().with_order_descending(true))
+        .limit(500)
+        .collect()
+        .or_system_err(ADVICE)?;
+
+    let group_id = df.column("exc_group").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let count = df.column("count").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let first = df.column("first_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let last = df.column("last_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let exc_type = df.column("exc_type").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let message = df.column("sample_message").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let source = df.column("source").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+
+    Ok((0..df.height())
+        .filter_map(|i| {
+            group_id.get(i).map(|gid| {
+                (
+                    ExceptionGroup {
+                        group_id: gid.to_string(),
+                        exc_type: exc_type.get(i).unwrap_or("").to_string(),
+                        sample_message: message.get(i).unwrap_or("").to_string(),
+                        count: count.get(i).unwrap_or(0),
+                        first_seen_ms: first.get(i).unwrap_or(0),
+                        last_seen_ms: last.get(i).unwrap_or(0),
+                        status: ExceptionStatus::Unresolved,
+                        note: None,
+                    },
+                    source.get(i).unwrap_or("").to_string(),
+                )
             })
         })
         .collect())
@@ -357,7 +413,10 @@ fn summary(base: LazyFrame) -> Result<MetricSummary> {
     })
 }
 
-fn timeseries(base: LazyFrame, bucket_ms: i64) -> Result<Vec<TimeSeriesPoint>> {
+/// A continuous time series over `[from_ms, to_ms]` at `bucket_ms` resolution.
+/// Buckets with no events are emitted as zeros so the chart shows a gap-free line
+/// across the whole window instead of collapsing absent periods.
+fn timeseries(base: LazyFrame, from_ms: i64, to_ms: i64, bucket_ms: i64) -> Result<Vec<TimeSeriesPoint>> {
     let bucket_ms = bucket_ms.max(1);
     let df = base
         .filter(col("kind").eq(lit("page_load")))
@@ -370,7 +429,6 @@ fn timeseries(base: LazyFrame, bucket_ms: i64) -> Result<Vec<TimeSeriesPoint>> {
                 .cast(DataType::Int64)
                 .alias("visitors"),
         ])
-        .sort(["bucket"], SortMultipleOptions::default())
         .collect()
         .or_system_err(ADVICE)?;
 
@@ -378,13 +436,36 @@ fn timeseries(base: LazyFrame, bucket_ms: i64) -> Result<Vec<TimeSeriesPoint>> {
     let pageviews = df.column("pageviews").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
     let visitors = df.column("visitors").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
 
-    Ok((0..df.height())
-        .map(|i| TimeSeriesPoint {
-            timestamp_ms: bucket.get(i).unwrap_or(0),
-            pageviews: pageviews.get(i).unwrap_or(0),
-            visitors: visitors.get(i).unwrap_or(0),
-        })
-        .collect())
+    // Index the populated buckets, then walk every bucket in the window.
+    let mut counts: std::collections::HashMap<i64, (i64, i64)> = std::collections::HashMap::new();
+    for i in 0..df.height() {
+        if let Some(b) = bucket.get(i) {
+            counts.insert(b, (pageviews.get(i).unwrap_or(0), visitors.get(i).unwrap_or(0)));
+        }
+    }
+
+    let first = from_ms - from_ms.rem_euclid(bucket_ms);
+    let last = to_ms - to_ms.rem_euclid(bucket_ms);
+    // Guard against a pathological window/bucket combination producing a huge vec.
+    let estimated = ((last - first) / bucket_ms).unsigned_abs() as usize + 1;
+    if first > last || estimated > 5_000 {
+        // Fall back to the populated buckets only (sorted).
+        let mut points: Vec<TimeSeriesPoint> = counts
+            .into_iter()
+            .map(|(b, (p, v))| TimeSeriesPoint { timestamp_ms: b, pageviews: p, visitors: v })
+            .collect();
+        points.sort_by_key(|p| p.timestamp_ms);
+        return Ok(points);
+    }
+
+    let mut points = Vec::with_capacity(estimated);
+    let mut b = first;
+    while b <= last {
+        let (pageviews, visitors) = counts.get(&b).copied().unwrap_or((0, 0));
+        points.push(TimeSeriesPoint { timestamp_ms: b, pageviews, visitors });
+        b += bucket_ms;
+    }
+    Ok(points)
 }
 
 fn breakdown(pageloads: LazyFrame, column: &str) -> Result<Vec<KeyCount>> {
@@ -573,6 +654,38 @@ mod tests {
         let _ = std::fs::remove_file(&redb);
     }
 
+    #[test]
+    fn timeseries_zero_fills_empty_buckets() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        let day = 86_400_000i64;
+        // Two views on the first day only; the window spans three days.
+        store
+            .append_events(&[
+                load("https://a.com", 1_000, true, None),
+                load("https://a.com", 2_000, false, None),
+            ])
+            .unwrap();
+
+        let stats = stats_for_sources(
+            &store,
+            "/none",
+            &["https://a.com".to_string()],
+            0,
+            3 * day,
+            day,
+        )
+        .unwrap();
+
+        // Buckets at 0, 1d, 2d, 3d — empty days filled with zeros, not dropped.
+        assert_eq!(stats.timeseries.len(), 4);
+        assert_eq!(stats.timeseries[0].pageviews, 2);
+        assert!(stats.timeseries[1..].iter().all(|p| p.pageviews == 0 && p.visitors == 0));
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
     fn typed(source: &str, received_ms: i64, kind: EventKind) -> StoredEvent {
         StoredEvent {
             created_ms: received_ms,
@@ -585,17 +698,47 @@ mod tests {
     }
 
     fn exc(group: &str, received_ms: i64) -> StoredEvent {
+        exc_on("https://a.com", group, received_ms)
+    }
+
+    fn exc_on(source: &str, group: &str, received_ms: i64) -> StoredEvent {
         StoredEvent {
             created_ms: received_ms,
             received_ms,
             kind: EventKind::Exception,
-            source: "https://a.com".into(),
+            source: source.into(),
             exc_type: Some("TypeError".into()),
             exc_message: Some("boom".into()),
             exc_group: Some(group.into()),
             exc_handled: Some(false),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn global_exception_groups_keep_sources_separate() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        // Same fingerprint on two different sources (e.g. a shared-library error).
+        store
+            .append_events(&[
+                exc_on("https://a.com", "g1", 1_000),
+                exc_on("https://b.com", "g1", 2_000),
+                exc_on("https://a.com", "g1", 3_000),
+            ])
+            .unwrap();
+
+        let rows = global_exception_groups(&store, "/none", 0, 10_000).unwrap();
+        // One row per (fingerprint, source) — not collapsed across sources.
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|(g, _)| g.group_id == "g1"));
+        let a = rows.iter().find(|(_, s)| s == "https://a.com").unwrap();
+        assert_eq!(a.0.count, 2);
+        let b = rows.iter().find(|(_, s)| s == "https://b.com").unwrap();
+        assert_eq!(b.0.count, 1);
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
     }
 
     #[test]
