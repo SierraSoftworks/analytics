@@ -1297,7 +1297,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33d852cb9b869c2a9b3df2f71a3074817f01e1844f839a144f5fcef059a4eb5d"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3568,7 +3568,7 @@ dependencies = [
  "once_cell",
  "socket2 0.5.10",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4877,7 +4877,7 @@ dependencies = [
 [[package]]
 name = "tracing-batteries"
 version = "0.1.0"
-source = "git+https://github.com/sierrasoftworks/tracing-batteries-rs.git#2093af44619bf8ff7b7ae846d07826925bf52069"
+source = "git+https://github.com/sierrasoftworks/tracing-batteries-rs.git#f67afd63bb5a2d29dda84920c12e9537a9b35815"
 dependencies = [
  "opentelemetry",
  "opentelemetry-appender-tracing",
