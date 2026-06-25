@@ -12,7 +12,7 @@ jobs:
     name: Prepare
     runs-on: ubuntu-latest
     steps:
-      - uses: release-drafter/release-drafter@v7.4.0
+      - uses: release-drafter/release-drafter@v7.5.1
         with:
           # On pull requests, compute the draft without writing it. Updating a
           # release with the PR merge ref as `target_commitish` (refs/pull/N/merge)
