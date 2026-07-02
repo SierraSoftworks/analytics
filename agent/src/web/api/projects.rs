@@ -1,4 +1,5 @@
-//! Project CRUD and per-project statistics.
+//! Project CRUD. Per-project statistics live on the unified `/stats` endpoint
+//! (as a `project=` filter) rather than a project-scoped route.
 
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, web};
@@ -6,9 +7,7 @@ use analytics_api::{Project, ProjectInput};
 use chrono::Utc;
 use tracing_batteries::prelude::*;
 
-use super::query::{StatsQuery, resolve_range, subset};
 use super::{internal_error, json_error};
-use crate::analytics;
 use crate::state::AppState;
 
 pub async fn list(state: web::Data<AppState>) -> HttpResponse {
@@ -87,42 +86,6 @@ pub async fn delete(state: web::Data<AppState>, path: web::Path<String>) -> Http
         Err(err) => {
             error!("project delete task failed: {err}");
             json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete the project.")
-        }
-    }
-}
-
-pub async fn stats(
-    state: web::Data<AppState>,
-    path: web::Path<String>,
-    query: web::Query<StatsQuery>,
-) -> HttpResponse {
-    let project_id = path.into_inner();
-    match state.store.get_project(&project_id) {
-        Ok(Some(_)) => {}
-        Ok(None) => return json_error(StatusCode::NOT_FOUND, "Project not found."),
-        Err(err) => return internal_error(err),
-    }
-
-    let (from, to, bucket) = resolve_range(&query);
-    let subset = subset(&query);
-    let store = state.store.clone();
-    let parquet_dir = state.config.storage.parquet_dir.clone();
-
-    let result = web::block(move || {
-        let mut sources = analytics::project_source_uris(&store, &project_id)?;
-        if let Some(subset) = subset {
-            sources.retain(|s| subset.contains(s));
-        }
-        analytics::stats_for_sources(&store, &parquet_dir, &sources, from, to, bucket)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(stats)) => HttpResponse::Ok().json(stats),
-        Ok(Err(err)) => internal_error(err),
-        Err(err) => {
-            error!("stats computation task failed: {err}");
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to compute statistics.")
         }
     }
 }

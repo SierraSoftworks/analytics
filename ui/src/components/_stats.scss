@@ -1,19 +1,25 @@
-// Statistic cards and the time-series chart panel (see components/widgets.rs).
+// Headline metric cards and the chart panel shell (see
+// components/metric_cards.rs, pages/dashboard.rs).
 @use '../styles/variables' as *;
 
 .stats {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 1rem;
+
+  &--five {
+    grid-template-columns: repeat(5, 1fr);
+  }
 }
 
 .stat {
   @include card;
-  padding: 1.1rem 1.2rem;
+  padding: 1rem 1.1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
-  transition: border-color var(--transition);
+  align-items: flex-start;
+  gap: 0.35rem;
+  transition: border-color var(--transition), background var(--transition);
 
   &__label {
     font-size: 0.78rem;
@@ -25,45 +31,64 @@
   }
 
   &__value {
-    font-size: 1.85rem;
+    font-size: 1.7rem;
     font-weight: 650;
     letter-spacing: -0.02em;
     font-variant-numeric: tabular-nums;
     line-height: 1.1;
+    color: var(--text);
   }
 
-  &__suffix {
-    font-size: 0.95rem;
-    font-weight: 500;
-    color: var(--text-3);
-    margin-left: 0.15rem;
+  &__delta {
+    font-size: 0.74rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+
+    &--good {
+      color: var(--ok);
+    }
+    &--bad {
+      color: var(--danger);
+    }
+    &--none {
+      color: var(--text-4);
+    }
+  }
+
+  // Cards that switch the chart/panel metric on click.
+  &--selectable {
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+
+    &:hover {
+      border-color: var(--brand-border);
+    }
+  }
+
+  &--active {
+    border-color: var(--brand-border);
+    background: linear-gradient(var(--brand-soft), transparent 80%), var(--surface);
+
+    .stat__label {
+      color: var(--brand-2);
+    }
   }
 }
 
 .panel {
   @include card;
   padding: 1.1rem 1.2rem;
-  margin-top: 1.25rem;
-}
+  margin-top: 1.1rem;
 
-.chart {
-  width: 100%;
-  height: 180px;
-  display: block;
-
-  .bar {
-    fill: var(--brand);
-    opacity: 0.8;
-    transition: opacity var(--transition);
-
-    &:hover {
-      opacity: 1;
-    }
+  &--chart {
+    padding-bottom: 0.6rem;
   }
 }
 
 @media (max-width: $bp-md) {
-  .stats {
+  .stats,
+  .stats--five {
     grid-template-columns: repeat(2, 1fr);
   }
 }

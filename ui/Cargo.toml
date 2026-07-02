@@ -14,6 +14,12 @@ path = "src/main.rs"
 
 [dependencies]
 analytics-api = { path = "../api" }
+# Pinned to the same revision the agent workspace resolves, so both sides parse
+# the identical query grammar (and see the same visitor API).
+filt-rs = { git = "https://github.com/SierraSoftworks/filters", rev = "3b60fa1ff8447d9c3d5d959caa2665bfb4c6fc39", features = [
+    "visitor",
+    "regex",
+] }
 
 yew = { version = "0.23", features = ["csr"] }
 yew-router = "0.20"
@@ -32,11 +38,13 @@ web-sys = { version = "0.3", features = [
     "Event",
     "EventTarget",
     "InputEvent",
+    "MouseEvent",
     "Element",
     "DomRect",
     "HtmlElement",
     "HtmlInputElement",
     "HtmlSelectElement",
+    "ResizeObserver",
 ] }
 
 serde = { version = "1", features = ["derive"] }

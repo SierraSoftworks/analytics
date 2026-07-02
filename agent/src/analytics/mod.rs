@@ -1,13 +1,17 @@
 //! The polars query layer. Statistics are computed over the union of the redb hot
-//! store and the cold Parquet partitions, filtered to a project's source URIs and a
-//! time range. Queries are CPU-bound and synchronous, so handlers run them via
-//! `web::block`.
+//! store and the cold Parquet partitions, filtered by a compiled [`filter`]
+//! expression, and bounded to a half-open `[from, to)` time range. Queries are
+//! CPU-bound and synchronous, so handlers run them via `web::block`.
 
+pub mod filter;
+
+use std::collections::HashMap;
 use std::path::Path;
 
 use analytics_api::{
-    ExceptionGroup, ExceptionOccurrence, ExceptionStatus, KeyCount, MetricSummary, Overview,
-    ProjectSummary, SourceSummary, Stats, TimeSeriesPoint, pixel_source,
+    BreakdownRow, Breakdowns, CountRow, Dashboard, ExceptionBreakdowns, ExceptionGroup,
+    ExceptionGroupDetail, ExceptionStatus, ExceptionVariant, MetricSummary, TREND_BUCKETS,
+    TimeSeriesPoint, pixel_source,
 };
 use chrono::{Datelike, TimeZone, Utc};
 use polars::prelude::*;
@@ -15,6 +19,8 @@ use tracing_batteries::prelude::warn;
 
 use crate::errors::{Result, ResultExt};
 use crate::store::Store;
+
+use filter::CompiledFilter;
 
 const ADVICE: &[&str] = &["This is an internal analytics error; please report it with the logs."];
 
@@ -24,100 +30,78 @@ const BOUNCE_MIN_MS: i64 = 100;
 const BOUNCE_MAX_MS: i64 = 5_000;
 const MIN_BOUNCE_SAMPLES: i64 = 5;
 
-/// Full statistics for a set of source URIs over `[from_ms, to_ms]`.
-pub fn stats_for_sources(
+/// The full dashboard payload: headline metrics with a previous-window baseline,
+/// the (index-aligned) time series pair, every dimension breakdown, and the
+/// project/source rollups — all computed over one filtered scan.
+///
+/// `filter` is the compiled `q` expression (see [`filter::compile_query`]);
+/// `None` means unfiltered.
+///
+/// The event frame spanning `[from - len, to)` is collected **once** and every
+/// aggregation runs against the in-memory frame, so a dashboard request costs a
+/// single pass over the Parquet partitions regardless of how many panels it feeds.
+pub fn dashboard(
     store: &Store,
     parquet_dir: &str,
-    sources: &[String],
+    filter: Option<&CompiledFilter>,
     from_ms: i64,
     to_ms: i64,
     bucket_ms: i64,
-) -> Result<Stats> {
-    let base = combined(store, parquet_dir, from_ms, to_ms)?.filter(source_filter(sources));
-    let pageloads = base.clone().filter(col("kind").eq(lit("page_load")));
+) -> Result<Dashboard> {
+    let len = (to_ms - from_ms).max(1);
+    let prev_from = from_ms - len;
 
-    Ok(Stats {
-        summary: summary(base.clone())?,
-        timeseries: timeseries(base, from_ms, to_ms, bucket_ms)?,
-        pages: breakdown(pageloads.clone(), "pathname")?,
-        referrers: breakdown(pageloads.clone(), "referrer_host")?,
-        browsers: breakdown(pageloads.clone(), "ua_browser")?,
-        operating_systems: breakdown(pageloads.clone(), "ua_os")?,
-        devices: breakdown(pageloads.clone(), "ua_device")?,
-        countries: breakdown(pageloads.clone(), "country")?,
-        languages: breakdown(pageloads.clone(), "language")?,
-        sources: breakdown(pageloads, "source")?,
-    })
-}
-
-/// The global overview across all projects, with per-project and unassigned totals.
-pub fn overview(
-    store: &Store,
-    parquet_dir: &str,
-    from_ms: i64,
-    to_ms: i64,
-    bucket_ms: i64,
-) -> Result<Overview> {
-    let projects = store.list_projects()?;
-    let sources = store.list_sources()?;
-
-    let base = combined(store, parquet_dir, from_ms, to_ms)?;
-    let summary = summary(base.clone())?;
-    let timeseries = timeseries(base.clone(), from_ms, to_ms, bucket_ms)?;
-    let per_source = per_source_totals(base)?;
-
-    // Build a source-URI -> project map from assigned sources and pixels.
-    let pixels = store.list_pixels()?;
-    let mut uri_project: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for source in &sources {
-        if let Some(project_id) = &source.project_id {
-            uri_project.insert(source.uri.clone(), project_id.clone());
-        }
+    // One scan covers both the current window and the comparison baseline.
+    let mut lf = combined(store, parquet_dir, prev_from, to_ms)?;
+    if let Some(filter) = filter {
+        lf = lf.filter(filter.predicate.clone());
     }
-    for pixel in &pixels {
-        uri_project.insert(pixel_source(&pixel.id), pixel.project_id.clone());
+    let df = lf.collect().or_system_err(ADVICE)?;
+
+    let current = df.clone().lazy().filter(col("received_ms").gt_eq(lit(from_ms)));
+    let previous = df.lazy().filter(col("received_ms").lt(lit(from_ms)));
+
+    // With a path filter active, `is_unique_user` (which rides only on the first
+    // page load of a visitor's day) would undercount non-landing pages to ~zero;
+    // daily-unique *page* views are the honest visitor count there.
+    let unique_flag = if filter.is_some_and(|f| f.references("path")) {
+        "is_unique_page"
+    } else {
+        "is_unique_user"
+    };
+
+    // The previous series is computed on the *current* window's bucket grid by
+    // shifting events forward one window length, guaranteeing index alignment;
+    // timestamps are then shifted back to the previous window's own instants.
+    let prev_shifted = previous.clone().with_columns([(col("received_ms") + lit(len)).alias("received_ms")]);
+    let mut previous_timeseries = timeseries(prev_shifted, from_ms, to_ms, bucket_ms, unique_flag)?;
+    for point in &mut previous_timeseries {
+        point.timestamp_ms -= len;
     }
 
-    // Aggregate per-source totals up to projects, and collect unassigned sources
-    // (keeping both their visitor and view totals).
-    let mut project_totals: std::collections::HashMap<String, (i64, i64)> =
-        std::collections::HashMap::new();
-    let mut unassigned: Vec<SourceSummary> = Vec::new();
-    for (uri, visitors, pageviews) in &per_source {
-        match uri_project.get(uri) {
-            Some(project_id) => {
-                let entry = project_totals.entry(project_id.clone()).or_insert((0, 0));
-                entry.0 += visitors;
-                entry.1 += pageviews;
-            }
-            None => unassigned.push(SourceSummary {
-                uri: uri.clone(),
-                visitors: *visitors,
-                pageviews: *pageviews,
-            }),
-        }
-    }
+    let pageloads = current.clone().filter(col("kind").eq(lit("page_load")));
+    let per_source = source_rollup(current.clone(), unique_flag)?;
+    let (projects, sources, unassigned) = project_rollup(store, per_source)?;
 
-    let mut project_summaries: Vec<ProjectSummary> = projects
-        .into_iter()
-        .map(|project| {
-            let (visitors, pageviews) =
-                project_totals.get(&project.id).copied().unwrap_or((0, 0));
-            ProjectSummary {
-                project,
-                visitors,
-                pageviews,
-            }
-        })
-        .collect();
-    project_summaries.sort_by_key(|p| std::cmp::Reverse(p.pageviews));
-    unassigned.sort_by_key(|u| std::cmp::Reverse(u.pageviews));
-
-    Ok(Overview {
-        summary,
-        timeseries,
-        projects: project_summaries,
+    Ok(Dashboard {
+        summary: summary(current.clone(), unique_flag)?,
+        previous_summary: summary(previous, unique_flag)?,
+        timeseries: timeseries(current, from_ms, to_ms, bucket_ms, unique_flag)?,
+        previous_timeseries,
+        breakdowns: Breakdowns {
+            pages: breakdown(pageloads.clone(), "pathname", "is_unique_page")?,
+            referrers: breakdown(pageloads.clone(), "referrer_host", unique_flag)?,
+            countries: breakdown(pageloads.clone(), "country", unique_flag)?,
+            languages: breakdown(pageloads.clone(), "language", unique_flag)?,
+            browsers: breakdown(pageloads.clone(), "ua_browser", unique_flag)?,
+            operating_systems: breakdown(pageloads.clone(), "ua_os", unique_flag)?,
+            devices: breakdown(pageloads.clone(), "ua_device", unique_flag)?,
+            utm_sources: breakdown(pageloads.clone(), "utm_source", unique_flag)?,
+            utm_mediums: breakdown(pageloads.clone(), "utm_medium", unique_flag)?,
+            utm_campaigns: breakdown(pageloads, "utm_campaign", unique_flag)?,
+            projects,
+            sources,
+        },
         unassigned,
     })
 }
@@ -139,69 +123,27 @@ pub fn project_source_uris(store: &Store, project_id: &str) -> Result<Vec<String
     Ok(uris)
 }
 
-/// Aggregated exception groups for a set of sources over a time range. The triage
-/// status is filled in by the caller (which knows the project).
-pub fn exception_groups(
-    store: &Store,
-    parquet_dir: &str,
-    sources: &[String],
-    from_ms: i64,
-    to_ms: i64,
-) -> Result<Vec<ExceptionGroup>> {
-    let df = combined(store, parquet_dir, from_ms, to_ms)?
-        .filter(source_filter(sources))
-        .filter(col("kind").eq(lit("exception")))
-        .filter(col("exc_group").is_not_null())
-        .group_by([col("exc_group")])
-        .agg([
-            len().cast(DataType::Int64).alias("count"),
-            col("received_ms").min().cast(DataType::Int64).alias("first_seen"),
-            col("received_ms").max().cast(DataType::Int64).alias("last_seen"),
-            col("exc_type").first().alias("exc_type"),
-            col("exc_message").first().alias("sample_message"),
-        ])
-        .sort(["last_seen"], SortMultipleOptions::default().with_order_descending(true))
-        .limit(200)
-        .collect()
-        .or_system_err(ADVICE)?;
-
-    let group_id = df.column("exc_group").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let count = df.column("count").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let first = df.column("first_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let last = df.column("last_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let exc_type = df.column("exc_type").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let message = df.column("sample_message").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-
-    Ok((0..df.height())
-        .filter_map(|i| {
-            group_id.get(i).map(|gid| ExceptionGroup {
-                group_id: gid.to_string(),
-                exc_type: exc_type.get(i).unwrap_or("").to_string(),
-                sample_message: message.get(i).unwrap_or("").to_string(),
-                count: count.get(i).unwrap_or(0),
-                first_seen_ms: first.get(i).unwrap_or(0),
-                last_seen_ms: last.get(i).unwrap_or(0),
-                status: ExceptionStatus::Unresolved,
-                note: None,
-            })
-        })
-        .collect())
-}
-
-/// Like [`exception_groups`] but across **every** source, grouped by
-/// `(fingerprint, source)`. A fingerprint is computed from the error alone, so the
-/// same `exc_group` legitimately occurs on multiple sources/projects; keeping the
-/// source in the key keeps those occurrences separate. The caller folds per-source
-/// rows up to per-project rows for the global Exceptions inbox.
-pub fn global_exception_groups(
+/// Exception groups matching the compiled filter, grouped by
+/// `(fingerprint, source)` with a [`TREND_BUCKETS`]-bucket occurrence trend
+/// each. A fingerprint is computed from the error alone, so the same
+/// `exc_group` legitimately occurs on multiple sources/projects; keeping the
+/// source in the key keeps those occurrences separate. The caller folds
+/// per-source rows up to per-project rows (summing trends element-wise) for
+/// the global Exceptions inbox.
+pub fn exception_groups_by_source(
     store: &Store,
     parquet_dir: &str,
     from_ms: i64,
     to_ms: i64,
+    filter: Option<&CompiledFilter>,
 ) -> Result<Vec<(ExceptionGroup, String)>> {
-    let df = combined(store, parquet_dir, from_ms, to_ms)?
+    let mut lf = combined(store, parquet_dir, from_ms, to_ms)?
         .filter(col("kind").eq(lit("exception")))
-        .filter(col("exc_group").is_not_null())
+        .filter(col("exc_group").is_not_null());
+    if let Some(filter) = filter {
+        lf = lf.filter(filter.predicate.clone());
+    }
+    let df = lf
         .group_by([col("exc_group"), col("source")])
         .agg([
             len().cast(DataType::Int64).alias("count"),
@@ -209,6 +151,7 @@ pub fn global_exception_groups(
             col("received_ms").max().cast(DataType::Int64).alias("last_seen"),
             col("exc_type").first().alias("exc_type"),
             col("exc_message").first().alias("sample_message"),
+            col("received_ms").alias("times"),
         ])
         .sort(["last_seen"], SortMultipleOptions::default().with_order_descending(true))
         .limit(500)
@@ -222,6 +165,7 @@ pub fn global_exception_groups(
     let exc_type = df.column("exc_type").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
     let message = df.column("sample_message").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
     let source = df.column("source").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let times = df.column("times").or_system_err(ADVICE)?.list().or_system_err(ADVICE)?;
 
     Ok((0..df.height())
         .filter_map(|i| {
@@ -236,6 +180,7 @@ pub fn global_exception_groups(
                         last_seen_ms: last.get(i).unwrap_or(0),
                         status: ExceptionStatus::Unresolved,
                         note: None,
+                        trend: trend_of(list_i64(&times, i).into_iter(), from_ms, to_ms),
                     },
                     source.get(i).unwrap_or("").to_string(),
                 )
@@ -244,10 +189,14 @@ pub fn global_exception_groups(
         .collect())
 }
 
-/// A single exception group with its most-recent occurrences, derived from **one**
-/// scan filtered to that group. Looked up by id directly (no top-N cap), so a linked
-/// or bookmarked group opens regardless of how many fingerprints a project has.
-/// Returns `None` if the group has no occurrences in `[from_ms, to_ms]`.
+/// A single exception group in forensic detail: the aggregate (with trend),
+/// how its occurrences distribute across key dimensions, and its **distinct
+/// variants** — occurrences collapsed by (message, stack, handledness) so an
+/// operator scrubs through genuinely different examples rather than paging
+/// hundreds of identical ones. Derived from one scan filtered to the group;
+/// looked up by id directly (no top-N cap), so a linked or bookmarked group
+/// opens regardless of how many fingerprints a project has. Returns `None` if
+/// the group has no occurrences in `[from_ms, to_ms)`.
 pub fn exception_detail(
     store: &Store,
     parquet_dir: &str,
@@ -256,7 +205,7 @@ pub fn exception_detail(
     from_ms: i64,
     to_ms: i64,
     limit: usize,
-) -> Result<Option<(ExceptionGroup, Vec<ExceptionOccurrence>)>> {
+) -> Result<Option<ExceptionGroupDetail>> {
     let df = combined(store, parquet_dir, from_ms, to_ms)?
         .filter(source_filter(sources))
         .filter(col("kind").eq(lit("exception")))
@@ -269,6 +218,10 @@ pub fn exception_detail(
             col("received_ms").cast(DataType::Int64).alias("received_ms"),
             col("ua_browser"),
             col("ua_os"),
+            col("ua_device"),
+            col("app_version"),
+            col("source"),
+            col("metadata_json"),
         ])
         .sort(["received_ms"], SortMultipleOptions::default().with_order_descending(true))
         .collect()
@@ -281,14 +234,10 @@ pub fn exception_detail(
 
     let exc_type = df.column("exc_type").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
     let message = df.column("exc_message").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let stack = df.column("exc_stack").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let handled = df.column("exc_handled").or_system_err(ADVICE)?.bool().or_system_err(ADVICE)?;
     let received = df.column("received_ms").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let browser = df.column("ua_browser").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let os = df.column("ua_os").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
 
-    // Rows are newest-first: index 0 is the most recent occurrence, the last index the
-    // oldest. The aggregate spans every row; the returned occurrences keep `limit`.
+    // Rows are newest-first: index 0 is the most recent occurrence, the last
+    // index the oldest. The aggregate spans every row.
     let group = ExceptionGroup {
         group_id: group_id.to_string(),
         exc_type: exc_type.get(0).unwrap_or("").to_string(),
@@ -298,26 +247,142 @@ pub fn exception_detail(
         last_seen_ms: received.get(0).unwrap_or(0),
         status: ExceptionStatus::Unresolved,
         note: None,
+        trend: trend_of((0..height).filter_map(|i| received.get(i)), from_ms, to_ms),
     };
 
-    let occurrences = (0..height.min(limit))
-        .map(|i| ExceptionOccurrence {
-            exc_type: exc_type.get(i).unwrap_or("").to_string(),
+    let breakdowns = ExceptionBreakdowns {
+        app_versions: count_by(&df, "app_version")?,
+        browsers: count_by(&df, "ua_browser")?,
+        operating_systems: count_by(&df, "ua_os")?,
+        devices: count_by(&df, "ua_device")?,
+        sources: count_by(&df, "source")?,
+    };
+    let variants = variants_of(&df, limit)?;
+
+    Ok(Some(ExceptionGroupDetail { group, breakdowns, variants }))
+}
+
+/// Occurrence counts per value of `column` (nulls under the empty-string
+/// sentinel), largest first.
+fn count_by(occurrences: &DataFrame, column: &str) -> Result<Vec<CountRow>> {
+    let df = occurrences
+        .clone()
+        .lazy()
+        .with_columns([col(column).fill_null(lit("")).alias("key")])
+        .group_by([col("key")])
+        .agg([len().cast(DataType::Int64).alias("count")])
+        .sort(["count"], SortMultipleOptions::default().with_order_descending(true))
+        .limit(BREAKDOWN_LIMIT)
+        .collect()
+        .or_system_err(ADVICE)?;
+
+    let keys = df.column("key").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let counts = df.column("count").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    Ok((0..df.height())
+        .filter_map(|i| {
+            keys.get(i).map(|key| CountRow {
+                key: key.to_string(),
+                count: counts.get(i).unwrap_or(0),
+            })
+        })
+        .collect())
+}
+
+/// Collapse a group's occurrences (already sorted newest-first) into distinct
+/// variants keyed by (message, stack, handledness): one representative each,
+/// counted, most frequent first. The representative context (client, source,
+/// version, reporter metadata) comes from the variant's latest occurrence.
+fn variants_of(occurrences: &DataFrame, limit: usize) -> Result<Vec<ExceptionVariant>> {
+    let df = occurrences
+        .clone()
+        .lazy()
+        .group_by([col("exc_message"), col("exc_stack"), col("exc_handled")])
+        .agg([
+            len().cast(DataType::Int64).alias("count"),
+            col("received_ms").min().alias("first_seen"),
+            col("received_ms").max().alias("last_seen"),
+            // The frame is newest-first, so `first()` is the latest context.
+            col("ua_browser").first().alias("ua_browser"),
+            col("ua_os").first().alias("ua_os"),
+            col("source").first().alias("source"),
+            col("app_version").first().alias("app_version"),
+            // Metadata is optional per report; surface the latest occurrence
+            // that actually carried some.
+            col("metadata_json").drop_nulls().first().alias("metadata_json"),
+        ])
+        .sort(["count"], SortMultipleOptions::default().with_order_descending(true))
+        .limit(limit as u32)
+        .collect()
+        .or_system_err(ADVICE)?;
+
+    let message = df.column("exc_message").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let stack = df.column("exc_stack").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let handled = df.column("exc_handled").or_system_err(ADVICE)?.bool().or_system_err(ADVICE)?;
+    let count = df.column("count").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let first = df.column("first_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let last = df.column("last_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let browser = df.column("ua_browser").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let os = df.column("ua_os").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let source = df.column("source").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let version = df.column("app_version").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let metadata = df.column("metadata_json").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+
+    Ok((0..df.height())
+        .map(|i| ExceptionVariant {
             message: message.get(i).unwrap_or("").to_string(),
             stack: stack.get(i).map(str::to_string),
             handled: handled.get(i).unwrap_or(false),
-            received_ms: received.get(i).unwrap_or(0),
+            count: count.get(i).unwrap_or(0),
+            first_seen_ms: first.get(i).unwrap_or(0),
+            last_seen_ms: last.get(i).unwrap_or(0),
             ua_browser: browser.get(i).map(str::to_string),
             ua_os: os.get(i).map(str::to_string),
+            source: source.get(i).map(str::to_string),
+            app_version: version.get(i).map(str::to_string),
+            metadata: metadata.get(i).map(str::to_string),
         })
-        .collect();
+        .collect())
+}
 
-    Ok(Some((group, occurrences)))
+/// Sum two trend vectors element-wise (for folding per-source rows into
+/// per-project rows; both are computed on the same `[from, to)` bucket grid).
+pub fn merge_trends(into: &mut Vec<i64>, other: &[i64]) {
+    if into.len() < other.len() {
+        into.resize(other.len(), 0);
+    }
+    for (i, v) in other.iter().enumerate() {
+        into[i] += v;
+    }
 }
 
 // ----------------------------------------------------------------- internals
 
-/// The time-filtered union of the cold Parquet partitions and the redb hot store.
+/// Occurrence timestamps bucketed into [`TREND_BUCKETS`] equal slices of
+/// `[from, to)`, oldest first.
+fn trend_of(times: impl Iterator<Item = i64>, from_ms: i64, to_ms: i64) -> Vec<i64> {
+    let span = (to_ms - from_ms).max(1) as i128;
+    let mut buckets = vec![0i64; TREND_BUCKETS];
+    for t in times {
+        let idx = ((t - from_ms) as i128 * TREND_BUCKETS as i128 / span)
+            .clamp(0, TREND_BUCKETS as i128 - 1) as usize;
+        buckets[idx] += 1;
+    }
+    buckets
+}
+
+/// The `i64` values of row `i` of a list column.
+fn list_i64(column: &ListChunked, i: usize) -> Vec<i64> {
+    let Some(series) = column.get_as_series(i) else {
+        return Vec::new();
+    };
+    let Ok(values) = series.i64() else {
+        return Vec::new();
+    };
+    (0..values.len()).filter_map(|j| values.get(j)).collect()
+}
+
+/// The time-filtered (half-open `[from, to)`) union of the cold Parquet
+/// partitions and the redb hot store.
 fn combined(store: &Store, parquet_dir: &str, from_ms: i64, to_ms: i64) -> Result<LazyFrame> {
     let mut frames: Vec<LazyFrame> = Vec::new();
     for file in parquet_files_in_range(Path::new(parquet_dir), from_ms, to_ms) {
@@ -334,10 +399,14 @@ fn combined(store: &Store, parquet_dir: &str, from_ms: i64, to_ms: i64) -> Resul
     let combined = if frames.len() == 1 {
         frames.pop().expect("one frame")
     } else {
+        // Diagonal: partitions written before a column existed (e.g. the app
+        // attribution columns) read back with that column as nulls instead of
+        // failing the union.
         concat(
             frames,
             UnionArgs {
                 to_supertypes: true,
+                diagonal: true,
                 ..Default::default()
             },
         )
@@ -353,7 +422,7 @@ fn combined(store: &Store, parquet_dir: &str, from_ms: i64, to_ms: i64) -> Resul
         .filter(
             col("received_ms")
                 .gt_eq(lit(from_ms))
-                .and(col("received_ms").lt_eq(lit(to_ms))),
+                .and(col("received_ms").lt(lit(to_ms))),
         )
         .unique(None, UniqueKeepStrategy::Any))
 }
@@ -367,7 +436,12 @@ fn source_filter(sources: &[String]) -> Expr {
     expr
 }
 
-fn summary(base: LazyFrame) -> Result<MetricSummary> {
+/// Pixel hits and custom application events (counted as `events`, not pageviews).
+fn is_event() -> Expr {
+    col("kind").eq(lit("pixel")).or(col("kind").eq(lit("custom")))
+}
+
+fn summary(base: LazyFrame, unique_flag: &str) -> Result<MetricSummary> {
     let df = base
         .select([
             col("kind")
@@ -377,10 +451,11 @@ fn summary(base: LazyFrame) -> Result<MetricSummary> {
                 .alias("pageviews"),
             col("kind")
                 .eq(lit("page_load"))
-                .and(col("is_unique_user"))
+                .and(col(unique_flag))
                 .sum()
                 .cast(DataType::Int64)
                 .alias("visitors"),
+            is_event().sum().cast(DataType::Int64).alias("events"),
             col("duration_ms")
                 .is_not_null()
                 .sum()
@@ -408,26 +483,42 @@ fn summary(base: LazyFrame) -> Result<MetricSummary> {
     Ok(MetricSummary {
         visitors: scalar_i64(&df, "visitors"),
         pageviews: scalar_i64(&df, "pageviews"),
+        events: scalar_i64(&df, "events"),
         bounce_rate: (samples >= MIN_BOUNCE_SAMPLES).then(|| bounces as f64 / samples as f64),
         median_duration_ms: median.map(|m| m.round() as i64),
     })
 }
 
-/// A continuous time series over `[from_ms, to_ms]` at `bucket_ms` resolution.
+/// A continuous time series over `[from_ms, to_ms)` at `bucket_ms` resolution.
 /// Buckets with no events are emitted as zeros so the chart shows a gap-free line
 /// across the whole window instead of collapsing absent periods.
-fn timeseries(base: LazyFrame, from_ms: i64, to_ms: i64, bucket_ms: i64) -> Result<Vec<TimeSeriesPoint>> {
+fn timeseries(
+    base: LazyFrame,
+    from_ms: i64,
+    to_ms: i64,
+    bucket_ms: i64,
+    unique_flag: &str,
+) -> Result<Vec<TimeSeriesPoint>> {
     let bucket_ms = bucket_ms.max(1);
+    let is_exception = col("kind").eq(lit("exception"));
     let df = base
-        .filter(col("kind").eq(lit("page_load")))
+        .filter(col("kind").eq(lit("page_load")).or(is_event()).or(is_exception.clone()))
         .with_columns([(col("received_ms") - col("received_ms") % lit(bucket_ms)).alias("bucket")])
         .group_by([col("bucket")])
         .agg([
-            len().cast(DataType::Int64).alias("pageviews"),
-            col("is_unique_user")
+            col("kind")
+                .eq(lit("page_load"))
+                .sum()
+                .cast(DataType::Int64)
+                .alias("pageviews"),
+            col("kind")
+                .eq(lit("page_load"))
+                .and(col(unique_flag))
                 .sum()
                 .cast(DataType::Int64)
                 .alias("visitors"),
+            is_event().sum().cast(DataType::Int64).alias("events"),
+            is_exception.sum().cast(DataType::Int64).alias("exceptions"),
         ])
         .collect()
         .or_system_err(ADVICE)?;
@@ -435,25 +526,37 @@ fn timeseries(base: LazyFrame, from_ms: i64, to_ms: i64, bucket_ms: i64) -> Resu
     let bucket = df.column("bucket").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
     let pageviews = df.column("pageviews").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
     let visitors = df.column("visitors").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let events = df.column("events").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let exceptions = df.column("exceptions").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
 
     // Index the populated buckets, then walk every bucket in the window.
-    let mut counts: std::collections::HashMap<i64, (i64, i64)> = std::collections::HashMap::new();
+    let mut counts: HashMap<i64, (i64, i64, i64, i64)> = HashMap::new();
     for i in 0..df.height() {
         if let Some(b) = bucket.get(i) {
-            counts.insert(b, (pageviews.get(i).unwrap_or(0), visitors.get(i).unwrap_or(0)));
+            counts.insert(
+                b,
+                (
+                    pageviews.get(i).unwrap_or(0),
+                    visitors.get(i).unwrap_or(0),
+                    events.get(i).unwrap_or(0),
+                    exceptions.get(i).unwrap_or(0),
+                ),
+            );
         }
     }
 
+    let point = |timestamp_ms: i64, (pageviews, visitors, events, exceptions): (i64, i64, i64, i64)| {
+        TimeSeriesPoint { timestamp_ms, pageviews, visitors, events, exceptions }
+    };
+
     let first = from_ms - from_ms.rem_euclid(bucket_ms);
-    let last = to_ms - to_ms.rem_euclid(bucket_ms);
+    let last = (to_ms - 1) - (to_ms - 1).rem_euclid(bucket_ms);
     // Guard against a pathological window/bucket combination producing a huge vec.
     let estimated = ((last - first) / bucket_ms).unsigned_abs() as usize + 1;
     if first > last || estimated > 5_000 {
         // Fall back to the populated buckets only (sorted).
-        let mut points: Vec<TimeSeriesPoint> = counts
-            .into_iter()
-            .map(|(b, (p, v))| TimeSeriesPoint { timestamp_ms: b, pageviews: p, visitors: v })
-            .collect();
+        let mut points: Vec<TimeSeriesPoint> =
+            counts.into_iter().map(|(b, tuple)| point(b, tuple)).collect();
         points.sort_by_key(|p| p.timestamp_ms);
         return Ok(points);
     }
@@ -461,54 +564,61 @@ fn timeseries(base: LazyFrame, from_ms: i64, to_ms: i64, bucket_ms: i64) -> Resu
     let mut points = Vec::with_capacity(estimated);
     let mut b = first;
     while b <= last {
-        let (pageviews, visitors) = counts.get(&b).copied().unwrap_or((0, 0));
-        points.push(TimeSeriesPoint { timestamp_ms: b, pageviews, visitors });
+        points.push(point(b, counts.get(&b).copied().unwrap_or((0, 0, 0, 0))));
         b += bucket_ms;
     }
     Ok(points)
 }
 
-fn breakdown(pageloads: LazyFrame, column: &str) -> Result<Vec<KeyCount>> {
+/// A dimension breakdown over the page-load frame. Null (and empty) dimension
+/// values aggregate under the sentinel empty-string key rather than being
+/// dropped, so direct traffic and unknown values stay visible and filterable and
+/// share percentages stay honest.
+fn breakdown(pageloads: LazyFrame, column: &str, unique_flag: &str) -> Result<Vec<BreakdownRow>> {
     let df = pageloads
-        .filter(col(column).is_not_null())
-        .group_by([col(column)])
-        .agg([len().cast(DataType::Int64).alias("count")])
-        .sort(["count"], SortMultipleOptions::default().with_order_descending(true))
+        .with_columns([col(column).fill_null(lit("")).alias("key")])
+        .group_by([col("key")])
+        .agg([
+            len().cast(DataType::Int64).alias("pageviews"),
+            col(unique_flag).sum().cast(DataType::Int64).alias("visitors"),
+        ])
+        .sort(["pageviews"], SortMultipleOptions::default().with_order_descending(true))
         .limit(BREAKDOWN_LIMIT)
         .collect()
         .or_system_err(ADVICE)?;
 
-    let keys = df.column(column).or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let counts = df.column("count").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let keys = df.column("key").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let pageviews = df.column("pageviews").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let visitors = df.column("visitors").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
 
     Ok((0..df.height())
         .filter_map(|i| {
-            keys.get(i).map(|key| KeyCount {
+            keys.get(i).map(|key| BreakdownRow {
                 key: key.to_string(),
-                count: counts.get(i).unwrap_or(0),
+                pageviews: pageviews.get(i).unwrap_or(0),
+                visitors: visitors.get(i).unwrap_or(0),
+                events: 0,
             })
         })
         .collect())
 }
 
-/// Per-source `(uri, visitors, pageviews)` totals. Page loads, pixel hits, and
-/// custom events all count toward `pageviews` so pixel-only and application sources
-/// still surface on the overview; `visitors` stays page-load specific (only page
-/// loads carry the daily-unique flag).
-fn per_source_totals(base: LazyFrame) -> Result<Vec<(String, i64, i64)>> {
-    let counted = col("kind")
-        .eq(lit("page_load"))
-        .or(col("kind").eq(lit("pixel")))
-        .or(col("kind").eq(lit("custom")));
+/// Per-source totals. Page loads count as `pageviews`; pixel hits and custom
+/// events count as `events` so pixel-only and application sources still surface;
+/// `visitors` uses the same daily-unique flag as every other aggregation in the
+/// response (only page loads carry it), so the panels agree with the headline.
+fn source_rollup(base: LazyFrame, unique_flag: &str) -> Result<Vec<BreakdownRow>> {
     let df = base
-        .filter(counted)
+        .filter(col("kind").eq(lit("page_load")).or(is_event()))
         .group_by([col("source")])
         .agg([
-            len().cast(DataType::Int64).alias("pageviews"),
-            col("is_unique_user")
+            col("kind")
+                .eq(lit("page_load"))
                 .sum()
                 .cast(DataType::Int64)
-                .alias("visitors"),
+                .alias("pageviews"),
+            col(unique_flag).sum().cast(DataType::Int64).alias("visitors"),
+            is_event().sum().cast(DataType::Int64).alias("events"),
         ])
         .collect()
         .or_system_err(ADVICE)?;
@@ -516,18 +626,80 @@ fn per_source_totals(base: LazyFrame) -> Result<Vec<(String, i64, i64)>> {
     let sources = df.column("source").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
     let pageviews = df.column("pageviews").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
     let visitors = df.column("visitors").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let events = df.column("events").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
 
-    Ok((0..df.height())
+    let mut rows: Vec<BreakdownRow> = (0..df.height())
         .filter_map(|i| {
-            sources.get(i).map(|s| {
-                (
-                    s.to_string(),
-                    visitors.get(i).unwrap_or(0),
-                    pageviews.get(i).unwrap_or(0),
-                )
+            sources.get(i).map(|s| BreakdownRow {
+                key: s.to_string(),
+                pageviews: pageviews.get(i).unwrap_or(0),
+                visitors: visitors.get(i).unwrap_or(0),
+                events: events.get(i).unwrap_or(0),
             })
         })
-        .collect())
+        .collect();
+    rows.sort_by_key(|r| std::cmp::Reverse(r.pageviews + r.events));
+    Ok(rows)
+}
+
+/// Fold per-source totals up to per-project rows, and split off the sources that
+/// belong to no project (the operator's "assign these" inbox). Also returns the
+/// per-source rows themselves, capped like every other breakdown.
+fn project_rollup(
+    store: &Store,
+    per_source: Vec<BreakdownRow>,
+) -> Result<(Vec<BreakdownRow>, Vec<BreakdownRow>, Vec<BreakdownRow>)> {
+    // Build a source-URI -> project map from assigned sources and pixels.
+    let mut uri_project: HashMap<String, String> = HashMap::new();
+    for source in store.list_sources()? {
+        if let Some(project_id) = source.project_id {
+            uri_project.insert(source.uri, project_id);
+        }
+    }
+    for pixel in store.list_pixels()? {
+        uri_project.insert(pixel_source(&pixel.id), pixel.project_id);
+    }
+
+    let mut totals: HashMap<String, BreakdownRow> = HashMap::new();
+    let mut unassigned: Vec<BreakdownRow> = Vec::new();
+    for row in &per_source {
+        match uri_project.get(&row.key) {
+            Some(project_id) => {
+                let entry = totals.entry(project_id.clone()).or_insert_with(|| BreakdownRow {
+                    key: project_id.clone(),
+                    visitors: 0,
+                    pageviews: 0,
+                    events: 0,
+                });
+                entry.visitors += row.visitors;
+                entry.pageviews += row.pageviews;
+                entry.events += row.events;
+            }
+            None => unassigned.push(row.clone()),
+        }
+    }
+
+    // Every project appears, even with zero traffic in the window, so the panel
+    // doubles as the project directory.
+    let mut projects: Vec<BreakdownRow> = store
+        .list_projects()?
+        .into_iter()
+        .map(|project| {
+            totals.remove(&project.id).unwrap_or(BreakdownRow {
+                key: project.id,
+                visitors: 0,
+                pageviews: 0,
+                events: 0,
+            })
+        })
+        .collect();
+    projects.sort_by_key(|r| std::cmp::Reverse(r.pageviews + r.events));
+    unassigned.sort_by_key(|r| std::cmp::Reverse(r.pageviews + r.events));
+
+    let mut sources = per_source;
+    sources.truncate(BREAKDOWN_LIMIT as usize);
+
+    Ok((projects, sources, unassigned))
 }
 
 fn scalar_i64(df: &DataFrame, name: &str) -> i64 {
@@ -615,10 +787,20 @@ mod tests {
             source: source.into(),
             pathname: Some("/home".into()),
             is_unique_user: unique,
+            is_unique_page: unique,
             ua_browser: Some("Chrome".into()),
             duration_ms: duration,
             ..Default::default()
         }
+    }
+
+    /// Compile a dashboard `q` expression (panics on error — tests only).
+    fn dash_filter(store: &Store, q: &str) -> CompiledFilter {
+        filter::compile_query(q, filter::FieldSet::Dashboard, store).unwrap().unwrap()
+    }
+
+    fn source_q(source: &str) -> String {
+        format!(r#"source == "{source}""#)
     }
 
     #[test]
@@ -635,20 +817,21 @@ mod tests {
             .unwrap();
 
         // No parquet dir -> hot store only.
-        let stats = stats_for_sources(
+        let filter = dash_filter(&store, &source_q("https://a.com"));
+        let dash = dashboard(
             &store,
             "/nonexistent-parquet",
-            &["https://a.com".to_string()],
+            Some(&filter),
             0,
             10_000,
             86_400_000,
         )
         .unwrap();
 
-        assert_eq!(stats.summary.pageviews, 3);
-        assert_eq!(stats.summary.visitors, 2); // two unique loads for a.com
-        assert_eq!(stats.pages.first().map(|p| p.key.as_str()), Some("/home"));
-        assert_eq!(stats.pages.first().map(|p| p.count), Some(3));
+        assert_eq!(dash.summary.pageviews, 3);
+        assert_eq!(dash.summary.visitors, 2); // two unique loads for a.com
+        assert_eq!(dash.breakdowns.pages.first().map(|p| p.key.as_str()), Some("/home"));
+        assert_eq!(dash.breakdowns.pages.first().map(|p| p.pageviews), Some(3));
 
         drop(store);
         let _ = std::fs::remove_file(&redb);
@@ -667,20 +850,228 @@ mod tests {
             ])
             .unwrap();
 
-        let stats = stats_for_sources(
+        let filter = dash_filter(&store, &source_q("https://a.com"));
+        let dash =
+            dashboard(&store, "/none", Some(&filter), 0, 3 * day, day).unwrap();
+
+        // Buckets at 0, 1d, 2d — empty days filled with zeros, not dropped
+        // (the range is half-open, so the bucket at 3d is not included).
+        assert_eq!(dash.timeseries.len(), 3);
+        assert_eq!(dash.timeseries[0].pageviews, 2);
+        assert!(dash.timeseries[1..].iter().all(|p| p.pageviews == 0 && p.visitors == 0));
+
+        // The comparison series is index-aligned: identical length, shifted stamps.
+        assert_eq!(dash.previous_timeseries.len(), dash.timeseries.len());
+        for (prev, cur) in dash.previous_timeseries.iter().zip(&dash.timeseries) {
+            assert_eq!(prev.timestamp_ms, cur.timestamp_ms - 3 * day);
+        }
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    #[test]
+    fn previous_window_feeds_summary_not_current() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        // One view in the previous window, two in the current one. The event at
+        // exactly `from` belongs to the current window only (half-open ranges).
+        store
+            .append_events(&[
+                load("https://a.com", 4_000, true, None),
+                load("https://a.com", 10_000, true, None),
+                load("https://a.com", 12_000, false, None),
+            ])
+            .unwrap();
+
+        let filter = dash_filter(&store, &source_q("https://a.com"));
+        let dash = dashboard(
             &store,
             "/none",
-            &["https://a.com".to_string()],
-            0,
-            3 * day,
-            day,
+            Some(&filter),
+            10_000,
+            20_000,
+            86_400_000,
         )
         .unwrap();
 
-        // Buckets at 0, 1d, 2d, 3d — empty days filled with zeros, not dropped.
-        assert_eq!(stats.timeseries.len(), 4);
-        assert_eq!(stats.timeseries[0].pageviews, 2);
-        assert!(stats.timeseries[1..].iter().all(|p| p.pageviews == 0 && p.visitors == 0));
+        assert_eq!(dash.summary.pageviews, 2);
+        assert_eq!(dash.previous_summary.pageviews, 1);
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    #[test]
+    fn query_expressions_scope_everything() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        let mut firefox = load("https://a.com", 2_000, false, None);
+        firefox.ua_browser = Some("Firefox".into());
+        let mut direct = load("https://a.com", 3_000, false, None);
+        direct.ua_browser = None;
+        store
+            .append_events(&[load("https://a.com", 1_000, true, None), firefox, direct])
+            .unwrap();
+
+        // Equality is case-insensitive, mirroring the filter language.
+        let filter = dash_filter(&store, r#"browser == "chrome""#);
+        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        assert_eq!(dash.summary.pageviews, 1);
+        assert_eq!(dash.summary.visitors, 1);
+
+        // Disjunction spans values.
+        let filter = dash_filter(&store, r#"browser == "Chrome" || browser == "Firefox""#);
+        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        assert_eq!(dash.summary.pageviews, 2);
+
+        // Membership lists work too.
+        let filter = dash_filter(&store, r#"browser in ["chrome", "firefox"]"#);
+        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        assert_eq!(dash.summary.pageviews, 2);
+
+        // An empty value matches events where the dimension is absent.
+        let filter = dash_filter(&store, r#"browser == """#);
+        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        assert_eq!(dash.summary.pageviews, 1);
+        assert_eq!(dash.summary.visitors, 0);
+
+        // The absent value surfaces as a sentinel row rather than being dropped.
+        let dash = dashboard(&store, "/none", None, 0, 10_000, 86_400_000).unwrap();
+        let sentinel = dash.breakdowns.browsers.iter().find(|r| r.key.is_empty());
+        assert_eq!(sentinel.map(|r| r.pageviews), Some(1));
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    #[test]
+    fn source_filter_matches_bare_hostnames() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        store.append_events(&[load("https://a.com", 1_000, true, None)]).unwrap();
+
+        let filter = dash_filter(&store, r#"source == "a.com""#);
+        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        assert_eq!(dash.summary.pageviews, 1);
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    #[test]
+    fn source_membership_selects_multiple_sources() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        store
+            .append_events(&[
+                load("https://a.com", 1_000, true, None),
+                load("https://b.com", 2_000, true, None),
+                load("https://c.com", 3_000, true, None), // excluded
+                typed("pixel://p1", 4_000, EventKind::Pixel),
+            ])
+            .unwrap();
+
+        // Bare hostnames expand to every canonical URI form.
+        let filter = dash_filter(&store, r#"source in ["a.com", "b.com", "p1"]"#);
+        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        assert_eq!(dash.summary.pageviews, 2);
+        assert_eq!(dash.summary.events, 1); // the pixel matched via pixel://p1
+        assert!(dash.breakdowns.sources.iter().all(|r| r.key != "https://c.com"));
+
+        // Mixed bare and fully-qualified names work too.
+        let filter = dash_filter(&store, r#"source in ["https://a.com", "b.com"]"#);
+        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        assert_eq!(dash.summary.pageviews, 2);
+        assert_eq!(dash.summary.events, 0);
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    #[test]
+    fn sentinel_filter_excludes_pixel_and_custom_events() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        let mut no_browser = load("https://a.com", 1_000, false, None);
+        no_browser.ua_browser = None;
+        store
+            .append_events(&[
+                load("https://a.com", 2_000, true, None), // Chrome
+                no_browser,
+                typed("pixel://p1", 3_000, EventKind::Pixel),
+            ])
+            .unwrap();
+
+        // browser == "" (absent) must match the browserless page view but NOT
+        // the pixel hit, whose dimensions are null for a different reason.
+        let filter = dash_filter(&store, r#"browser == """#);
+        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        assert_eq!(dash.summary.pageviews, 1);
+        assert_eq!(dash.summary.events, 0);
+        assert!(dash.breakdowns.sources.iter().all(|r| r.key != "pixel://p1"));
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    #[test]
+    fn path_filter_switches_rollup_visitors_too() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        // A non-landing page view: not the visitor's first load of the day
+        // (is_unique_user=false) but the first view of that page.
+        let mut blog = load("https://a.com", 1_000, false, None);
+        blog.pathname = Some("/blog".into());
+        blog.is_unique_page = true;
+        store.append_events(&[blog]).unwrap();
+
+        let filter = dash_filter(&store, r#"path == "/blog""#);
+        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        // The sources rollup must agree with the headline visitor count.
+        assert_eq!(dash.summary.visitors, 1);
+        let source = dash.breakdowns.sources.first().expect("source row");
+        assert_eq!(source.visitors, 1);
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    #[test]
+    fn path_filter_counts_unique_page_views_as_visitors() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        // A visitor lands on / (daily-unique) then reads /blog: the /blog view is
+        // not their first of the day (is_unique_user=false) but *is* the first
+        // view of that page (is_unique_page=true).
+        let mut landing = load("https://a.com", 1_000, true, None);
+        landing.pathname = Some("/".into());
+        let mut blog = load("https://a.com", 2_000, false, None);
+        blog.pathname = Some("/blog".into());
+        blog.is_unique_page = true;
+        store.append_events(&[landing, blog]).unwrap();
+
+        let filter = dash_filter(&store, r#"path == "/blog""#);
+        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        assert_eq!(dash.summary.pageviews, 1);
+        // is_unique_user would report 0 here; is_unique_page reports the truth.
+        assert_eq!(dash.summary.visitors, 1);
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    #[test]
+    fn project_with_no_sources_sees_no_traffic() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        store.append_events(&[load("https://a.com", 1_000, true, None)]).unwrap();
+
+        let filter = dash_filter(&store, r#"project == "empty-project""#);
+        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        assert_eq!(dash.summary.pageviews, 0);
+        assert_eq!(dash.summary.visitors, 0);
+        assert!(dash.breakdowns.sources.is_empty());
 
         drop(store);
         let _ = std::fs::remove_file(&redb);
@@ -716,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn global_exception_groups_keep_sources_separate() {
+    fn exception_groups_keep_sources_separate_and_carry_trends() {
         let redb = temp_redb();
         let store = Store::open(&redb).unwrap();
         // Same fingerprint on two different sources (e.g. a shared-library error).
@@ -728,14 +1119,17 @@ mod tests {
             ])
             .unwrap();
 
-        let rows = global_exception_groups(&store, "/none", 0, 10_000).unwrap();
+        let rows = exception_groups_by_source(&store, "/none", 0, 10_000, None).unwrap();
         // One row per (fingerprint, source) — not collapsed across sources.
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|(g, _)| g.group_id == "g1"));
         let a = rows.iter().find(|(_, s)| s == "https://a.com").unwrap();
         assert_eq!(a.0.count, 2);
+        assert_eq!(a.0.trend.len(), TREND_BUCKETS);
+        assert_eq!(a.0.trend.iter().sum::<i64>(), 2);
         let b = rows.iter().find(|(_, s)| s == "https://b.com").unwrap();
         assert_eq!(b.0.count, 1);
+        assert_eq!(b.0.trend.iter().sum::<i64>(), 1);
 
         drop(store);
         let _ = std::fs::remove_file(&redb);
@@ -765,10 +1159,11 @@ mod tests {
             .join("events-1.parquet");
         crate::store::write_partition(&archived, &partition).unwrap();
 
-        let stats = stats_for_sources(
+        let filter = dash_filter(&store, &source_q("https://a.com"));
+        let dash = dashboard(
             &store,
             parquet_dir.to_str().unwrap(),
-            &["https://a.com".to_string()],
+            Some(&filter),
             0,
             10_000,
             86_400_000,
@@ -776,8 +1171,8 @@ mod tests {
         .unwrap();
 
         // Without dedup this would double to 4 pageviews / 2 visitors.
-        assert_eq!(stats.summary.pageviews, 2);
-        assert_eq!(stats.summary.visitors, 1);
+        assert_eq!(dash.summary.pageviews, 2);
+        assert_eq!(dash.summary.visitors, 1);
 
         drop(store);
         let _ = std::fs::remove_file(&redb);
@@ -788,21 +1183,28 @@ mod tests {
     fn exception_group_lookup_ignores_the_recency_cap() {
         let redb = temp_redb();
         let store = Store::open(&redb).unwrap();
-        let events: Vec<_> = (1..=205).map(|i| exc(&format!("g{i}"), i * 1_000)).collect();
+        let events: Vec<_> = (1..=505).map(|i| exc(&format!("g{i}"), i * 1_000)).collect();
         store.append_events(&events).unwrap();
         let sources = ["https://a.com".to_string()];
 
-        // g1 is the oldest, so it falls outside the top-200-by-recency listing...
-        let listed = exception_groups(&store, "/none", &sources, 0, 10_000_000).unwrap();
-        assert_eq!(listed.len(), 200);
-        assert!(!listed.iter().any(|g| g.group_id == "g1"));
+        // g1 is the oldest, so it falls outside the top-500-by-recency listing...
+        let listing_filter =
+            filter::compile_query(&source_q("https://a.com"), filter::FieldSet::Exceptions, &store)
+                .unwrap()
+                .unwrap();
+        let listed =
+            exception_groups_by_source(&store, "/none", 0, 10_000_000, Some(&listing_filter))
+                .unwrap();
+        assert_eq!(listed.len(), 500);
+        assert!(!listed.iter().any(|(g, _)| g.group_id == "g1"));
 
-        // ...but a direct lookup still resolves it (group + occurrences in one scan).
+        // ...but a direct lookup still resolves it (group + variants in one scan).
         let g1 = exception_detail(&store, "/none", &sources, "g1", 0, 10_000_000, 10).unwrap();
-        let (group, occurrences) = g1.expect("g1 resolves");
-        assert_eq!(group.group_id, "g1");
-        assert_eq!(group.count, 1);
-        assert_eq!(occurrences.len(), 1);
+        let detail = g1.expect("g1 resolves");
+        assert_eq!(detail.group.group_id, "g1");
+        assert_eq!(detail.group.count, 1);
+        assert_eq!(detail.group.trend.iter().sum::<i64>(), 1);
+        assert_eq!(detail.variants.len(), 1);
         // An unknown group resolves to None.
         assert!(
             exception_detail(&store, "/none", &sources, "nope", 0, 10_000_000, 10)
@@ -815,7 +1217,78 @@ mod tests {
     }
 
     #[test]
-    fn overview_surfaces_pixel_and_custom_sources() {
+    fn exception_detail_collapses_variants_and_attributes_releases() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        // One group, three occurrences: two share a message/stack (one variant
+        // of count 2), the third differs. Different app versions throughout,
+        // and the latest occurrence of the repeated variant carries metadata.
+        let mut a1 = exc("g1", 1_000);
+        a1.exc_message = Some("boom at start".into());
+        a1.exc_stack = Some("at start (app.js)".into());
+        a1.app_version = Some("1.0.0".into());
+        let mut a2 = exc("g1", 2_000);
+        a2.exc_message = Some("boom at start".into());
+        a2.exc_stack = Some("at start (app.js)".into());
+        a2.app_version = Some("1.1.0".into());
+        a2.metadata_json = Some(r#"{"feature_flag":"checkout-v2"}"#.into());
+        let mut b = exc("g1", 3_000);
+        b.exc_message = Some("boom at shutdown".into());
+        b.exc_stack = Some("at shutdown (app.js)".into());
+        b.app_version = Some("1.1.0".into());
+        store.append_events(&[a1, a2, b]).unwrap();
+
+        let sources = ["https://a.com".to_string()];
+        let detail = exception_detail(&store, "/none", &sources, "g1", 0, 10_000, 10)
+            .unwrap()
+            .expect("g1 resolves");
+
+        // Two distinct variants; the repeated one carries its count and the
+        // context (source-as-app, version, metadata) of its latest occurrence.
+        assert_eq!(detail.variants.len(), 2);
+        let repeated = detail.variants.iter().find(|v| v.message == "boom at start").unwrap();
+        assert_eq!(repeated.count, 2);
+        assert_eq!(repeated.source.as_deref(), Some("https://a.com"));
+        assert_eq!(repeated.app_version.as_deref(), Some("1.1.0"));
+        assert_eq!(repeated.metadata.as_deref(), Some(r#"{"feature_flag":"checkout-v2"}"#));
+
+        // Distributions cover app versions (1.1.0 twice, 1.0.0 once), and the
+        // sources card doubles as the per-application distribution.
+        let versions = &detail.breakdowns.app_versions;
+        assert_eq!(versions.first().map(|r| (r.key.as_str(), r.count)), Some(("1.1.0", 2)));
+        assert!(versions.iter().any(|r| r.key == "1.0.0" && r.count == 1));
+        assert_eq!(
+            detail.breakdowns.sources.first().map(|r| (r.key.as_str(), r.count)),
+            Some(("https://a.com", 3))
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    #[test]
+    fn timeseries_counts_exceptions_alongside_traffic() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        store
+            .append_events(&[
+                load("https://a.com", 1_000, true, None),
+                exc_on("https://a.com", "g1", 1_500),
+                exc_on("https://a.com", "g1", 1_600),
+            ])
+            .unwrap();
+
+        let dash = dashboard(&store, "/none", None, 0, 10_000, 86_400_000).unwrap();
+        assert_eq!(dash.timeseries.len(), 1);
+        assert_eq!(dash.timeseries[0].pageviews, 1);
+        assert_eq!(dash.timeseries[0].exceptions, 2);
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    #[test]
+    fn dashboard_surfaces_pixel_and_custom_sources() {
         let redb = temp_redb();
         let store = Store::open(&redb).unwrap();
         store
@@ -826,20 +1299,22 @@ mod tests {
             ])
             .unwrap();
 
-        let overview = overview(&store, "/none", 0, 10_000, 86_400_000).unwrap();
-        let uris: Vec<&str> = overview.unassigned.iter().map(|u| u.uri.as_str()).collect();
+        let dash = dashboard(&store, "/none", None, 0, 10_000, 86_400_000).unwrap();
+        let uris: Vec<&str> = dash.unassigned.iter().map(|u| u.key.as_str()).collect();
         assert!(uris.contains(&"https://a.com"));
         assert!(uris.contains(&"pixel://p1")); // previously invisible
         assert!(uris.contains(&"app://svc")); // previously invisible
 
-        // The website keeps its visitor count; pixel/custom add views, not visitors.
-        let site = overview
-            .unassigned
-            .iter()
-            .find(|u| u.uri == "https://a.com")
-            .unwrap();
+        // The website keeps its visitor count; pixel/custom count as events, not
+        // pageviews, in both the rollup and the headline summary.
+        let site = dash.unassigned.iter().find(|u| u.key == "https://a.com").unwrap();
         assert_eq!(site.visitors, 1);
         assert_eq!(site.pageviews, 1);
+        assert_eq!(site.events, 0);
+        let pixel = dash.unassigned.iter().find(|u| u.key == "pixel://p1").unwrap();
+        assert_eq!(pixel.events, 1);
+        assert_eq!(dash.summary.pageviews, 1);
+        assert_eq!(dash.summary.events, 2);
 
         drop(store);
         let _ = std::fs::remove_file(&redb);

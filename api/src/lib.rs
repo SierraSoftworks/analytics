@@ -16,8 +16,8 @@ mod track;
 
 pub use auth::{AdminUser, CsrfToken};
 pub use exception::{
-    ExceptionGroup, ExceptionGroupDetail, ExceptionOccurrence, ExceptionReport, ExceptionStatus,
-    GlobalException, TriageInput,
+    ExceptionBreakdowns, ExceptionGroup, ExceptionGroupDetail, ExceptionReport, ExceptionStatus,
+    ExceptionVariant, GlobalException, TREND_BUCKETS, TriageInput,
 };
 pub use health::Health;
 pub use instance::Instance;
@@ -28,6 +28,6 @@ pub use source::{
     pixel_source, source_label, source_scheme, website_source,
 };
 pub use stats::{
-    KeyCount, MetricSummary, Overview, ProjectSummary, SourceSummary, Stats, TimeSeriesPoint,
+    Breakdowns, BreakdownRow, CountRow, Dashboard, DashboardQuery, MetricSummary, TimeSeriesPoint,
 };
 pub use track::{BeaconKind, TrackEvent};

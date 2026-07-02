@@ -19,7 +19,11 @@
 @use 'src/components/app_bar';
 @use 'src/components/sidebar';
 @use 'src/components/page_header';
+@use 'src/components/filter_bar';
 @use 'src/components/stats';
+@use 'src/components/charts';
+@use 'src/components/breakdown';
+@use 'src/components/dashboard';
 @use 'src/components/tables';
 @use 'src/components/drawer';
 @use 'src/components/dropdown';

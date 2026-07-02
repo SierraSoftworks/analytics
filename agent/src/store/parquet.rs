@@ -49,6 +49,7 @@ pub fn build_dataframe(events: &[StoredEvent]) -> PolarsResult<DataFrame> {
         "duration_ms" => col!(duration_ms),
         "event_name" => col!(event_name),
         "metadata_json" => col!(metadata_json),
+        "app_version" => col!(app_version),
         "exc_type" => col!(exc_type),
         "exc_message" => col!(exc_message),
         "exc_stack" => col!(exc_stack),

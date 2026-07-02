@@ -1,4 +1,5 @@
-//! Exception groups (Sentry-style): per-project listing, group detail, and triage.
+//! Exception groups (Sentry-style): the global filterable inbox, group detail,
+//! and triage.
 
 use std::collections::HashMap;
 
@@ -9,23 +10,52 @@ use chrono::Utc;
 use serde::Deserialize;
 use tracing_batteries::prelude::*;
 
-use super::query::{StatsQuery, resolve_range};
+use super::query::resolve_range;
 use super::{Authenticated, internal_error, json_error};
-use crate::analytics;
+use crate::analytics::{self, filter::FieldSet};
 use crate::state::AppState;
 use crate::store::ExceptionTriage;
 
-const OCCURRENCE_LIMIT: usize = 50;
+const VARIANT_LIMIT: usize = 50;
+
+/// Query parameters for the global exceptions inbox: a time range plus a
+/// filt-rs `q` expression over the dimensions exception events carry
+/// (project, source, browser, os, device, app, app_version, type, message,
+/// handled).
+#[derive(Deserialize)]
+pub struct ExceptionsQuery {
+    pub from: Option<i64>,
+    pub to: Option<i64>,
+    pub q: Option<String>,
+}
 
 /// `GET /api/v1/exceptions` — exception groups across every project (and
 /// unassigned sources), each annotated with its project, for the global inbox.
-pub async fn list_all(state: web::Data<AppState>, query: web::Query<StatsQuery>) -> HttpResponse {
-    let (from, to, _) = resolve_range(&query);
+pub async fn list_all(
+    state: web::Data<AppState>,
+    query: web::Query<ExceptionsQuery>,
+) -> HttpResponse {
+    let query = query.into_inner();
+    let (from, to, _) = resolve_range(query.from, query.to, None);
     let store = state.store.clone();
     let parquet_dir = state.config.storage.parquet_dir.clone();
 
+    let filter = match query.q.as_deref() {
+        Some(q) => match analytics::filter::compile_query(q, FieldSet::Exceptions, &store) {
+            Ok(filter) => filter,
+            Err(message) => return json_error(StatusCode::BAD_REQUEST, message),
+        },
+        None => None,
+    };
+
     let result = web::block(move || -> crate::errors::Result<Vec<GlobalException>> {
-        let per_source = analytics::global_exception_groups(&store, &parquet_dir, from, to)?;
+        let per_source = analytics::exception_groups_by_source(
+            &store,
+            &parquet_dir,
+            from,
+            to,
+            filter.as_ref(),
+        )?;
 
         // Resolve a source URI to its owning project, and project ids to names.
         let mut uri_project: HashMap<String, String> = HashMap::new();
@@ -42,7 +72,8 @@ pub async fn list_all(state: web::Data<AppState>, query: web::Query<StatsQuery>)
 
         // Fold per-(fingerprint, source) rows up to per-(fingerprint, project) rows
         // so a project's count matches its detail page. Unassigned sources are keyed
-        // by source so each stays its own row (no project to merge into).
+        // by source so each stays its own row (no project to merge into). Trends are
+        // summed element-wise — every row shares the same [from, to) bucket grid.
         use std::collections::hash_map::Entry;
         let mut acc: HashMap<(String, String), GlobalException> = HashMap::new();
         for (group, source) in per_source {
@@ -55,6 +86,7 @@ pub async fn list_all(state: web::Data<AppState>, query: web::Query<StatsQuery>)
                     g.count += group.count;
                     g.first_seen_ms = g.first_seen_ms.min(group.first_seen_ms);
                     g.last_seen_ms = g.last_seen_ms.max(group.last_seen_ms);
+                    analytics::merge_trends(&mut g.trend, &group.trend);
                 }
                 Entry::Vacant(e) => {
                     e.insert(GlobalException { group, project_id, project_name: None, source });
@@ -88,40 +120,6 @@ pub async fn list_all(state: web::Data<AppState>, query: web::Query<StatsQuery>)
     }
 }
 
-/// `GET /api/v1/projects/{id}/exceptions` — grouped exceptions with triage status.
-pub async fn list(
-    state: web::Data<AppState>,
-    path: web::Path<String>,
-    query: web::Query<StatsQuery>,
-) -> HttpResponse {
-    let project_id = path.into_inner();
-    let (from, to, _) = resolve_range(&query);
-    let store = state.store.clone();
-    let parquet_dir = state.config.storage.parquet_dir.clone();
-
-    let result = web::block(move || -> crate::errors::Result<_> {
-        let sources = analytics::project_source_uris(&store, &project_id)?;
-        let mut groups = analytics::exception_groups(&store, &parquet_dir, &sources, from, to)?;
-        for group in &mut groups {
-            if let Some(triage) = store.get_triage(&project_id, &group.group_id)? {
-                group.status = triage.status;
-                group.note = triage.note;
-            }
-        }
-        Ok(groups)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(groups)) => HttpResponse::Ok().json(groups),
-        Ok(Err(err)) => internal_error(err),
-        Err(err) => {
-            error!("exception listing task failed: {err}");
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to load exceptions.")
-        }
-    }
-}
-
 #[derive(Deserialize)]
 pub struct DetailQuery {
     project: String,
@@ -130,6 +128,10 @@ pub struct DetailQuery {
 }
 
 /// `GET /api/v1/exceptions/{group_id}?project=…` — a group with recent occurrences.
+///
+/// Without an explicit range this looks across **all time**: a group linked
+/// from the inbox (which may cover a 12-month window) or from an old bookmark
+/// must always open, so it can be triaged.
 pub async fn detail(
     state: web::Data<AppState>,
     path: web::Path<String>,
@@ -138,30 +140,30 @@ pub async fn detail(
     let group_id = path.into_inner();
     let project_id = query.project.clone();
     let now = Utc::now().timestamp_millis();
-    let to = query.to.unwrap_or(now);
-    let from = query.from.unwrap_or(to - 30 * 86_400_000);
+    let to = query.to.unwrap_or(now).clamp(1, super::query::MAX_INSTANT_MS);
+    let from = query.from.unwrap_or(0).clamp(0, to - 1);
     let store = state.store.clone();
     let parquet_dir = state.config.storage.parquet_dir.clone();
 
     let result = web::block(move || -> crate::errors::Result<Option<ExceptionGroupDetail>> {
         let sources = analytics::project_source_uris(&store, &project_id)?;
-        let Some((mut group, occurrences)) = analytics::exception_detail(
+        let Some(mut detail) = analytics::exception_detail(
             &store,
             &parquet_dir,
             &sources,
             &group_id,
             from,
             to,
-            OCCURRENCE_LIMIT,
+            VARIANT_LIMIT,
         )?
         else {
             return Ok(None);
         };
         if let Some(triage) = store.get_triage(&project_id, &group_id)? {
-            group.status = triage.status;
-            group.note = triage.note;
+            detail.group.status = triage.status;
+            detail.group.note = triage.note;
         }
-        Ok(Some(ExceptionGroupDetail { group, occurrences }))
+        Ok(Some(detail))
     })
     .await;
 

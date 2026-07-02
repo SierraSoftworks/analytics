@@ -10,7 +10,6 @@ use yew::prelude::*;
 
 use crate::api::{self, ApiError};
 use crate::components::{ApiErrorAlert, Drawer, Dropdown, DropdownItem, PageHeader, ProjectsContext};
-use crate::search::{MatchContext, SearchContext};
 
 fn input_value(e: &InputEvent) -> String {
     e.target_unchecked_into::<HtmlInputElement>().value()
@@ -20,11 +19,9 @@ fn input_value(e: &InputEvent) -> String {
 pub fn pixels() -> Html {
     let pixels = use_state(|| None::<Result<Vec<Pixel>, ApiError>>);
     let reload = use_state(|| 0u32);
+    let needle = use_state(String::new);
     let projects = use_context::<ProjectsContext>()
         .map(|c| c.projects.clone())
-        .unwrap_or_default();
-    let filter = use_context::<SearchContext>()
-        .map(|s| s.filter.clone())
         .unwrap_or_default();
 
     // Drawer + form state (edit_id = None means "create").
@@ -152,18 +149,20 @@ pub fn pixels() -> Html {
             html! { <div class="empty">{ "No tracking pixels yet." }</div> }
         }
         Some(Ok(list)) => {
-            let filtered: Vec<_> = list
+            let text = needle.to_lowercase();
+            let visible: Vec<&Pixel> = list
                 .iter()
                 .filter(|p| {
-                    let proj = project_name(&p.project_id);
-                    let text = format!("{} {} {}", p.name, proj, p.event_name).to_lowercase();
-                    filter.matches(&MatchContext { project: &proj, text: &text, ..Default::default() })
+                    text.is_empty()
+                        || p.name.to_lowercase().contains(&text)
+                        || p.event_name.to_lowercase().contains(&text)
+                        || project_name(&p.project_id).to_lowercase().contains(&text)
                 })
                 .collect();
-            let rows = filtered.iter().map(|p| {
+            let rows = visible.iter().map(|&p| {
                 let url = format!("{origin}/track/gif/{}.gif", p.id);
                 let on_edit = {
-                    let (open_edit, pixel) = (open_edit.clone(), (*p).clone());
+                    let (open_edit, pixel) = (open_edit.clone(), p.clone());
                     Callback::from(move |_| open_edit(&pixel))
                 };
                 let on_delete = {
@@ -191,7 +190,7 @@ pub fn pixels() -> Html {
                 }
             }).collect::<Html>();
 
-            if filtered.is_empty() {
+            if visible.is_empty() {
                 html! { <div class="empty">{ "No pixels match your search." }</div> }
             } else {
                 html! {
@@ -204,6 +203,10 @@ pub fn pixels() -> Html {
                 }
             }
         }
+    };
+    let on_needle = {
+        let needle = needle.clone();
+        Callback::from(move |e: InputEvent| needle.set(input_value(&e)))
     };
 
     let no_projects = projects.is_empty();
@@ -226,6 +229,8 @@ pub fn pixels() -> Html {
         <div class="page">
             <PageHeader title="Tracking pixels"
                 subtitle="1×1 GIF beacons for email opens, RSS, and other no-JavaScript contexts.">
+                <input class="input" type="search" placeholder="Filter pixels…"
+                    value={(*needle).clone()} oninput={on_needle} />
                 <button class="btn btn--primary" onclick={open_new} disabled={no_projects}>{ "New pixel" }</button>
             </PageHeader>
             if no_projects {

@@ -9,11 +9,11 @@ mod auth;
 mod exceptions;
 mod instance;
 mod me;
-mod overview;
 mod pixels;
 mod projects;
 mod query;
 mod sources;
+mod stats;
 
 use actix_web::http::StatusCode;
 use actix_web::{
@@ -70,13 +70,12 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                     .route("/csrf", web::get().to(auth::csrf_token))
                     .route("/me", web::get().to(me::me))
                     .route("/instance", web::get().to(instance::instance))
-                    .route("/overview", web::get().to(overview::overview))
+                    .route("/stats", web::get().to(stats::stats))
                     .route("/projects", web::get().to(projects::list))
                     .route("/projects", web::post().to(projects::create))
                     .route("/projects/{id}", web::get().to(projects::get))
                     .route("/projects/{id}", web::put().to(projects::update))
                     .route("/projects/{id}", web::delete().to(projects::delete))
-                    .route("/projects/{id}/stats", web::get().to(projects::stats))
                     .route("/sources", web::get().to(sources::list))
                     .route("/sources", web::put().to(sources::update))
                     .route("/sources", web::delete().to(sources::delete))
@@ -87,7 +86,6 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                     .route("/pixels/{id}", web::put().to(pixels::update))
                     .route("/pixels/{id}", web::delete().to(pixels::delete))
                     .route("/exceptions", web::get().to(exceptions::list_all))
-                    .route("/projects/{id}/exceptions", web::get().to(exceptions::list))
                     .route("/exceptions/{group}", web::get().to(exceptions::detail))
                     .route("/exceptions/{group}", web::patch().to(exceptions::triage)),
             ),

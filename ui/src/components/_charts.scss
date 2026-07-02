@@ -1,0 +1,264 @@
+// The interactive time-series chart, its tooltip, sparklines, and the compare
+// toggle (see components/charts.rs).
+@use '../styles/variables' as *;
+
+.chart {
+  position: relative;
+  min-height: 280px;
+
+  svg {
+    display: block;
+    cursor: crosshair;
+    user-select: none;
+  }
+
+  &__empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 280px;
+    color: var(--text-3);
+    font-size: 0.9rem;
+  }
+
+  &__grid {
+    stroke: var(--chart-grid);
+    stroke-width: 1;
+    shape-rendering: crispedges;
+  }
+
+  &__tick {
+    fill: var(--text-4);
+    font-size: 11px;
+    font-family: var(--font-sans);
+  }
+
+  &__area {
+    stroke: none;
+  }
+
+  &__fill-start {
+    stop-color: var(--brand);
+    stop-opacity: 0.28;
+  }
+
+  &__fill-end {
+    stop-color: var(--brand);
+    stop-opacity: 0;
+  }
+
+  &__line {
+    fill: none;
+    stroke: var(--brand);
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+
+    &--prev {
+      stroke: var(--chart-prev);
+      stroke-width: 1.5;
+      stroke-dasharray: 5 4;
+    }
+  }
+
+  &__crosshair {
+    stroke: var(--border-strong);
+    stroke-width: 1;
+    shape-rendering: crispedges;
+  }
+
+  &__marker {
+    fill: var(--brand);
+    stroke: var(--bg);
+    stroke-width: 2;
+  }
+
+  &__selection {
+    fill: var(--brand-soft);
+    stroke: var(--brand-border);
+    stroke-width: 1;
+  }
+
+  &__exception-bar {
+    fill: var(--danger);
+    opacity: 0.35;
+  }
+
+  &__tooltip {
+    position: absolute;
+    z-index: 10;
+    pointer-events: none;
+    min-width: 11rem;
+    padding: 0.6rem 0.75rem;
+    background: var(--overlay);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
+    font-size: 0.8rem;
+
+    &-date {
+      color: var(--text-3);
+      font-size: 0.74rem;
+      margin-bottom: 0.35rem;
+    }
+
+    &-row {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+
+      strong {
+        margin-left: auto;
+        font-variant-numeric: tabular-nums;
+      }
+
+      &--prev {
+        color: var(--text-3);
+      }
+    }
+
+    &-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--brand);
+      flex-shrink: 0;
+
+      &--prev {
+        background: var(--chart-prev);
+      }
+
+      &--exceptions {
+        background: var(--danger);
+      }
+    }
+
+    &-row--exceptions {
+      color: var(--danger);
+    }
+
+    &-sub {
+      margin-top: 0.35rem;
+      color: var(--text-4);
+      font-size: 0.74rem;
+    }
+  }
+}
+
+// The chart panel header (title, hint, compare toggle).
+.panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.panel__title {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.panel__hint {
+  font-size: 0.74rem;
+  color: var(--text-4);
+}
+
+.panel__legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+  color: var(--text-3);
+
+  &::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+  }
+
+  &--exceptions::before {
+    background: var(--danger);
+    opacity: 0.5;
+  }
+}
+
+// The small labelled switch (compare on/off).
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--text-3);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.2rem 0.25rem;
+
+  &__track {
+    display: inline-flex;
+    align-items: center;
+    width: 28px;
+    height: 16px;
+    padding: 2px;
+    border-radius: 999px;
+    background: var(--surface-3);
+    border: 1px solid var(--border-strong);
+    transition: background var(--transition), border-color var(--transition);
+  }
+
+  &__knob {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--text-3);
+    transition: transform var(--transition), background var(--transition);
+  }
+
+  &--on {
+    color: var(--text);
+
+    .toggle__track {
+      background: var(--brand-strong);
+      border-color: var(--brand-strong);
+    }
+
+    .toggle__knob {
+      transform: translateX(12px);
+      background: #fff;
+    }
+  }
+}
+
+// Mini trend lines (exception rows, detail header).
+.sparkline {
+  display: block;
+  width: 100%;
+  height: 28px;
+
+  &__line {
+    fill: none;
+    stroke: var(--warn);
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+  }
+
+  &__area {
+    fill: var(--warn-soft);
+    stroke: none;
+  }
+
+  &__flat {
+    stroke: var(--border-strong);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+  }
+}

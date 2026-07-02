@@ -37,6 +37,7 @@ filt-rs = { git = "https://github.com/SierraSoftworks/filters", features = [
   "serde",
   "chrono",
   "regex",
+  "visitor",
 ] }
 
 # Ingest / enrichment
@@ -62,6 +63,8 @@ polars = { version = "0.54", default-features = false, features = [
   "streaming",
   "is_in",
   "strings",
+  "regex",
+  "diagonal_concat",
   "temporal",
   "dtype-datetime",
   "dtype-date",

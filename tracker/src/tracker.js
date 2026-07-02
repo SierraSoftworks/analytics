@@ -9,6 +9,8 @@
 //   data-api="https://analytics.example.com"   collection host (default: same origin)
 //   data-auto-capture-exceptions="true"          hook window errors + rejections
 //   data-hash                                    treat #hash changes as navigations
+//   data-app-version="1.4.2"                     attribute exceptions to a release
+//                                                (the app itself is the hostname)
 //
 // One build, no variants; behaviour is toggled by the attributes above at runtime.
 
@@ -49,6 +51,10 @@ export function init(overrides) {
     overrides.hashMode != null
       ? overrides.hashMode
       : !!(script && script.hasAttribute && script.hasAttribute("data-hash"));
+  const appVersion =
+    overrides.appVersion != null
+      ? overrides.appVersion
+      : attr(script, "data-app-version") || "";
 
   // Honour Do-Not-Track / Global Privacy Control: collect nothing, but still expose a
   // no-op API so sites that call `analytics.event(...)` don't throw.
@@ -210,6 +216,7 @@ export function init(overrides) {
     beacon: function () {
       return beacon;
     },
+    appVersion: appVersion || undefined,
   });
 
   if (captureExceptions) {

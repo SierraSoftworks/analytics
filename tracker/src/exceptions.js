@@ -50,17 +50,21 @@ export function buildExceptionPayload(desc, opts) {
     payload.s =
       desc.stack.length > MAX_STACK ? desc.stack.slice(0, MAX_STACK) : desc.stack;
   }
+  if (opts.appVersion) payload.v = opts.appVersion;
   if (opts.meta) payload.d = opts.meta;
   return payload;
 }
 
 // A reporter with a dedup set and a hard per-view cap, so a tight error loop can't
 // flood the endpoint. `url` and `beacon` are getters because they change across SPA
-// navigations. `send` receives the finished payload.
+// navigations. `appVersion` attributes every report to a specific release (the
+// application itself is identified server-side by the page's hostname). `send`
+// receives the finished payload.
 export function createExceptionReporter(opts) {
   const send = opts.send;
   const getUrl = opts.url;
   const getBeacon = opts.beacon;
+  const appVersion = opts.appVersion;
   const max = opts.max || 25;
   const seen = new Set();
   let count = 0;
@@ -79,6 +83,7 @@ export function createExceptionReporter(opts) {
         url: getUrl(),
         beacon: getBeacon(),
         handled: handled,
+        appVersion: appVersion,
         meta: meta,
       }),
     );

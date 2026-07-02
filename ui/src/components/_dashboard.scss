@@ -1,0 +1,79 @@
+// Dashboard-page chrome: the unassigned-sources inbox, loading states, and the
+// refetch shimmer (see pages/dashboard.rs).
+@use '../styles/variables' as *;
+
+.dashboard {
+  transition: opacity 160ms ease;
+
+  // Keep the previous data visible-but-dimmed while a filter change refetches.
+  &--refreshing {
+    opacity: 0.55;
+    pointer-events: none;
+  }
+}
+
+.page-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 12rem;
+  color: var(--text-3);
+}
+
+// The operator inbox for sources that belong to no project yet.
+.unassigned {
+  @include card;
+  border-color: var(--warn);
+  border-left-width: 3px;
+  padding: 0.8rem 1rem;
+  margin-bottom: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+
+  &__head {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    font-size: 0.88rem;
+  }
+
+  &__spacer {
+    flex: 1;
+  }
+
+  &__row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  &__source {
+    font-size: 0.82rem;
+    color: var(--text);
+  }
+
+  &__count {
+    flex: 1;
+    font-size: 0.78rem;
+    color: var(--text-3);
+    white-space: nowrap;
+  }
+
+  &__more {
+    align-self: flex-start;
+    font: inherit;
+    font-size: 0.78rem;
+    color: var(--brand);
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+
+    &:hover {
+      color: var(--brand-2);
+    }
+  }
+}

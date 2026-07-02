@@ -1,0 +1,260 @@
+// Tabbed breakdown panels with click-to-filter rows (see components/breakdown.rs).
+@use '../styles/variables' as *;
+
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1.1rem;
+  margin-top: 1.1rem;
+  align-items: start;
+}
+
+.panel-card {
+  @include card;
+  padding: 0.7rem 0.85rem 0.6rem;
+  min-height: 16rem;
+  display: flex;
+  flex-direction: column;
+
+  &__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.45rem;
+  }
+
+  &__tabs {
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    flex-wrap: wrap;
+  }
+
+  &__metric {
+    font-size: 0.72rem;
+    color: var(--text-4);
+    flex-shrink: 0;
+    padding-right: 0.2rem;
+  }
+
+  &__rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  &__empty {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-4);
+    font-size: 0.84rem;
+    min-height: 8rem;
+  }
+}
+
+.panel-tab {
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-3);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 0.32rem 0.55rem;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+
+  &:hover {
+    color: var(--text);
+    background: var(--surface-2);
+  }
+
+  &--active {
+    color: var(--text);
+    background: var(--surface-3);
+  }
+
+  &__count {
+    font-size: 0.7rem;
+    color: var(--text-4);
+    background: var(--surface-2);
+    border-radius: 999px;
+    padding: 0.05rem 0.4rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  &--active &__count {
+    background: var(--surface);
+  }
+}
+
+// A row slot: the click-to-filter button plus (optionally) a sibling action
+// button revealed on hover, floated over the row's end.
+.brow-item {
+  position: relative;
+
+  &:hover .brow__action {
+    display: inline-flex;
+  }
+}
+
+.brow__action {
+  display: none;
+  position: absolute;
+  top: 50%;
+  right: 0.35rem;
+  transform: translateY(-50%);
+  align-items: center;
+  padding: 0.25rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text-2);
+  cursor: pointer;
+  z-index: 1;
+
+  svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  &:hover {
+    color: var(--text);
+    border-color: var(--brand-border);
+  }
+
+  &:focus-visible {
+    display: inline-flex;
+    @include focus-ring;
+  }
+}
+
+// One click-to-filter row: proportional bar behind the label, share %, count.
+.brow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.32rem 0.5rem;
+  font: inherit;
+  font-size: 0.84rem;
+  color: var(--text-2);
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--transition);
+
+  &__bar {
+    position: absolute;
+    inset: 2px auto 2px 0;
+    border-radius: 3px;
+    background: var(--chart-bar);
+    pointer-events: none;
+    transition: background var(--transition);
+  }
+
+  &__label {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  &__icon {
+    flex-shrink: 0;
+    font-size: 0.95em;
+    line-height: 1;
+  }
+
+  &__text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+
+    &--absent {
+      color: var(--text-3);
+      font-style: italic;
+    }
+  }
+
+  // The funnel affordance, revealed on hover.
+  &__filter-hint {
+    display: inline-flex;
+    flex-shrink: 0;
+    color: var(--brand-2);
+    opacity: 0;
+    transition: opacity var(--transition);
+
+    svg {
+      width: 12px;
+      height: 12px;
+    }
+  }
+
+  &__share {
+    position: relative;
+    width: 3ch;
+    flex-shrink: 0;
+    text-align: right;
+    font-size: 0.74rem;
+    color: var(--text-4);
+    font-variant-numeric: tabular-nums;
+  }
+
+  &__count {
+    position: relative;
+    min-width: 3.5ch;
+    flex-shrink: 0;
+    text-align: right;
+    font-weight: 600;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+
+  &:hover {
+    color: var(--text);
+
+    .brow__bar {
+      background: var(--chart-bar-hover);
+    }
+
+    .brow__filter-hint {
+      opacity: 1;
+    }
+  }
+
+  // The row currently applied as a filter.
+  &--selected {
+    color: var(--text);
+
+    .brow__bar {
+      background: var(--brand-soft);
+      outline: 1px solid var(--brand-border);
+    }
+
+    .brow__filter-hint {
+      opacity: 1;
+      color: var(--brand-2);
+    }
+  }
+}
+
+@media (max-width: $bp-md) {
+  .panel-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,5 +1,5 @@
-// The top app bar: brand mark, the unified search with autocomplete, and the
-// signed-in user chip (see components/app_bar.rs).
+// The top app bar: brand mark and the signed-in user chip (see
+// components/app_bar.rs).
 @use '../styles/variables' as *;
 
 .app-bar {
@@ -47,18 +47,19 @@
   &__spacer {
     flex: 1;
   }
+}
 
-  // Unified search field hosted in the app bar.
-  &__search {
-    position: relative;
-    flex: 1;
-    display: flex;
-    align-items: center;
-    max-width: 30rem;
-    margin: 0 auto;
-  }
+// The filter query bar hosted in the app bar: a filt-rs expression editing the
+// same state the filter chips render.
+.query-bar {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  max-width: 44rem;
+  margin: 0 auto;
 
-  &__search-icon {
+  &__icon {
     position: absolute;
     left: 0.7rem;
     display: inline-flex;
@@ -66,10 +67,10 @@
     pointer-events: none;
   }
 
-  &__search-input {
+  &__input {
     width: 100%;
-    font: inherit;
-    font-size: 0.86rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
     padding: 0.5rem 0.8rem 0.5rem 2.1rem;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-sm);
@@ -79,55 +80,46 @@
 
     &::placeholder {
       color: var(--text-4);
+      font-family: var(--font-sans);
     }
     &:focus {
       @include focus-ring;
     }
   }
 
-  &__suggestions {
+  &__hint {
     position: absolute;
-    top: calc(100% + 0.4rem);
+    right: 0.7rem;
+    font-size: 0.7rem;
+    color: var(--text-4);
+    pointer-events: none;
+    background: var(--surface-2);
+    padding-left: 0.5rem;
+  }
+
+  &__error {
+    position: absolute;
+    top: calc(100% + 0.35rem);
     left: 0;
     right: 0;
     z-index: 40;
-    margin: 0;
-    padding: 0.3rem;
-    list-style: none;
+    padding: 0.45rem 0.7rem;
+    font-size: 0.78rem;
+    color: var(--danger);
     background: var(--overlay);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius);
+    border: 1px solid var(--danger);
+    border-radius: var(--radius-sm);
     box-shadow: var(--shadow-md);
-    max-height: 22rem;
-    overflow-y: auto;
   }
 
-  &__suggestion {
-    display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
-    padding: 0.45rem 0.6rem;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
+  &--invalid &__input {
+    border-color: var(--danger);
+  }
+}
 
-    &--active {
-      background: var(--brand-soft);
-    }
-
-    &-token {
-      font-family: var(--font-mono);
-      font-size: 0.82rem;
-      font-weight: 600;
-      color: var(--brand-2);
-    }
-
-    &-desc {
-      font-size: 0.8rem;
-      color: var(--text-3);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
+@media (max-width: $bp-sm) {
+  .query-bar {
+    display: none;
   }
 }
 
