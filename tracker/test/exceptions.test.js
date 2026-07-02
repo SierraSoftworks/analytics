@@ -48,7 +48,13 @@ describe("buildExceptionPayload", () => {
   it("includes required and optional fields with short keys", () => {
     const p = buildExceptionPayload(
       { name: "TypeError", message: "boom", stack: "at x" },
-      { url: "https://a/x", beacon: "b1", handled: true, meta: { k: "v" } },
+      {
+        url: "https://a/x",
+        beacon: "b1",
+        handled: true,
+        appVersion: "1.4.2",
+        meta: { k: "v" },
+      },
     );
     expect(p).toEqual({
       u: "https://a/x",
@@ -57,6 +63,7 @@ describe("buildExceptionPayload", () => {
       h: true,
       b: "b1",
       s: "at x",
+      v: "1.4.2",
       d: { k: "v" },
     });
   });
@@ -102,6 +109,19 @@ describe("createExceptionReporter", () => {
       h: true,
       d: { k: "v" },
     });
+  });
+
+  it("attributes reports to the configured app version", () => {
+    const sent = [];
+    const reporter = createExceptionReporter({
+      send: (p) => sent.push(p),
+      url: () => "https://a/x",
+      beacon: () => "b1",
+      appVersion: "1.4.2",
+    });
+    reporter.report(new Error("boom"), false);
+    expect(sent[0].v).toBe("1.4.2");
+    expect(sent[0].a).toBeUndefined();
   });
 
   it("deduplicates identical occurrences", () => {

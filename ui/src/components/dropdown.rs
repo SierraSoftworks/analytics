@@ -14,7 +14,10 @@ pub struct DropdownItem {
 
 impl DropdownItem {
     pub fn new(value: impl Into<AttrValue>, label: impl Into<AttrValue>) -> Self {
-        Self { value: value.into(), label: label.into() }
+        Self {
+            value: value.into(),
+            label: label.into(),
+        }
     }
 }
 

@@ -94,15 +94,21 @@ Add the tracker script to your pages, pointing `data-api` at your server:
   src="https://analytics.example.com/tracker.js"
   data-api="https://analytics.example.com"
   data-auto-capture-exceptions="true"
+  data-app-version="1.4.2"
 ></script>
 ```
 
 The script reports page views (and, with `data-auto-capture-exceptions`, unhandled
-errors and promise rejections). It follows SPA navigations automatically by
-intercepting the History API; add `data-hash` if your app routes with the URL hash
-instead. It also exposes `window.analytics.event(name, data)` and
-`window.analytics.captureException(error, meta)` for manual reporting. Sources are
-identified purely by their hostname — no per-site key to embed.
+errors and promise rejections). Exceptions are attributed to the reporting
+hostname — the application — and `data-app-version` additionally pins them to a
+specific release, so the dashboard can break failures down by version. It follows
+SPA navigations automatically by intercepting the History API; add `data-hash` if
+your app routes with the URL hash instead. It also exposes
+`window.analytics.event(name, data)` and
+`window.analytics.captureException(error, meta)` for manual reporting — `meta` is
+a string→string map stored with the report and surfaced on the exception's
+distinct examples. Sources are identified purely by their hostname — no per-site
+key to embed.
 
 ### Tracking pixels
 
@@ -135,7 +141,11 @@ sign-in page explains this rather than looping).
 - **Public (no auth):** `GET /tracker.js`, `GET /track/ping`, `POST /track/hit`,
   `POST /track/exception`, `GET /track/gif/{id}.gif`, `GET /api/v1/health`.
 - **Protected (OIDC + ACL):** everything else under `/api/v1` — projects, sources,
-  pixels, overview, per-project stats, and exception groups/triage.
+  pixels, the filterable dashboard statistics (`GET /api/v1/stats`), and exception
+  groups/triage. Statistics and exception listings accept a `q` parameter carrying
+  a [filt-rs](https://github.com/SierraSoftworks/filters) expression, e.g.
+  `q=browser == "Chrome" && (country == "DE" || path like "/docs/*")` — the same
+  syntax the dashboard's query bar uses.
 
 ## License
 

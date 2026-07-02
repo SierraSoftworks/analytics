@@ -8,8 +8,8 @@
 use std::cell::RefCell;
 
 use analytics_api::{
-    AdminUser, CsrfToken, ExceptionGroup, ExceptionGroupDetail, GlobalException, Instance, Overview,
-    Pixel, PixelInput, Project, ProjectInput, Source, SourceInput, Stats, TriageInput,
+    AdminUser, CsrfToken, Dashboard, ExceptionGroupDetail, GlobalException, Instance, Pixel,
+    PixelInput, Project, ProjectInput, Source, SourceInput, TriageInput,
 };
 use gloo_net::http::Request;
 use serde::Serialize;
@@ -66,7 +66,10 @@ fn cached_csrf() -> Option<String> {
 }
 
 async fn fetch_csrf() -> Result<String, ApiError> {
-    let resp = Request::get(&format!("{API_BASE}/csrf")).send().await.map_err(net)?;
+    let resp = Request::get(&format!("{API_BASE}/csrf"))
+        .send()
+        .await
+        .map_err(net)?;
     if !resp.ok() {
         return Err(error_from(resp).await);
     }
@@ -87,7 +90,10 @@ fn invalidate_csrf() {
 }
 
 async fn get_json<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
-    let resp = Request::get(&format!("{API_BASE}{path}")).send().await.map_err(net)?;
+    let resp = Request::get(&format!("{API_BASE}{path}"))
+        .send()
+        .await
+        .map_err(net)?;
     if !resp.ok() {
         return Err(error_from(resp).await);
     }
@@ -118,10 +124,7 @@ where
 
 async fn post_json<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T, ApiError> {
     let url = format!("{API_BASE}{path}");
-    let resp = mutate(|token| {
-        Request::post(&url).header(CSRF_HEADER, token).json(body)
-    })
-    .await?;
+    let resp = mutate(|token| Request::post(&url).header(CSRF_HEADER, token).json(body)).await?;
     resp.json::<T>().await.map_err(net)
 }
 
@@ -150,7 +153,10 @@ fn enc(value: &str) -> String {
 // ------------------------------------------------------------------ endpoints
 
 pub async fn me() -> Result<Option<AdminUser>, ApiError> {
-    let resp = Request::get(&format!("{API_BASE}/me")).send().await.map_err(net)?;
+    let resp = Request::get(&format!("{API_BASE}/me"))
+        .send()
+        .await
+        .map_err(net)?;
     if resp.status() == 204 {
         return Ok(None);
     }
@@ -170,8 +176,10 @@ pub async fn logout() -> Result<(), ApiError> {
     .map(|_| ())
 }
 
-pub async fn overview(range: &str) -> Result<Overview, ApiError> {
-    get_json(&format!("/overview?{range}")).await
+/// The full dashboard payload for a resolved filter query (see
+/// [`crate::filters::FilterSet::stats_query`]).
+pub async fn dashboard(query: &str) -> Result<Dashboard, ApiError> {
+    get_json(&format!("/stats?{query}")).await
 }
 
 pub async fn instance() -> Result<Instance, ApiError> {
@@ -199,8 +207,8 @@ pub async fn get_project(id: &str) -> Result<Project, ApiError> {
     get_json(&format!("/projects/{}", enc(id))).await
 }
 
-pub async fn project_stats(id: &str, range: &str) -> Result<Stats, ApiError> {
-    get_json(&format!("/projects/{}/stats?{range}", enc(id))).await
+pub async fn update_project(id: &str, input: &ProjectInput) -> Result<Project, ApiError> {
+    put_json(&format!("/projects/{}", enc(id)), input).await
 }
 
 pub async fn list_sources() -> Result<Vec<Source>, ApiError> {
@@ -223,20 +231,26 @@ pub async fn delete_pixel(id: &str) -> Result<(), ApiError> {
     delete(&format!("/pixels/{}", enc(id))).await
 }
 
-pub async fn list_exceptions(project_id: &str, range: &str) -> Result<Vec<ExceptionGroup>, ApiError> {
-    get_json(&format!("/projects/{}/exceptions?{range}", enc(project_id))).await
+/// Exception groups across every project (and unassigned sources), filtered by
+/// a resolved query (see [`crate::filters::FilterSet::exceptions_query`]).
+pub async fn list_all_exceptions(query: &str) -> Result<Vec<GlobalException>, ApiError> {
+    get_json(&format!("/exceptions?{query}")).await
 }
 
-/// Exception groups across every project (and unassigned sources).
-pub async fn list_all_exceptions(range: &str) -> Result<Vec<GlobalException>, ApiError> {
-    get_json(&format!("/exceptions?{range}")).await
-}
-
+/// `range` is a pre-encoded `from=…&to=…` pair (empty for the server's
+/// all-time default) so the detail numbers cover the same window as the inbox
+/// row the operator clicked.
 pub async fn exception_detail(
     group: &str,
     project: &str,
+    range: &str,
 ) -> Result<ExceptionGroupDetail, ApiError> {
-    get_json(&format!("/exceptions/{}?project={}", enc(group), enc(project))).await
+    let mut url = format!("/exceptions/{}?project={}", enc(group), enc(project));
+    if !range.is_empty() {
+        url.push('&');
+        url.push_str(range);
+    }
+    get_json(&url).await
 }
 
 pub async fn set_triage(group: &str, input: &TriageInput) -> Result<(), ApiError> {

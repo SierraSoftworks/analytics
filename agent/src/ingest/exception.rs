@@ -10,6 +10,7 @@ use crate::store::{EventKind, StoredEvent};
 const TOP_FRAMES: usize = 5;
 const MAX_MESSAGE: usize = 1_000;
 const MAX_STACK: usize = 16_000;
+const MAX_APP_FIELD: usize = 120;
 
 /// Build an `Exception` event from a report. Returns `None` for bots or an
 /// unparseable URL (we attribute exceptions to a source by hostname).
@@ -52,6 +53,7 @@ pub fn build_exception(
             .as_ref()
             .filter(|m| !m.is_empty())
             .and_then(|m| serde_json::to_string(m).ok()),
+        app_version: clean_app_field(report.app_version.as_deref()),
         exc_type: Some(truncate(&report.exc_type, MAX_MESSAGE)),
         exc_message: Some(truncate(&report.message, MAX_MESSAGE)),
         exc_stack: report.stack.map(|s| truncate(&s, MAX_STACK)),
@@ -59,6 +61,14 @@ pub fn build_exception(
         exc_handled: Some(report.handled),
         ..Default::default()
     })
+}
+
+/// Trim and cap a client-reported app name/version, dropping empty values.
+fn clean_app_field(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| truncate(v, MAX_APP_FIELD))
 }
 
 /// Compute a stable grouping fingerprint: a client override if given, otherwise a

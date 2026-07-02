@@ -1,24 +1,334 @@
-// The exception detail view: header, message, and occurrence/stack cards
-// (see pages/exception_detail.rs).
+// The exceptions inbox (Sentry-style rows with trend sparklines) and the
+// exception detail view (see pages/exceptions.rs, pages/exception_detail.rs).
 @use '../styles/variables' as *;
 
-.exc-header {
+// Inbox toolbar: status tabs + local text filter.
+.exc-toolbar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.75rem;
+  margin-bottom: 0.75rem;
   flex-wrap: wrap;
-  margin-bottom: 0.5rem;
 
-  h1 {
-    font-size: 1.3rem;
+  &__search {
+    width: 20rem;
+    max-width: 100%;
   }
 }
 
-.exc-message {
-  font-family: var(--font-mono);
-  font-size: 0.9rem;
+// The inbox itself: one card, one row per exception group.
+.exc-list {
+  @include card;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.exc-row {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  font: inherit;
+  text-align: left;
   color: var(--text);
-  word-break: break-word;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--transition);
+
+  &:focus-visible {
+    @include focus-ring;
+  }
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  &:hover {
+    background: var(--surface-2);
+  }
+
+  &--inert {
+    cursor: default;
+
+    &:hover {
+      background: none;
+    }
+  }
+
+  &__main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  &__title {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  &__type {
+    font-family: var(--font-mono);
+    font-size: 0.86rem;
+    font-weight: 600;
+    color: var(--brand-2);
+    flex-shrink: 0;
+  }
+
+  &__message {
+    font-size: 0.84rem;
+    color: var(--text-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__meta {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 0.76rem;
+    flex-wrap: wrap;
+  }
+
+  &__project {
+    color: var(--text-3);
+    font-weight: 500;
+  }
+
+  &__trend {
+    width: 110px;
+    flex-shrink: 0;
+  }
+
+  &__count {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.1rem;
+    min-width: 5.5rem;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+
+    strong {
+      font-size: 0.95rem;
+    }
+
+    span {
+      font-size: 0.74rem;
+    }
+  }
+}
+
+// Detail header: status, message, actions, and the trend sparkline.
+.exc-head {
+  display: flex;
+  align-items: stretch;
+  gap: 1.5rem;
+  margin-top: 0;
+
+  &__status {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.55rem;
+  }
+
+  &__message {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.92rem;
+    color: var(--text);
+    word-break: break-word;
+  }
+
+  &__meta {
+    font-size: 0.8rem;
+  }
+
+  &__actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-top: 0.25rem;
+  }
+
+  &__trend {
+    width: 220px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.45rem;
+  }
+
+  &__spark {
+    height: 48px;
+  }
+}
+
+// Distribution cards: how the group's occurrences spread across a dimension.
+.dist-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  margin: 0.5rem 0 1.5rem;
+}
+
+.dist {
+  @include card;
+  padding: 0.75rem 0.9rem;
+
+  &__title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-3);
+    margin-bottom: 0.5rem;
+  }
+
+  &__rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  &__row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.28rem 0.45rem;
+    font-size: 0.82rem;
+    border-radius: var(--radius-sm);
+  }
+
+  &__bar {
+    position: absolute;
+    inset: 2px auto 2px 0;
+    border-radius: 3px;
+    background: var(--danger-soft);
+    pointer-events: none;
+  }
+
+  &__label {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-2);
+  }
+
+  &__share {
+    position: relative;
+    width: 3ch;
+    flex-shrink: 0;
+    text-align: right;
+    font-size: 0.72rem;
+    color: var(--text-4);
+    font-variant-numeric: tabular-nums;
+  }
+
+  &__count {
+    position: relative;
+    min-width: 3ch;
+    flex-shrink: 0;
+    text-align: right;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+// The distinct-example scrubber.
+.exc-variants__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+
+  h2 {
+    margin: 0;
+  }
+}
+
+.exc-variants__nav {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.exc-variants__pos {
+  font-size: 0.8rem;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  min-width: 4.5rem;
+  text-align: center;
+}
+
+.exc-variant__app code {
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+
+// Reporter-supplied metadata of the shown example.
+.exc-meta {
+  margin-top: 0.6rem;
+
+  &__title {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-4);
+    margin-bottom: 0.3rem;
+  }
+
+  &__rows {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+    gap: 0.25rem 1.25rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.55rem 0.75rem;
+  }
+
+  &__row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    min-width: 0;
+    font-size: 0.8rem;
+  }
+
+  &__key {
+    font-family: var(--font-mono);
+    color: var(--text-3);
+    flex-shrink: 0;
+  }
+
+  &__value {
+    font-family: var(--font-mono);
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 .occurrence {
@@ -27,9 +337,18 @@
   margin-bottom: 0.75rem;
 
   &__meta {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
     font-size: 0.8rem;
     color: var(--text-3);
-    margin-bottom: 0.35rem;
+    margin-bottom: 0.4rem;
+    flex-wrap: wrap;
+  }
+
+  &__message {
+    font-size: 0.88rem;
+    word-break: break-word;
   }
 }
 
@@ -45,4 +364,27 @@
   color: var(--text-2);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+@media (max-width: $bp-md) {
+  .dist-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: $bp-sm) {
+  .exc-row__trend {
+    display: none;
+  }
+  .exc-head {
+    flex-direction: column;
+    gap: 0.75rem;
+
+    &__trend {
+      width: 100%;
+    }
+  }
+  .dist-grid {
+    grid-template-columns: 1fr;
+  }
 }

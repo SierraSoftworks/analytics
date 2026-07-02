@@ -12,10 +12,13 @@ use crate::pages;
 
 #[derive(Clone, Routable, PartialEq)]
 pub enum Route {
+    /// The global dashboard; project drill-down is a `?project=` filter on it.
     #[at("/")]
     Overview,
     #[at("/exceptions")]
     Exceptions,
+    /// Legacy per-project page — redirects to the dashboard with a project filter
+    /// so old bookmarks keep working.
     #[at("/projects/:id")]
     Project { id: String },
     #[at("/projects/:project/exceptions/:group")]
@@ -138,9 +141,9 @@ fn gate(auth: &AuthHandle) -> Html {
 
 fn switch(route: Route) -> Html {
     match route {
-        Route::Overview => html! { <pages::Overview /> },
+        Route::Overview => html! { <pages::Dashboard /> },
         Route::Exceptions => html! { <pages::Exceptions /> },
-        Route::Project { id } => html! { <pages::Project {id} /> },
+        Route::Project { id } => html! { <ProjectRedirect {id} /> },
         Route::Exception { project, group } => {
             html! { <pages::ExceptionDetail {project} {group} /> }
         }
@@ -148,4 +151,25 @@ fn switch(route: Route) -> Html {
         Route::Settings => html! { <pages::Settings /> },
         Route::NotFound => html! { <pages::NotFound /> },
     }
+}
+
+#[derive(Properties, PartialEq)]
+struct ProjectRedirectProps {
+    id: String,
+}
+
+/// Legacy `/projects/:id` deep links land on the dashboard pre-filtered to the
+/// project. `replace` navigation keeps the back button from bouncing forward.
+#[function_component(ProjectRedirect)]
+fn project_redirect(props: &ProjectRedirectProps) -> Html {
+    let navigator = use_navigator();
+    let filters = crate::filters::use_filters();
+    use_effect_with(props.id.clone(), move |id| {
+        if let Some(navigator) = navigator {
+            let filters = filters.with(crate::filters::Dim::Project, id.clone());
+            let _ = navigator.replace_with_query(&Route::Overview, &filters.to_pairs());
+        }
+        || ()
+    });
+    html! {}
 }

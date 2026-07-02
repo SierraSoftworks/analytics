@@ -9,8 +9,9 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 use crate::api::{self, ApiError};
-use crate::components::{ApiErrorAlert, Drawer, Dropdown, DropdownItem, PageHeader, ProjectsContext};
-use crate::search::{MatchContext, SearchContext};
+use crate::components::{
+    ApiErrorAlert, Drawer, Dropdown, DropdownItem, PageHeader, ProjectsContext,
+};
 
 fn input_value(e: &InputEvent) -> String {
     e.target_unchecked_into::<HtmlInputElement>().value()
@@ -20,11 +21,9 @@ fn input_value(e: &InputEvent) -> String {
 pub fn pixels() -> Html {
     let pixels = use_state(|| None::<Result<Vec<Pixel>, ApiError>>);
     let reload = use_state(|| 0u32);
+    let needle = use_state(String::new);
     let projects = use_context::<ProjectsContext>()
         .map(|c| c.projects.clone())
-        .unwrap_or_default();
-    let filter = use_context::<SearchContext>()
-        .map(|s| s.filter.clone())
         .unwrap_or_default();
 
     // Drawer + form state (edit_id = None means "create").
@@ -54,14 +53,23 @@ pub fn pixels() -> Html {
     let project_name = {
         let projects = projects.clone();
         move |id: &str| -> String {
-            projects.iter().find(|p| p.id == id).map(|p| p.name.clone()).unwrap_or_else(|| id.to_string())
+            projects
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| id.to_string())
         }
     };
 
     let open_new = {
         let (open, edit_id, f_name, f_event, f_project, f_meta, f_error) = (
-            open.clone(), edit_id.clone(), f_name.clone(), f_event.clone(),
-            f_project.clone(), f_meta.clone(), f_error.clone(),
+            open.clone(),
+            edit_id.clone(),
+            f_name.clone(),
+            f_event.clone(),
+            f_project.clone(),
+            f_meta.clone(),
+            f_error.clone(),
         );
         let first_project = projects.first().map(|p| p.id.clone()).unwrap_or_default();
         Callback::from(move |_: MouseEvent| {
@@ -77,15 +85,26 @@ pub fn pixels() -> Html {
 
     let open_edit = {
         let (open, edit_id, f_name, f_event, f_project, f_meta, f_error) = (
-            open.clone(), edit_id.clone(), f_name.clone(), f_event.clone(),
-            f_project.clone(), f_meta.clone(), f_error.clone(),
+            open.clone(),
+            edit_id.clone(),
+            f_name.clone(),
+            f_event.clone(),
+            f_project.clone(),
+            f_meta.clone(),
+            f_error.clone(),
         );
         move |pixel: &Pixel| {
             edit_id.set(Some(pixel.id.clone()));
             f_name.set(pixel.name.clone());
             f_event.set(pixel.event_name.clone());
             f_project.set(pixel.project_id.clone());
-            f_meta.set(pixel.metadata.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+            f_meta.set(
+                pixel
+                    .metadata
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            );
             f_error.set(None);
             open.set(true);
         }
@@ -98,8 +117,15 @@ pub fn pixels() -> Html {
 
     let on_save = {
         let (open, edit_id, f_name, f_event, f_project, f_meta, f_error, submitting, reload) = (
-            open.clone(), edit_id.clone(), f_name.clone(), f_event.clone(), f_project.clone(),
-            f_meta.clone(), f_error.clone(), submitting.clone(), reload.clone(),
+            open.clone(),
+            edit_id.clone(),
+            f_name.clone(),
+            f_event.clone(),
+            f_project.clone(),
+            f_meta.clone(),
+            f_error.clone(),
+            submitting.clone(),
+            reload.clone(),
         );
         Callback::from(move |_: MouseEvent| {
             let name = (*f_name).trim().to_string();
@@ -125,8 +151,12 @@ pub fn pixels() -> Html {
                 f_error.set(Some("Choose a project for the pixel.".to_string()));
                 return;
             }
-            let (open, f_error, submitting, reload) =
-                (open.clone(), f_error.clone(), submitting.clone(), reload.clone());
+            let (open, f_error, submitting, reload) = (
+                open.clone(),
+                f_error.clone(),
+                submitting.clone(),
+                reload.clone(),
+            );
             submitting.set(true);
             spawn_local(async move {
                 let result = match &id {
@@ -152,18 +182,20 @@ pub fn pixels() -> Html {
             html! { <div class="empty">{ "No tracking pixels yet." }</div> }
         }
         Some(Ok(list)) => {
-            let filtered: Vec<_> = list
+            let text = needle.to_lowercase();
+            let visible: Vec<&Pixel> = list
                 .iter()
                 .filter(|p| {
-                    let proj = project_name(&p.project_id);
-                    let text = format!("{} {} {}", p.name, proj, p.event_name).to_lowercase();
-                    filter.matches(&MatchContext { project: &proj, text: &text, ..Default::default() })
+                    text.is_empty()
+                        || p.name.to_lowercase().contains(&text)
+                        || p.event_name.to_lowercase().contains(&text)
+                        || project_name(&p.project_id).to_lowercase().contains(&text)
                 })
                 .collect();
-            let rows = filtered.iter().map(|p| {
+            let rows = visible.iter().map(|&p| {
                 let url = format!("{origin}/track/gif/{}.gif", p.id);
                 let on_edit = {
-                    let (open_edit, pixel) = (open_edit.clone(), (*p).clone());
+                    let (open_edit, pixel) = (open_edit.clone(), p.clone());
                     Callback::from(move |_| open_edit(&pixel))
                 };
                 let on_delete = {
@@ -191,7 +223,7 @@ pub fn pixels() -> Html {
                 }
             }).collect::<Html>();
 
-            if filtered.is_empty() {
+            if visible.is_empty() {
                 html! { <div class="empty">{ "No pixels match your search." }</div> }
             } else {
                 html! {
@@ -204,6 +236,10 @@ pub fn pixels() -> Html {
                 }
             }
         }
+    };
+    let on_needle = {
+        let needle = needle.clone();
+        Callback::from(move |e: InputEvent| needle.set(input_value(&e)))
     };
 
     let no_projects = projects.is_empty();
@@ -226,6 +262,8 @@ pub fn pixels() -> Html {
         <div class="page">
             <PageHeader title="Tracking pixels"
                 subtitle="1×1 GIF beacons for email opens, RSS, and other no-JavaScript contexts.">
+                <input class="input" type="search" placeholder="Filter pixels…"
+                    value={(*needle).clone()} oninput={on_needle} />
                 <button class="btn btn--primary" onclick={open_new} disabled={no_projects}>{ "New pixel" }</button>
             </PageHeader>
             if no_projects {
@@ -272,8 +310,11 @@ fn pixel_drawer<F: Fn(&str) -> String>(a: PixelDrawerArgs<F>) -> Html {
             </div>
         }
     } else {
-        let items: Vec<DropdownItem> =
-            a.projects.iter().map(|p| DropdownItem::new(p.id.clone(), p.name.clone())).collect();
+        let items: Vec<DropdownItem> = a
+            .projects
+            .iter()
+            .map(|p| DropdownItem::new(p.id.clone(), p.name.clone()))
+            .collect();
         let on_select = {
             let f = a.f_project.clone();
             Callback::from(move |v: String| f.set(v))

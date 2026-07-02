@@ -72,6 +72,13 @@ pub struct StoredEvent {
     /// Arbitrary key/value metadata (JSON object) for custom/pixel/exception events.
     pub metadata_json: Option<String>,
 
+    /// The reporting application's version, for attributing failures to a
+    /// specific release (exception events; the application itself is the
+    /// event's `source`). `serde(default)` keeps pre-attribution redb rows
+    /// readable.
+    #[serde(default)]
+    pub app_version: Option<String>,
+
     // Exception-only columns.
     pub exc_type: Option<String>,
     pub exc_message: Option<String>,

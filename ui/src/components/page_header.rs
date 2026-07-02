@@ -11,14 +11,31 @@ use crate::app::Route;
 pub struct Crumb {
     pub label: AttrValue,
     pub to: Option<Route>,
+    /// Query pairs carried on the link (e.g. the active filter state, so
+    /// stepping back up the trail doesn't silently drop filters).
+    pub query: Vec<(String, String)>,
 }
 
 impl Crumb {
-    pub fn link(label: impl Into<AttrValue>, to: Route) -> Self {
-        Self { label: label.into(), to: Some(to) }
+    /// A link crumb carrying query pairs (usually the active filter state, so
+    /// stepping back up the trail doesn't silently drop filters).
+    pub fn link_with_query(
+        label: impl Into<AttrValue>,
+        to: Route,
+        query: Vec<(String, String)>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            to: Some(to),
+            query,
+        }
     }
     pub fn current(label: impl Into<AttrValue>) -> Self {
-        Self { label: label.into(), to: None }
+        Self {
+            label: label.into(),
+            to: None,
+            query: Vec::new(),
+        }
     }
 }
 
@@ -44,7 +61,12 @@ pub fn page_header(props: &PageHeaderProps) -> Html {
             let sep = (i < last).then(|| html! { <span class="breadcrumb__sep">{ "/" }</span> });
             let item = match &crumb.to {
                 Some(route) => html! {
-                    <Link<Route> to={route.clone()} classes="breadcrumb__item">{ crumb.label.clone() }</Link<Route>>
+                    <Link<Route, Vec<(String, String)>>
+                        to={route.clone()}
+                        query={(!crumb.query.is_empty()).then(|| crumb.query.clone())}
+                        classes="breadcrumb__item">
+                        { crumb.label.clone() }
+                    </Link<Route, Vec<(String, String)>>>
                 },
                 None => html! {
                     <span class="breadcrumb__item breadcrumb__item--current">{ crumb.label.clone() }</span>
