@@ -223,7 +223,10 @@ impl Config {
         }
 
         let raw = std::fs::read_to_string(path).wrap_user_err(
-            format!("Could not read the configuration file `{}`.", path.display()),
+            format!(
+                "Could not read the configuration file `{}`.",
+                path.display()
+            ),
             &["Check that the path is correct and that the file is readable."],
         )?;
         Self::from_yaml_str(&raw)
@@ -334,7 +337,10 @@ mod tests {
         let config =
             Config::from_yaml_str("telemetry:\n  sentry_dsn: ${{ env.ANALYTICS_TEST_DSN }}\n")
                 .unwrap();
-        assert_eq!(config.telemetry.sentry_dsn.as_deref(), Some("https://example/dsn"));
+        assert_eq!(
+            config.telemetry.sentry_dsn.as_deref(),
+            Some("https://example/dsn")
+        );
     }
 
     #[test]
@@ -360,7 +366,10 @@ mod tests {
         let config =
             Config::from_yaml_str("storage:\n  hot_window: 12h\n  retention: 30d\n").unwrap();
         assert_eq!(config.storage.hot_window, Duration::from_secs(12 * 3600));
-        assert_eq!(config.storage.retention, Duration::from_secs(30 * 24 * 3600));
+        assert_eq!(
+            config.storage.retention,
+            Duration::from_secs(30 * 24 * 3600)
+        );
     }
 
     #[test]

@@ -8,7 +8,9 @@ use yew::prelude::*;
 
 use crate::api::{self, ApiError};
 use crate::app::AuthHandle;
-use crate::components::{ApiErrorAlert, Dropdown, DropdownItem, PageHeader, ProjectsContext, icons};
+use crate::components::{
+    ApiErrorAlert, Dropdown, DropdownItem, PageHeader, ProjectsContext, icons,
+};
 
 #[function_component(Settings)]
 pub fn settings() -> Html {
@@ -59,7 +61,10 @@ fn sources_card() -> Html {
         Callback::from(move |(uri, project_id): (String, String)| {
             let reload = reload.clone();
             spawn_local(async move {
-                let input = SourceInput { project_id: Some(project_id), ..Default::default() };
+                let input = SourceInput {
+                    project_id: Some(project_id),
+                    ..Default::default()
+                };
                 if api::update_source(&uri, &input).await.is_ok() {
                     reload.set(*reload + 1);
                 }
@@ -75,24 +80,33 @@ fn sources_card() -> Html {
         }
         Some(Ok(list)) => {
             let mut items: Vec<DropdownItem> = vec![DropdownItem::new("", "Unassigned")];
-            items.extend(projects.iter().map(|p| DropdownItem::new(p.id.clone(), p.name.clone())));
-            let rows = list.iter().map(|s| {
-                let on_select = {
-                    let (assign, uri) = (assign.clone(), s.uri.clone());
-                    Callback::from(move |project_id: String| assign.emit((uri.clone(), project_id)))
-                };
-                html! {
-                    <tr key={s.uri.clone()}>
-                        <td><code title={s.uri.clone()}>{ source_label(&s.uri) }</code></td>
-                        <td>{ kind_label(&s.kind) }</td>
-                        <td>
-                            <Dropdown items={items.clone()}
-                                value={s.project_id.clone().unwrap_or_default()}
-                                placeholder="Unassigned" on_select={on_select} />
-                        </td>
-                    </tr>
-                }
-            }).collect::<Html>();
+            items.extend(
+                projects
+                    .iter()
+                    .map(|p| DropdownItem::new(p.id.clone(), p.name.clone())),
+            );
+            let rows = list
+                .iter()
+                .map(|s| {
+                    let on_select = {
+                        let (assign, uri) = (assign.clone(), s.uri.clone());
+                        Callback::from(move |project_id: String| {
+                            assign.emit((uri.clone(), project_id))
+                        })
+                    };
+                    html! {
+                        <tr key={s.uri.clone()}>
+                            <td><code title={s.uri.clone()}>{ source_label(&s.uri) }</code></td>
+                            <td>{ kind_label(&s.kind) }</td>
+                            <td>
+                                <Dropdown items={items.clone()}
+                                    value={s.project_id.clone().unwrap_or_default()}
+                                    placeholder="Unassigned" on_select={on_select} />
+                            </td>
+                        </tr>
+                    }
+                })
+                .collect::<Html>();
             html! {
                 <div class="card-table">
                     <table class="list">
@@ -159,7 +173,10 @@ fn instance_card() -> Html {
         Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
         Some(Ok(i)) => {
             let rate = if i.rate_limiting {
-                format!("{} req/min tracking · {} req/min unauthenticated", i.tracking_per_minute, i.unauthenticated_per_minute)
+                format!(
+                    "{} req/min tracking · {} req/min unauthenticated",
+                    i.tracking_per_minute, i.unauthenticated_per_minute
+                )
             } else {
                 "Disabled".to_string()
             };
@@ -237,14 +254,19 @@ fn tracker_card() -> Html {
 fn danger_zone() -> Html {
     let projects_ctx = use_context::<ProjectsContext>();
     let selected = use_state(String::new);
-    let projects = projects_ctx.as_ref().map(|c| c.projects.clone()).unwrap_or_default();
+    let projects = projects_ctx
+        .as_ref()
+        .map(|c| c.projects.clone())
+        .unwrap_or_default();
 
     let on_select = {
         let selected = selected.clone();
         Callback::from(move |value: String| selected.set(value))
     };
-    let items: Vec<DropdownItem> =
-        projects.iter().map(|p| DropdownItem::new(p.id.clone(), p.name.clone())).collect();
+    let items: Vec<DropdownItem> = projects
+        .iter()
+        .map(|p| DropdownItem::new(p.id.clone(), p.name.clone()))
+        .collect();
 
     let on_delete = {
         let selected = selected.clone();

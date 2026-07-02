@@ -28,6 +28,6 @@ pub use source::{
     pixel_source, source_label, source_scheme, website_source,
 };
 pub use stats::{
-    Breakdowns, BreakdownRow, CountRow, Dashboard, DashboardQuery, MetricSummary, TimeSeriesPoint,
+    BreakdownRow, Breakdowns, CountRow, Dashboard, DashboardQuery, MetricSummary, TimeSeriesPoint,
 };
 pub use track::{BeaconKind, TrackEvent};

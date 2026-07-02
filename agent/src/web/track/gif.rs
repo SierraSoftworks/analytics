@@ -40,6 +40,9 @@ pub async fn gif(state: web::Data<AppState>, path: web::Path<String>) -> HttpRes
 
     HttpResponse::Ok()
         .content_type("image/gif")
-        .insert_header((CACHE_CONTROL, "no-store, no-cache, must-revalidate, private"))
+        .insert_header((
+            CACHE_CONTROL,
+            "no-store, no-cache, must-revalidate, private",
+        ))
         .body(BLANK_GIF)
 }

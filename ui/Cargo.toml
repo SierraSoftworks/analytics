@@ -16,7 +16,7 @@ path = "src/main.rs"
 analytics-api = { path = "../api" }
 # Pinned to the same revision the agent workspace resolves, so both sides parse
 # the identical query grammar (and see the same visitor API).
-filt-rs = { git = "https://github.com/SierraSoftworks/filters", rev = "3b60fa1ff8447d9c3d5d959caa2665bfb4c6fc39", features = [
+filt-rs = { git = "https://github.com/SierraSoftworks/filters", rev = "5bc2a50cce3f5ea93ab112c7d1970488a4dcf90d", features = [
     "visitor",
     "regex",
 ] }

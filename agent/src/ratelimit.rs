@@ -81,7 +81,10 @@ mod tests {
         let limiter = RateLimiter::new(60, 2);
         assert!(limiter.check("1.2.3.4"));
         assert!(limiter.check("1.2.3.4"));
-        assert!(!limiter.check("1.2.3.4"), "third immediate request is throttled");
+        assert!(
+            !limiter.check("1.2.3.4"),
+            "third immediate request is throttled"
+        );
         // A different key has its own bucket.
         assert!(limiter.check("5.6.7.8"));
     }

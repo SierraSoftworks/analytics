@@ -38,7 +38,11 @@ pub fn project_drawer(props: &ProjectDrawerProps) -> Html {
     // (Re)load the project + source list whenever the drawer opens.
     {
         let (project, sources, name, error, load_seq) = (
-            project.clone(), sources.clone(), name.clone(), error.clone(), load_seq.clone(),
+            project.clone(),
+            sources.clone(),
+            name.clone(),
+            error.clone(),
+            load_seq.clone(),
         );
         use_effect_with(props.project_id.clone(), move |id| {
             let seq = {
@@ -95,8 +99,13 @@ pub fn project_drawer(props: &ProjectDrawerProps) -> Html {
     };
 
     let on_rename = {
-        let (id, name, error, busy, notify) =
-            (id.clone(), name.clone(), error.clone(), busy.clone(), notify.clone());
+        let (id, name, error, busy, notify) = (
+            id.clone(),
+            name.clone(),
+            error.clone(),
+            busy.clone(),
+            notify.clone(),
+        );
         Callback::from(move |_: MouseEvent| {
             let new_name = name.trim().to_string();
             if new_name.is_empty() {
@@ -107,7 +116,10 @@ pub fn project_drawer(props: &ProjectDrawerProps) -> Html {
                 (id.clone(), error.clone(), busy.clone(), notify.clone());
             busy.set(true);
             spawn_local(async move {
-                let input = ProjectInput { name: new_name, slug: None };
+                let input = ProjectInput {
+                    name: new_name,
+                    slug: None,
+                };
                 match api::update_project(&id, &input).await {
                     Ok(_) => notify.emit(()),
                     Err(err) => error.set(Some(err.to_string())),
@@ -125,7 +137,10 @@ pub fn project_drawer(props: &ProjectDrawerProps) -> Html {
             let target = if member { String::new() } else { id.clone() };
             let (sources, error, notify) = (sources.clone(), error.clone(), notify.clone());
             spawn_local(async move {
-                let input = SourceInput { project_id: Some(target), ..Default::default() };
+                let input = SourceInput {
+                    project_id: Some(target),
+                    ..Default::default()
+                };
                 match api::update_source(&uri, &input).await {
                     Ok(_) => {
                         if let Ok(list) = api::list_sources().await {
@@ -187,7 +202,10 @@ pub fn project_drawer(props: &ProjectDrawerProps) -> Html {
         })
     };
 
-    let title = project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "Project".to_string());
+    let title = project
+        .as_ref()
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| "Project".to_string());
     let on_close = {
         let on_close = props.on_close.clone();
         Callback::from(move |_: ()| on_close.emit(()))

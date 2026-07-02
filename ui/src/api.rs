@@ -66,7 +66,10 @@ fn cached_csrf() -> Option<String> {
 }
 
 async fn fetch_csrf() -> Result<String, ApiError> {
-    let resp = Request::get(&format!("{API_BASE}/csrf")).send().await.map_err(net)?;
+    let resp = Request::get(&format!("{API_BASE}/csrf"))
+        .send()
+        .await
+        .map_err(net)?;
     if !resp.ok() {
         return Err(error_from(resp).await);
     }
@@ -87,7 +90,10 @@ fn invalidate_csrf() {
 }
 
 async fn get_json<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
-    let resp = Request::get(&format!("{API_BASE}{path}")).send().await.map_err(net)?;
+    let resp = Request::get(&format!("{API_BASE}{path}"))
+        .send()
+        .await
+        .map_err(net)?;
     if !resp.ok() {
         return Err(error_from(resp).await);
     }
@@ -118,10 +124,7 @@ where
 
 async fn post_json<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T, ApiError> {
     let url = format!("{API_BASE}{path}");
-    let resp = mutate(|token| {
-        Request::post(&url).header(CSRF_HEADER, token).json(body)
-    })
-    .await?;
+    let resp = mutate(|token| Request::post(&url).header(CSRF_HEADER, token).json(body)).await?;
     resp.json::<T>().await.map_err(net)
 }
 
@@ -150,7 +153,10 @@ fn enc(value: &str) -> String {
 // ------------------------------------------------------------------ endpoints
 
 pub async fn me() -> Result<Option<AdminUser>, ApiError> {
-    let resp = Request::get(&format!("{API_BASE}/me")).send().await.map_err(net)?;
+    let resp = Request::get(&format!("{API_BASE}/me"))
+        .send()
+        .await
+        .map_err(net)?;
     if resp.status() == 204 {
         return Ok(None);
     }

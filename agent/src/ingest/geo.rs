@@ -7,9 +7,17 @@
 pub fn country_from_timezone(tz: &str) -> Option<&'static str> {
     let code = match tz {
         // North America
-        "America/New_York" | "America/Detroit" | "America/Chicago" | "America/Denver"
-        | "America/Phoenix" | "America/Los_Angeles" | "America/Anchorage" | "America/Adak"
-        | "Pacific/Honolulu" | "America/Boise" | "America/Indiana/Indianapolis"
+        "America/New_York"
+        | "America/Detroit"
+        | "America/Chicago"
+        | "America/Denver"
+        | "America/Phoenix"
+        | "America/Los_Angeles"
+        | "America/Anchorage"
+        | "America/Adak"
+        | "Pacific/Honolulu"
+        | "America/Boise"
+        | "America/Indiana/Indianapolis"
         | "America/Kentucky/Louisville" => "US",
         "America/Toronto" | "America/Vancouver" | "America/Edmonton" | "America/Winnipeg"
         | "America/Halifax" | "America/St_Johns" | "America/Regina" => "CA",
@@ -111,8 +119,13 @@ pub fn country_from_timezone(tz: &str) -> Option<&'static str> {
         "Asia/Tokyo" => "JP",
         "Asia/Seoul" => "KR",
         // Oceania
-        "Australia/Sydney" | "Australia/Melbourne" | "Australia/Brisbane" | "Australia/Perth"
-        | "Australia/Adelaide" | "Australia/Hobart" | "Australia/Darwin" => "AU",
+        "Australia/Sydney"
+        | "Australia/Melbourne"
+        | "Australia/Brisbane"
+        | "Australia/Perth"
+        | "Australia/Adelaide"
+        | "Australia/Hobart"
+        | "Australia/Darwin" => "AU",
         "Pacific/Auckland" => "NZ",
         "Pacific/Fiji" => "FJ",
         _ => return None,

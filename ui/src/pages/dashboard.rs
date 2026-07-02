@@ -125,7 +125,10 @@ pub fn dashboard() -> Html {
             Dim::Project,
             projects
                 .iter()
-                .map(|p| SuggestOption { value: p.id.clone(), label: p.name.clone() })
+                .map(|p| SuggestOption {
+                    value: p.id.clone(),
+                    label: p.name.clone(),
+                })
                 .collect(),
         )],
     };
@@ -141,7 +144,11 @@ pub fn dashboard() -> Html {
                 rows.iter()
                     .map(|r| PanelRow {
                         value: r.key.clone(),
-                        label: if r.key.is_empty() { absent.to_string() } else { r.key.clone() },
+                        label: if r.key.is_empty() {
+                            absent.to_string()
+                        } else {
+                            r.key.clone()
+                        },
                         icon: None,
                         visitors: r.visitors,
                         pageviews: r.pageviews,
@@ -219,21 +226,53 @@ pub fn dashboard() -> Html {
             // site/app is this?" is the first drill-down an operator reaches
             // for. Projects (which merely group sources) sit last.
             let source_tabs = vec![PanelTab::new("Sources", Dim::Source, source_rows)];
-            let pages_tabs = vec![PanelTab::new("Top pages", Dim::Path, plain(&dash.breakdowns.pages, "Unknown"))];
+            let pages_tabs = vec![PanelTab::new(
+                "Top pages",
+                Dim::Path,
+                plain(&dash.breakdowns.pages, "Unknown"),
+            )];
             let acquisition_tabs = vec![
-                PanelTab::new("Referrers", Dim::Referrer, plain(&dash.breakdowns.referrers, Dim::Referrer.absent_label())),
-                PanelTab::new("UTM source", Dim::UtmSource, plain(&dash.breakdowns.utm_sources, "None")),
-                PanelTab::new("UTM medium", Dim::UtmMedium, plain(&dash.breakdowns.utm_mediums, "None")),
-                PanelTab::new("UTM campaign", Dim::UtmCampaign, plain(&dash.breakdowns.utm_campaigns, "None")),
+                PanelTab::new(
+                    "Referrers",
+                    Dim::Referrer,
+                    plain(&dash.breakdowns.referrers, Dim::Referrer.absent_label()),
+                ),
+                PanelTab::new(
+                    "UTM source",
+                    Dim::UtmSource,
+                    plain(&dash.breakdowns.utm_sources, "None"),
+                ),
+                PanelTab::new(
+                    "UTM medium",
+                    Dim::UtmMedium,
+                    plain(&dash.breakdowns.utm_mediums, "None"),
+                ),
+                PanelTab::new(
+                    "UTM campaign",
+                    Dim::UtmCampaign,
+                    plain(&dash.breakdowns.utm_campaigns, "None"),
+                ),
             ];
             let location_tabs = vec![
                 PanelTab::new("Countries", Dim::Country, countries),
                 PanelTab::new("Languages", Dim::Language, languages),
             ];
             let platform_tabs = vec![
-                PanelTab::new("Browsers", Dim::Browser, plain(&dash.breakdowns.browsers, "Unknown")),
-                PanelTab::new("OS", Dim::Os, plain(&dash.breakdowns.operating_systems, "Unknown")),
-                PanelTab::new("Devices", Dim::Device, plain(&dash.breakdowns.devices, "Unknown")),
+                PanelTab::new(
+                    "Browsers",
+                    Dim::Browser,
+                    plain(&dash.breakdowns.browsers, "Unknown"),
+                ),
+                PanelTab::new(
+                    "OS",
+                    Dim::Os,
+                    plain(&dash.breakdowns.operating_systems, "Unknown"),
+                ),
+                PanelTab::new(
+                    "Devices",
+                    Dim::Device,
+                    plain(&dash.breakdowns.devices, "Unknown"),
+                ),
             ];
             let project_tabs = vec![
                 PanelTab::new("Projects", Dim::Project, project_rows)
@@ -333,7 +372,11 @@ fn build_suggestions(
         rows.iter()
             .map(|r| SuggestOption {
                 value: r.key.clone(),
-                label: if r.key.is_empty() { absent.to_string() } else { r.key.clone() },
+                label: if r.key.is_empty() {
+                    absent.to_string()
+                } else {
+                    r.key.clone()
+                },
             })
             .collect()
     };
@@ -342,7 +385,10 @@ fn build_suggestions(
             Dim::Project,
             projects
                 .iter()
-                .map(|p| SuggestOption { value: p.id.clone(), label: p.name.clone() })
+                .map(|p| SuggestOption {
+                    value: p.id.clone(),
+                    label: p.name.clone(),
+                })
                 .collect(),
         ),
         (
@@ -357,7 +403,10 @@ fn build_suggestions(
                 .collect(),
         ),
         (Dim::Path, rows(&dash.breakdowns.pages, "Unknown")),
-        (Dim::Referrer, rows(&dash.breakdowns.referrers, Dim::Referrer.absent_label())),
+        (
+            Dim::Referrer,
+            rows(&dash.breakdowns.referrers, Dim::Referrer.absent_label()),
+        ),
         (
             Dim::Country,
             dash.breakdowns
@@ -396,7 +445,10 @@ fn build_suggestions(
         (Dim::Device, rows(&dash.breakdowns.devices, "Unknown")),
         (Dim::UtmSource, rows(&dash.breakdowns.utm_sources, "None")),
         (Dim::UtmMedium, rows(&dash.breakdowns.utm_mediums, "None")),
-        (Dim::UtmCampaign, rows(&dash.breakdowns.utm_campaigns, "None")),
+        (
+            Dim::UtmCampaign,
+            rows(&dash.breakdowns.utm_campaigns, "None"),
+        ),
     ]
 }
 
@@ -424,7 +476,11 @@ fn unassigned_banner(props: &UnassignedBannerProps) -> Html {
     }
 
     let total_views: i64 = unassigned.iter().map(|r| r.pageviews + r.events).sum();
-    let shown = if *expanded { unassigned.len() } else { unassigned.len().min(3) };
+    let shown = if *expanded {
+        unassigned.len()
+    } else {
+        unassigned.len().min(3)
+    };
 
     let assign = {
         let (on_changed, reload) = (
@@ -434,7 +490,10 @@ fn unassigned_banner(props: &UnassignedBannerProps) -> Html {
         Callback::from(move |(uri, project_id): (String, String)| {
             let (on_changed, reload) = (on_changed.clone(), reload.clone());
             spawn_local(async move {
-                let input = SourceInput { project_id: Some(project_id), ..Default::default() };
+                let input = SourceInput {
+                    project_id: Some(project_id),
+                    ..Default::default()
+                };
                 if api::update_source(&uri, &input).await.is_ok() {
                     on_changed.emit(());
                     if let Some(reload) = &reload {

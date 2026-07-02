@@ -4,7 +4,9 @@
 //! representative example per unique message/stack, with a count of the
 //! occurrences it stands for.
 
-use analytics_api::{CountRow, ExceptionGroupDetail, ExceptionStatus, ExceptionVariant, TriageInput};
+use analytics_api::{
+    CountRow, ExceptionGroupDetail, ExceptionStatus, ExceptionVariant, TriageInput,
+};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
@@ -52,7 +54,11 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
     let set_status = {
         let (project, group, reload) = (project.clone(), group.clone(), reload.clone());
         move |status: ExceptionStatus| {
-            let input = TriageInput { project_id: project.clone(), status, note: None };
+            let input = TriageInput {
+                project_id: project.clone(),
+                status,
+                note: None,
+            };
             let (group, reload) = (group.clone(), reload.clone());
             Callback::from(move |_: MouseEvent| {
                 let (group, input, reload) = (group.clone(), input.clone(), reload.clone());

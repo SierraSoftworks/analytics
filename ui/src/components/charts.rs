@@ -129,7 +129,11 @@ pub fn time_series_chart(props: &TimeSeriesChartProps) -> Html {
 
     let plot_w = (w - MARGIN_LEFT - MARGIN_RIGHT).max(1.0);
     let plot_h = HEIGHT - MARGIN_TOP - MARGIN_BOTTOM;
-    let step = if n > 1 { plot_w / (n - 1) as f64 } else { plot_w };
+    let step = if n > 1 {
+        plot_w / (n - 1) as f64
+    } else {
+        plot_w
+    };
     let x_of = |i: usize| MARGIN_LEFT + if n > 1 { i as f64 * step } else { plot_w / 2.0 };
     let bucket_ms = if n > 1 {
         (points[1].timestamp_ms - points[0].timestamp_ms).max(1)
@@ -175,16 +179,21 @@ pub fn time_series_chart(props: &TimeSeriesChartProps) -> Html {
     let exception_bars = (exc_max > 0).then(|| {
         let scale = (plot_h * 0.35) / exc_max as f64;
         let bar_w = (step * 0.6).clamp(1.0, 14.0);
-        let bars = points.iter().enumerate().filter(|(_, p)| p.exceptions > 0).map(|(i, p)| {
-            let h = (p.exceptions as f64 * scale).max(2.0);
-            html! {
-                <rect key={i.to_string()} class="chart__exception-bar" rx="1"
-                    x={format!("{:.1}", x_of(i) - bar_w / 2.0)}
-                    y={format!("{:.1}", MARGIN_TOP + plot_h - h)}
-                    width={format!("{bar_w:.1}")}
-                    height={format!("{h:.1}")} />
-            }
-        }).collect::<Html>();
+        let bars = points
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.exceptions > 0)
+            .map(|(i, p)| {
+                let h = (p.exceptions as f64 * scale).max(2.0);
+                html! {
+                    <rect key={i.to_string()} class="chart__exception-bar" rx="1"
+                        x={format!("{:.1}", x_of(i) - bar_w / 2.0)}
+                        y={format!("{:.1}", MARGIN_TOP + plot_h - h)}
+                        width={format!("{bar_w:.1}")}
+                        height={format!("{h:.1}")} />
+                }
+            })
+            .collect::<Html>();
         html! { <g>{ bars }</g> }
     });
 
@@ -453,11 +462,20 @@ pub fn sparkline(props: &SparklineProps) -> Html {
     }
 
     let max = points.iter().copied().max().unwrap_or(1).max(1) as f64;
-    let step = if points.len() > 1 { W / (points.len() - 1) as f64 } else { W };
+    let step = if points.len() > 1 {
+        W / (points.len() - 1) as f64
+    } else {
+        W
+    };
     let coords: Vec<(f64, f64)> = points
         .iter()
         .enumerate()
-        .map(|(i, v)| (i as f64 * step, PAD + (1.0 - *v as f64 / max) * (H - 2.0 * PAD)))
+        .map(|(i, v)| {
+            (
+                i as f64 * step,
+                PAD + (1.0 - *v as f64 / max) * (H - 2.0 * PAD),
+            )
+        })
         .collect();
     let line = coords
         .iter()

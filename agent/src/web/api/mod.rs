@@ -141,7 +141,8 @@ pub async fn api_auth(
                 let response = unauthenticated(&state, &req);
                 return Ok(req.into_response(response));
             }
-            Some(token) => match validate_token(&state.http, &state.oidc_cache, oidc, &token).await {
+            Some(token) => match validate_token(&state.http, &state.oidc_cache, oidc, &token).await
+            {
                 Ok(claims) => Some(claims),
                 Err(err) => {
                     info!("Rejected API request with an invalid session cookie: {err}");
@@ -207,7 +208,9 @@ fn csrf_ok(req: &ServiceRequest) -> bool {
         .get(CSRF_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    let cookie = req.cookie(CSRF_COOKIE).map(|c: Cookie| c.value().to_string());
+    let cookie = req
+        .cookie(CSRF_COOKIE)
+        .map(|c: Cookie| c.value().to_string());
     match (header, cookie) {
         (Some(header), Some(cookie)) => !header.is_empty() && header == cookie,
         _ => false,

@@ -9,7 +9,9 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 use crate::api::{self, ApiError};
-use crate::components::{ApiErrorAlert, Drawer, Dropdown, DropdownItem, PageHeader, ProjectsContext};
+use crate::components::{
+    ApiErrorAlert, Drawer, Dropdown, DropdownItem, PageHeader, ProjectsContext,
+};
 
 fn input_value(e: &InputEvent) -> String {
     e.target_unchecked_into::<HtmlInputElement>().value()
@@ -51,14 +53,23 @@ pub fn pixels() -> Html {
     let project_name = {
         let projects = projects.clone();
         move |id: &str| -> String {
-            projects.iter().find(|p| p.id == id).map(|p| p.name.clone()).unwrap_or_else(|| id.to_string())
+            projects
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| id.to_string())
         }
     };
 
     let open_new = {
         let (open, edit_id, f_name, f_event, f_project, f_meta, f_error) = (
-            open.clone(), edit_id.clone(), f_name.clone(), f_event.clone(),
-            f_project.clone(), f_meta.clone(), f_error.clone(),
+            open.clone(),
+            edit_id.clone(),
+            f_name.clone(),
+            f_event.clone(),
+            f_project.clone(),
+            f_meta.clone(),
+            f_error.clone(),
         );
         let first_project = projects.first().map(|p| p.id.clone()).unwrap_or_default();
         Callback::from(move |_: MouseEvent| {
@@ -74,15 +85,26 @@ pub fn pixels() -> Html {
 
     let open_edit = {
         let (open, edit_id, f_name, f_event, f_project, f_meta, f_error) = (
-            open.clone(), edit_id.clone(), f_name.clone(), f_event.clone(),
-            f_project.clone(), f_meta.clone(), f_error.clone(),
+            open.clone(),
+            edit_id.clone(),
+            f_name.clone(),
+            f_event.clone(),
+            f_project.clone(),
+            f_meta.clone(),
+            f_error.clone(),
         );
         move |pixel: &Pixel| {
             edit_id.set(Some(pixel.id.clone()));
             f_name.set(pixel.name.clone());
             f_event.set(pixel.event_name.clone());
             f_project.set(pixel.project_id.clone());
-            f_meta.set(pixel.metadata.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+            f_meta.set(
+                pixel
+                    .metadata
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            );
             f_error.set(None);
             open.set(true);
         }
@@ -95,8 +117,15 @@ pub fn pixels() -> Html {
 
     let on_save = {
         let (open, edit_id, f_name, f_event, f_project, f_meta, f_error, submitting, reload) = (
-            open.clone(), edit_id.clone(), f_name.clone(), f_event.clone(), f_project.clone(),
-            f_meta.clone(), f_error.clone(), submitting.clone(), reload.clone(),
+            open.clone(),
+            edit_id.clone(),
+            f_name.clone(),
+            f_event.clone(),
+            f_project.clone(),
+            f_meta.clone(),
+            f_error.clone(),
+            submitting.clone(),
+            reload.clone(),
         );
         Callback::from(move |_: MouseEvent| {
             let name = (*f_name).trim().to_string();
@@ -122,8 +151,12 @@ pub fn pixels() -> Html {
                 f_error.set(Some("Choose a project for the pixel.".to_string()));
                 return;
             }
-            let (open, f_error, submitting, reload) =
-                (open.clone(), f_error.clone(), submitting.clone(), reload.clone());
+            let (open, f_error, submitting, reload) = (
+                open.clone(),
+                f_error.clone(),
+                submitting.clone(),
+                reload.clone(),
+            );
             submitting.set(true);
             spawn_local(async move {
                 let result = match &id {
@@ -277,8 +310,11 @@ fn pixel_drawer<F: Fn(&str) -> String>(a: PixelDrawerArgs<F>) -> Html {
             </div>
         }
     } else {
-        let items: Vec<DropdownItem> =
-            a.projects.iter().map(|p| DropdownItem::new(p.id.clone(), p.name.clone())).collect();
+        let items: Vec<DropdownItem> = a
+            .projects
+            .iter()
+            .map(|p| DropdownItem::new(p.id.clone(), p.name.clone()))
+            .collect();
         let on_select = {
             let f = a.f_project.clone();
             Callback::from(move |v: String| f.set(v))

@@ -40,7 +40,10 @@ pub async fn stats(state: web::Data<AppState>, query: web::Query<DashboardQuery>
         Ok(Err(err)) => internal_error(err),
         Err(err) => {
             error!("dashboard computation task failed: {err}");
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to compute statistics.")
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to compute statistics.",
+            )
         }
     }
 }

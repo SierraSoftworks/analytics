@@ -28,7 +28,10 @@ pub async fn create(state: web::Data<AppState>, body: web::Json<ProjectInput>) -
     }
     let project = Project {
         id: ulid::Ulid::new().to_string(),
-        slug: input.slug.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| slugify(&name)),
+        slug: input
+            .slug
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| slugify(&name)),
         name,
         created_at: Utc::now(),
     };
@@ -60,7 +63,10 @@ pub async fn update(
     let input = body.into_inner();
     let name = input.name.trim().to_string();
     let updated = Project {
-        slug: input.slug.filter(|s| !s.trim().is_empty()).unwrap_or(existing.slug),
+        slug: input
+            .slug
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(existing.slug),
         name: if name.is_empty() { existing.name } else { name },
         ..existing
     };
@@ -85,7 +91,10 @@ pub async fn delete(state: web::Data<AppState>, path: web::Path<String>) -> Http
         Ok(Err(err)) => internal_error(err),
         Err(err) => {
             error!("project delete task failed: {err}");
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete the project.")
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to delete the project.",
+            )
         }
     }
 }
@@ -104,5 +113,9 @@ fn slugify(name: &str) -> String {
         }
     }
     let slug = slug.trim_matches('-').to_string();
-    if slug.is_empty() { "project".to_string() } else { slug }
+    if slug.is_empty() {
+        "project".to_string()
+    } else {
+        slug
+    }
 }

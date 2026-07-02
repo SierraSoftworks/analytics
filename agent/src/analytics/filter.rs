@@ -13,8 +13,8 @@
 use std::collections::HashSet;
 
 use filt_rs::{
-    BinaryOperator, CompiledRegex, Expr as FilterNode, ExprVisitor, Filter, FilterValue, Glob,
-    LogicalOperator, UnaryOperator,
+    BinaryOperator, CompiledRegex, Expr as FilterNode, ExprVisitor, Filter, FilterValue, Function,
+    Glob, LogicalOperator, UnaryOperator,
 };
 use polars::prelude::*;
 
@@ -32,7 +32,12 @@ pub enum FieldSet {
 impl FieldSet {
     /// `property name → events column`, or `None` for unknown properties.
     fn column(self, property: &str) -> Option<Field> {
-        let string = |column: &'static str| Some(Field { column, boolean: false });
+        let string = |column: &'static str| {
+            Some(Field {
+                column,
+                boolean: false,
+            })
+        };
         match (self, property) {
             (_, "source") => string("source"),
             (_, "browser") => string("ua_browser"),
@@ -51,7 +56,10 @@ impl FieldSet {
             (FieldSet::Exceptions, "app_version") => string("app_version"),
             (FieldSet::Exceptions, "type") => string("exc_type"),
             (FieldSet::Exceptions, "message") => string("exc_message"),
-            (FieldSet::Exceptions, "handled") => Some(Field { column: "exc_handled", boolean: true }),
+            (FieldSet::Exceptions, "handled") => Some(Field {
+                column: "exc_handled",
+                boolean: true,
+            }),
             _ => None,
         }
     }
@@ -101,10 +109,17 @@ pub fn compile_query(
         return Ok(None);
     }
     let filter = Filter::new(q).map_err(|err| err.to_string())?;
-    let mut compiler = Compiler { fields, store, referenced: HashSet::new() };
+    let mut compiler = Compiler {
+        fields,
+        store,
+        referenced: HashSet::new(),
+    };
     let node = filter.visit(&mut compiler);
     let predicate = node?.into_predicate()?;
-    Ok(Some(CompiledFilter { predicate, referenced: compiler.referenced }))
+    Ok(Some(CompiledFilter {
+        predicate,
+        referenced: compiler.referenced,
+    }))
 }
 
 /// An intermediate value produced while folding the AST: either a finished
@@ -167,8 +182,10 @@ impl Compiler<'_> {
     }
 
     fn source_membership(&self, project_ids: &[String]) -> Expr {
-        let uris: Vec<String> =
-            project_ids.iter().flat_map(|id| self.project_sources(id)).collect();
+        let uris: Vec<String> = project_ids
+            .iter()
+            .flat_map(|id| self.project_sources(id))
+            .collect();
         col("source").is_in(lit(Series::new("sources".into(), uris)), false)
     }
 
@@ -176,7 +193,9 @@ impl Compiler<'_> {
     /// the empty string matching absent values.
     fn string_eq(&self, field: Field, value: &str, case_sensitive: bool) -> Expr {
         if field.boolean {
-            return col(field.column).fill_null(lit(false)).eq(lit(value.eq_ignore_ascii_case("true")));
+            return col(field.column)
+                .fill_null(lit(false))
+                .eq(lit(value.eq_ignore_ascii_case("true")));
         }
         if value.is_empty() {
             // The sentinel means "absent on a page view". Pixel/custom events
@@ -184,7 +203,9 @@ impl Compiler<'_> {
             // must not ride through an empty-valued comparison (the events
             // metric would ignore the filter entirely). Exception queries run
             // on a kind-scoped frame where "absent" genuinely means unknown.
-            let absent = col(field.column).is_null().or(col(field.column).eq(lit("")));
+            let absent = col(field.column)
+                .is_null()
+                .or(col(field.column).eq(lit("")));
             return match self.fields {
                 FieldSet::Dashboard => absent.and(
                     col("kind")
@@ -251,8 +272,15 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
         }
     }
 
-    fn visit_function_call(&mut self, name: &'a str, _args: &'a [FilterNode<'a>]) -> Fold {
-        Err(format!("functions are not supported in analytics queries (`{name}(…)`)"))
+    fn visit_function_call(
+        &mut self,
+        function: &'a dyn Function,
+        _args: &'a [FilterNode<'a>],
+    ) -> Fold {
+        Err(format!(
+            "functions are not supported in analytics queries (`{}(…)`)",
+            function.name()
+        ))
     }
 
     fn visit_binary(
@@ -274,9 +302,9 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
 
         match (&subject, operator, &object) {
             // ---- project membership --------------------------------------
-            (Node::Project, Equals, Node::Str(id)) => {
-                Ok(Node::Predicate(self.source_membership(std::slice::from_ref(id))))
-            }
+            (Node::Project, Equals, Node::Str(id)) => Ok(Node::Predicate(
+                self.source_membership(std::slice::from_ref(id)),
+            )),
             (Node::Project, NotEquals, Node::Str(id)) => Ok(Node::Predicate(
                 self.source_membership(std::slice::from_ref(id)).not(),
             )),
@@ -291,7 +319,9 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
             (Node::Column(field), NotEquals, Node::Str(value)) if value.is_empty() => {
                 // `field != ""` means "the dimension is present".
                 Ok(Node::Predicate(
-                    col(field.column).is_not_null().and(col(field.column).neq(lit(""))),
+                    col(field.column)
+                        .is_not_null()
+                        .and(col(field.column).neq(lit(""))),
                 ))
             }
             (Node::Column(field), NotEquals, Node::Str(value)) => {
@@ -305,12 +335,12 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
             (Node::Column(field), NotEquals, Node::Null) => {
                 Ok(Node::Predicate(col(field.column).is_not_null()))
             }
-            (Node::Column(field), Equals, Node::Bool(value)) if field.boolean => {
-                Ok(Node::Predicate(col(field.column).fill_null(lit(false)).eq(lit(*value))))
-            }
-            (Node::Column(field), NotEquals, Node::Bool(value)) if field.boolean => {
-                Ok(Node::Predicate(col(field.column).fill_null(lit(false)).neq(lit(*value))))
-            }
+            (Node::Column(field), Equals, Node::Bool(value)) if field.boolean => Ok(
+                Node::Predicate(col(field.column).fill_null(lit(false)).eq(lit(*value))),
+            ),
+            (Node::Column(field), NotEquals, Node::Bool(value)) if field.boolean => Ok(
+                Node::Predicate(col(field.column).fill_null(lit(false)).neq(lit(*value))),
+            ),
 
             // ---- membership ------------------------------------------------
             // Source membership gets the same scheme tolerance as source
@@ -354,9 +384,10 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
                 "ordering comparisons are not supported for {}",
                 subject.describe()
             )),
-            (subject, Plus | Minus, _) => {
-                Err(format!("arithmetic is not supported (near {})", subject.describe()))
-            }
+            (subject, Plus | Minus, _) => Err(format!(
+                "arithmetic is not supported (near {})",
+                subject.describe()
+            )),
             (subject, operator, object) => Err(format!(
                 "cannot apply `{operator}` to {} and {}",
                 subject.describe(),
@@ -389,10 +420,15 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
     fn visit_like(&mut self, left: &'a FilterNode<'a>, glob: &'a Glob) -> Fold {
         let subject = self.visit_expr(left)?;
         let Node::Column(field) = subject else {
-            return Err(format!("`like` expects a field on the left, found {}", subject.describe()));
+            return Err(format!(
+                "`like` expects a field on the left, found {}",
+                subject.describe()
+            ));
         };
         let pattern = glob_regex(glob.pattern(), glob.is_case_sensitive());
-        Ok(Node::Predicate(col(field.column).str().contains(lit(pattern), true)))
+        Ok(Node::Predicate(
+            col(field.column).str().contains(lit(pattern), true),
+        ))
     }
 
     fn visit_matches(&mut self, left: &'a FilterNode<'a>, regex: &'a CompiledRegex) -> Fold {
@@ -404,7 +440,9 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
             ));
         };
         Ok(Node::Predicate(
-            col(field.column).str().contains(lit(regex.pattern().to_string()), true),
+            col(field.column)
+                .str()
+                .contains(lit(regex.pattern().to_string()), true),
         ))
     }
 }
@@ -481,8 +519,11 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path = std::env::temp_dir()
-            .join(format!("analytics-filter-{}-{}.redb", std::process::id(), n));
+        let path = std::env::temp_dir().join(format!(
+            "analytics-filter-{}-{}.redb",
+            std::process::id(),
+            n
+        ));
         (Store::open(&path).unwrap(), path)
     }
 
@@ -557,7 +598,9 @@ mod tests {
         // Covered end-to-end in analytics::tests; here just assert the forms compile.
         assert!(compiles(r#"source == "docs.example.com""#));
         assert!(compiles(r#"source == "https://docs.example.com""#));
-        assert!(compiles(r#"source in ["docs.example.com", "https://shop.example.com"]"#));
+        assert!(compiles(
+            r#"source in ["docs.example.com", "https://shop.example.com"]"#
+        ));
         assert!(compiles(r#"source in_cs ["docs.example.com"]"#));
     }
 

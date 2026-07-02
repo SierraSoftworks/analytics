@@ -28,10 +28,16 @@ pub const MAX_INSTANT_MS: i64 = 4_102_444_800_000;
 /// earlier. Inputs are clamped to sane instants with `from < to` guaranteed,
 /// and the bucket (default `day`) is clamped so the series stays under
 /// [`MAX_BUCKETS`] points.
-pub fn resolve_range(from: Option<i64>, to: Option<i64>, interval: Option<&str>) -> (i64, i64, i64) {
+pub fn resolve_range(
+    from: Option<i64>,
+    to: Option<i64>,
+    interval: Option<&str>,
+) -> (i64, i64, i64) {
     let now = chrono::Utc::now().timestamp_millis();
     let to = to.unwrap_or(now).clamp(1, MAX_INSTANT_MS);
-    let from = from.unwrap_or(to.saturating_sub(7 * DAY_MS)).clamp(0, to - 1);
+    let from = from
+        .unwrap_or(to.saturating_sub(7 * DAY_MS))
+        .clamp(0, to - 1);
     let span = (to - from).max(1);
 
     let requested = interval
@@ -80,7 +86,10 @@ mod tests {
         for days in [1, 7, 30, 90, 365, 3650] {
             let span = days * DAY_MS;
             let (_, _, bucket) = resolve_range(Some(0), Some(span), Some("minute"));
-            assert!(span / bucket <= MAX_BUCKETS, "{days}d span yields too many buckets");
+            assert!(
+                span / bucket <= MAX_BUCKETS,
+                "{days}d span yields too many buckets"
+            );
         }
     }
 

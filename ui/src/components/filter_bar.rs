@@ -47,7 +47,11 @@ pub fn filter_bar(props: &FilterBarProps) -> Html {
     };
 
     let dim_applies = |dim: Dim| {
-        if props.restricted { dim.applies_to_exceptions() } else { dim.applies_to_dashboard() }
+        if props.restricted {
+            dim.applies_to_exceptions()
+        } else {
+            dim.applies_to_dashboard()
+        }
     };
 
     let chips = filters.query.terms.iter().map(|(dim, value)| {
@@ -104,7 +108,10 @@ pub fn filter_bar(props: &FilterBarProps) -> Html {
     let clear_all = (!filters.query.is_empty()).then(|| {
         let (apply, filters) = (apply.clone(), filters.clone());
         let onclick = Callback::from(move |_: MouseEvent| {
-            apply.emit(FilterSet { range: filters.range, query: Default::default() })
+            apply.emit(FilterSet {
+                range: filters.range,
+                query: Default::default(),
+            })
         });
         html! { <button class="filter-bar__clear" onclick={onclick}>{ "Clear" }</button> }
     });
@@ -229,7 +236,11 @@ fn add_filter(props: &AddFilterProps) -> Html {
     };
 
     let dims = Dim::ALL.into_iter().filter(|d| {
-        if props.restricted { d.applies_to_exceptions() } else { d.applies_to_dashboard() }
+        if props.restricted {
+            d.applies_to_exceptions()
+        } else {
+            d.applies_to_dashboard()
+        }
     });
 
     let body = match *picked {

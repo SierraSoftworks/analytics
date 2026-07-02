@@ -15,8 +15,8 @@
 //! [filt-rs]: https://github.com/SierraSoftworks/filters
 
 use filt_rs::{
-    BinaryOperator, CompiledRegex, Expr, ExprVisitor, Filter, FilterValue, Glob, LogicalOperator,
-    UnaryOperator,
+    BinaryOperator, CompiledRegex, Expr, ExprVisitor, Filter, FilterValue, Function, Glob,
+    LogicalOperator, UnaryOperator,
 };
 use yew::prelude::*;
 use yew_router::prelude::*;
@@ -135,12 +135,30 @@ impl Dim {
 /// advanced-only fields), for deciding whether an advanced expression can be
 /// sent along.
 const EXCEPTION_FIELDS: &[&str] = &[
-    "project", "source", "browser", "os", "device", "app", "app_version", "type", "message",
+    "project",
+    "source",
+    "browser",
+    "os",
+    "device",
+    "app",
+    "app_version",
+    "type",
+    "message",
     "handled",
 ];
 const DASHBOARD_FIELDS: &[&str] = &[
-    "project", "source", "path", "referrer", "country", "language", "browser", "os", "device",
-    "utm_source", "utm_medium", "utm_campaign",
+    "project",
+    "source",
+    "path",
+    "referrer",
+    "country",
+    "language",
+    "browser",
+    "os",
+    "device",
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
 ];
 
 /// A relative lookback preset. Presets stay relative in the URL (`range=7d`), so
@@ -269,7 +287,10 @@ impl Query {
             return Query::default();
         }
         let Ok(filter) = Filter::new(expression) else {
-            return Query { terms: Vec::new(), advanced: Some(expression.to_string()) };
+            return Query {
+                terms: Vec::new(),
+                advanced: Some(expression.to_string()),
+            };
         };
         let pieces = filter.visit(&mut Decomposer);
         let mut query = Query::default();
@@ -388,7 +409,11 @@ impl FilterSet {
     }
 
     pub fn get(&self, dim: Dim) -> Option<&str> {
-        self.query.terms.iter().find(|(d, _)| *d == dim).map(|(_, v)| v.as_str())
+        self.query
+            .terms
+            .iter()
+            .find(|(d, _)| *d == dim)
+            .map(|(_, v)| v.as_str())
     }
 
     /// Set (or replace — one value per dimension) a filter term.
@@ -467,7 +492,11 @@ impl FilterSet {
         match self.range {
             TimeRange::Preset(preset) => preset.label().to_string(),
             TimeRange::Custom { from, to } => {
-                format!("{} – {}", crate::format::short_date(from), crate::format::short_date(to))
+                format!(
+                    "{} – {}",
+                    crate::format::short_date(from),
+                    crate::format::short_date(to)
+                )
             }
         }
     }
@@ -564,8 +593,7 @@ impl<'a> ExprVisitor<'a, Vec<Piece>> for Decomposer {
         right: &'a Expr<'a>,
     ) -> Vec<Piece> {
         if operator == BinaryOperator::Equals
-            && let (Expr::Property(name), Expr::Literal(FilterValue::String(value))) =
-                (left, right)
+            && let (Expr::Property(name), Expr::Literal(FilterValue::String(value))) = (left, right)
             && let Some(dim) = Dim::from_param(&name.to_ascii_lowercase())
         {
             return vec![Piece::Term(dim, value.to_string())];
@@ -586,12 +614,20 @@ impl<'a> ExprVisitor<'a, Vec<Piece>> for Decomposer {
         vec![Piece::Advanced(name.to_string())]
     }
 
-    fn visit_function_call(&mut self, name: &'a str, args: &'a [Expr<'a>]) -> Vec<Piece> {
-        vec![Piece::Advanced(print_call(name, args))]
+    fn visit_function_call(
+        &mut self,
+        function: &'a dyn Function,
+        args: &'a [Expr<'a>],
+    ) -> Vec<Piece> {
+        vec![Piece::Advanced(print_call(function.name(), args))]
     }
 
     fn visit_unary(&mut self, operator: UnaryOperator, right: &'a Expr<'a>) -> Vec<Piece> {
-        vec![Piece::Advanced(format!("{}{}", operator.symbol(), print_operand(right)))]
+        vec![Piece::Advanced(format!(
+            "{}{}",
+            operator.symbol(),
+            print_operand(right)
+        ))]
     }
 
     fn visit_like(&mut self, left: &'a Expr<'a>, glob: &'a Glob) -> Vec<Piece> {
@@ -618,8 +654,8 @@ impl<'a> ExprVisitor<'a, String> for Printer {
         name.to_string()
     }
 
-    fn visit_function_call(&mut self, name: &'a str, args: &'a [Expr<'a>]) -> String {
-        print_call(name, args)
+    fn visit_function_call(&mut self, function: &'a dyn Function, args: &'a [Expr<'a>]) -> String {
+        print_call(function.name(), args)
     }
 
     fn visit_binary(
@@ -628,7 +664,12 @@ impl<'a> ExprVisitor<'a, String> for Printer {
         operator: BinaryOperator,
         right: &'a Expr<'a>,
     ) -> String {
-        format!("{} {} {}", print_operand(left), operator.symbol(), print_operand(right))
+        format!(
+            "{} {} {}",
+            print_operand(left),
+            operator.symbol(),
+            print_operand(right)
+        )
     }
 
     fn visit_logical(
@@ -637,7 +678,12 @@ impl<'a> ExprVisitor<'a, String> for Printer {
         operator: LogicalOperator,
         right: &'a Expr<'a>,
     ) -> String {
-        format!("{} {} {}", print_operand(left), operator.symbol(), print_operand(right))
+        format!(
+            "{} {} {}",
+            print_operand(left),
+            operator.symbol(),
+            print_operand(right)
+        )
     }
 
     fn visit_unary(&mut self, operator: UnaryOperator, right: &'a Expr<'a>) -> String {
@@ -673,8 +719,16 @@ fn print_call(name: &str, args: &[Expr<'_>]) -> String {
 }
 
 fn print_like(left: &Expr<'_>, glob: &Glob) -> String {
-    let keyword = if glob.is_case_sensitive() { "like_cs" } else { "like" };
-    format!("{} {keyword} {}", print_operand(left), quote(glob.pattern()))
+    let keyword = if glob.is_case_sensitive() {
+        "like_cs"
+    } else {
+        "like"
+    };
+    format!(
+        "{} {keyword} {}",
+        print_operand(left),
+        quote(glob.pattern())
+    )
 }
 
 fn print_matches(left: &Expr<'_>, regex: &CompiledRegex) -> String {
@@ -694,7 +748,11 @@ impl<'a> ExprVisitor<'a, Vec<String>> for FieldCollector {
         vec![name.to_ascii_lowercase()]
     }
 
-    fn visit_function_call(&mut self, _name: &'a str, args: &'a [Expr<'a>]) -> Vec<String> {
+    fn visit_function_call(
+        &mut self,
+        _function: &'a dyn Function,
+        args: &'a [Expr<'a>],
+    ) -> Vec<String> {
         args.iter().flat_map(|a| self.visit_expr(a)).collect()
     }
 
@@ -777,7 +835,10 @@ fn encode_pairs(pairs: &[(String, String)]) -> String {
 #[hook]
 pub fn use_filters() -> FilterSet {
     let location = use_location();
-    let query = location.as_ref().map(|l| l.query_str().to_string()).unwrap_or_default();
+    let query = location
+        .as_ref()
+        .map(|l| l.query_str().to_string())
+        .unwrap_or_default();
     FilterSet::parse(&query)
 }
 

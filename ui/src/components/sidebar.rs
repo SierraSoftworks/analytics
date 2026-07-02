@@ -49,24 +49,27 @@ pub fn sidebar() -> Html {
         }
     };
 
-    let project_items = projects.iter().map(|p| {
-        let active = is_dashboard && active_project.as_deref() == Some(p.id.as_str());
-        let onclick = {
-            let (navigate, filters, id) = (navigate.clone(), filters.clone(), p.id.clone());
-            Callback::from(move |_: MouseEvent| {
-                navigate.emit((Route::Overview, filters.with(Dim::Project, id.clone())));
-            })
-        };
-        let class = classes!("menu__subitem", active.then_some("menu__subitem--active"));
-        html! {
-            <li key={p.id.clone()}>
-                <button class={class} onclick={onclick}>
-                    <span class="menu__dot" />
-                    <span class="menu__label">{ &p.name }</span>
-                </button>
-            </li>
-        }
-    }).collect::<Html>();
+    let project_items = projects
+        .iter()
+        .map(|p| {
+            let active = is_dashboard && active_project.as_deref() == Some(p.id.as_str());
+            let onclick = {
+                let (navigate, filters, id) = (navigate.clone(), filters.clone(), p.id.clone());
+                Callback::from(move |_: MouseEvent| {
+                    navigate.emit((Route::Overview, filters.with(Dim::Project, id.clone())));
+                })
+            };
+            let class = classes!("menu__subitem", active.then_some("menu__subitem--active"));
+            html! {
+                <li key={p.id.clone()}>
+                    <button class={class} onclick={onclick}>
+                        <span class="menu__dot" />
+                        <span class="menu__label">{ &p.name }</span>
+                    </button>
+                </li>
+            }
+        })
+        .collect::<Html>();
 
     html! {
         <nav class="app-sidebar">

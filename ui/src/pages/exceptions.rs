@@ -15,7 +15,9 @@ use yew::prelude::*;
 use crate::api::{self, ApiError};
 use crate::app::Route;
 use crate::components::status::{status_class, status_label};
-use crate::components::{ApiErrorAlert, FilterBar, PageHeader, ProjectsContext, Sparkline, SuggestOption};
+use crate::components::{
+    ApiErrorAlert, FilterBar, PageHeader, ProjectsContext, Sparkline, SuggestOption,
+};
 use crate::filters::{Dim, use_filters, use_navigate_with_filters};
 use crate::format::{ago, group_thousands};
 
@@ -37,8 +39,12 @@ enum StatusTab {
 }
 
 impl StatusTab {
-    const ALL: [StatusTab; 4] =
-        [StatusTab::Unresolved, StatusTab::Resolved, StatusTab::Ignored, StatusTab::All];
+    const ALL: [StatusTab; 4] = [
+        StatusTab::Unresolved,
+        StatusTab::Resolved,
+        StatusTab::Ignored,
+        StatusTab::All,
+    ];
 
     fn label(self) -> &'static str {
         match self {
@@ -124,7 +130,10 @@ pub fn exceptions() -> Html {
         };
         let project_options: Vec<SuggestOption> = projects
             .iter()
-            .map(|p| SuggestOption { value: p.id.clone(), label: p.name.clone() })
+            .map(|p| SuggestOption {
+                value: p.id.clone(),
+                label: p.name.clone(),
+            })
             .collect();
         vec![(Dim::Project, project_options), (Dim::Source, sources)]
     };
@@ -150,7 +159,11 @@ pub fn exceptions() -> Html {
                     text.is_empty()
                         || e.group.exc_type.to_lowercase().contains(&text)
                         || e.group.sample_message.to_lowercase().contains(&text)
-                        || e.project_name.as_deref().unwrap_or("").to_lowercase().contains(&text)
+                        || e.project_name
+                            .as_deref()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&text)
                 })
                 .collect();
 
@@ -271,7 +284,10 @@ fn exception_link(props: &ExceptionLinkProps) -> Html {
         let (project, group) = (props.project.clone(), props.group.clone());
         move || {
             navigate.emit((
-                Route::Exception { project: project.clone(), group: group.clone() },
+                Route::Exception {
+                    project: project.clone(),
+                    group: group.clone(),
+                },
                 filters.clone(),
             ));
         }

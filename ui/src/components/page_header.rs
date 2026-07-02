@@ -24,10 +24,18 @@ impl Crumb {
         to: Route,
         query: Vec<(String, String)>,
     ) -> Self {
-        Self { label: label.into(), to: Some(to), query }
+        Self {
+            label: label.into(),
+            to: Some(to),
+            query,
+        }
     }
     pub fn current(label: impl Into<AttrValue>) -> Self {
-        Self { label: label.into(), to: None, query: Vec::new() }
+        Self {
+            label: label.into(),
+            to: None,
+            query: Vec::new(),
+        }
     }
 }
 

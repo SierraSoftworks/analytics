@@ -40,7 +40,11 @@ fn query_bar() -> Html {
     let error = use_state(|| None::<String>);
     let input_ref = use_node_ref();
 
-    let value = if *editing { (*draft).clone() } else { live.clone() };
+    let value = if *editing {
+        (*draft).clone()
+    } else {
+        live.clone()
+    };
 
     let onfocus = {
         let (draft, editing, live) = (draft.clone(), editing.clone(), live.clone());

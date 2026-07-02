@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - name: Check out code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Generate Package Version (Release Tag)
         shell: pwsh
@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
@@ -58,7 +58,7 @@ jobs:
         run: trunk build --release
 
       - name: Upload UI bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-dist
           path: ui/dist
@@ -68,8 +68,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
@@ -88,7 +88,7 @@ jobs:
         run: npm run build
 
       - name: Upload tracker bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tracker-dist
           path: tracker/dist
@@ -98,7 +98,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
@@ -122,7 +122,7 @@ jobs:
         run: grcov . --binary-path target/debug/deps/ -s . -t lcov --ignore-not-existing --ignore '../**' --ignore '/*' --ignore 'C:/' -o ./lcov.info
 
       - name: codecov upload
-        uses: codecov/codecov-action@v5.5.3
+        uses: codecov/codecov-action@v7.0.0
         with:
           files: ./lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -180,13 +180,8 @@ jobs:
           target: ${{ matrix.target }}
           components: llvm-tools-preview
 
-      - name: Setup Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
       - name: Check out code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Fetch Versioned Cargo.toml
         uses: actions/download-artifact@v8
@@ -194,13 +189,13 @@ jobs:
           name: cargofile
 
       - name: Fetch UI bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ui-dist
           path: ui/dist
 
       - name: Fetch tracker bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: tracker-dist
           path: tracker/dist
@@ -212,11 +207,29 @@ jobs:
           curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
           cargo binstall --no-confirm cross
 
+      # Set up the cache only after all tooling (e.g. cross) is installed, and
+      # after checkout so it can key on Cargo.lock. Restoring it before the
+      # tools were installed left cross off the PATH for the build.
+      - name: Setup Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
       - name: cargo build
         run: ${{ matrix.builder }} build --release --target ${{ matrix.target }}
 
+      # cross runs the compiler inside a Docker container as root, so the
+      # registry downloads and build artifacts it writes into the cached
+      # directories end up owned by root. Swatinem/rust-cache's save step runs
+      # as the unprivileged runner user and cannot prune root-owned files,
+      # which causes the cache save to fail and the cross build to never be
+      # cached. Reclaim ownership so the cache can be persisted.
+      - name: Reclaim cache ownership from cross
+        if: matrix.builder == 'cross'
+        run: sudo chown -R "$(id -u):$(id -g)" "$HOME/.cargo" target
+
       - name: Upload GitHub Release Artifacts
-        uses: SierraSoftworks/gh-releases@v1.0.9
+        uses: SierraSoftworks/gh-releases@v1.0.10
         if: github.event_name == 'release'
         with:
           files: "target/${{ matrix.target }}/release/analytics${{ matrix.extension }} | analytics-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}"
@@ -279,7 +292,7 @@ jobs:
             type=semver,pattern={{major}}
 
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Pull in platform artifact
         uses: actions/download-artifact@v8

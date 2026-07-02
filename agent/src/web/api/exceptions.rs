@@ -49,13 +49,8 @@ pub async fn list_all(
     };
 
     let result = web::block(move || -> crate::errors::Result<Vec<GlobalException>> {
-        let per_source = analytics::exception_groups_by_source(
-            &store,
-            &parquet_dir,
-            from,
-            to,
-            filter.as_ref(),
-        )?;
+        let per_source =
+            analytics::exception_groups_by_source(&store, &parquet_dir, from, to, filter.as_ref())?;
 
         // Resolve a source URI to its owning project, and project ids to names.
         let mut uri_project: HashMap<String, String> = HashMap::new();
@@ -67,8 +62,11 @@ pub async fn list_all(
         for pixel in store.list_pixels()? {
             uri_project.insert(pixel_source(&pixel.id), pixel.project_id);
         }
-        let project_names: HashMap<String, String> =
-            store.list_projects()?.into_iter().map(|p| (p.id, p.name)).collect();
+        let project_names: HashMap<String, String> = store
+            .list_projects()?
+            .into_iter()
+            .map(|p| (p.id, p.name))
+            .collect();
 
         // Fold per-(fingerprint, source) rows up to per-(fingerprint, project) rows
         // so a project's count matches its detail page. Unassigned sources are keyed
@@ -89,7 +87,12 @@ pub async fn list_all(
                     analytics::merge_trends(&mut g.trend, &group.trend);
                 }
                 Entry::Vacant(e) => {
-                    e.insert(GlobalException { group, project_id, project_name: None, source });
+                    e.insert(GlobalException {
+                        group,
+                        project_id,
+                        project_name: None,
+                        source,
+                    });
                 }
             }
         }
@@ -115,7 +118,10 @@ pub async fn list_all(
         Ok(Err(err)) => internal_error(err),
         Err(err) => {
             error!("global exception listing task failed: {err}");
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to load exceptions.")
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to load exceptions.",
+            )
         }
     }
 }
@@ -140,31 +146,36 @@ pub async fn detail(
     let group_id = path.into_inner();
     let project_id = query.project.clone();
     let now = Utc::now().timestamp_millis();
-    let to = query.to.unwrap_or(now).clamp(1, super::query::MAX_INSTANT_MS);
+    let to = query
+        .to
+        .unwrap_or(now)
+        .clamp(1, super::query::MAX_INSTANT_MS);
     let from = query.from.unwrap_or(0).clamp(0, to - 1);
     let store = state.store.clone();
     let parquet_dir = state.config.storage.parquet_dir.clone();
 
-    let result = web::block(move || -> crate::errors::Result<Option<ExceptionGroupDetail>> {
-        let sources = analytics::project_source_uris(&store, &project_id)?;
-        let Some(mut detail) = analytics::exception_detail(
-            &store,
-            &parquet_dir,
-            &sources,
-            &group_id,
-            from,
-            to,
-            VARIANT_LIMIT,
-        )?
-        else {
-            return Ok(None);
-        };
-        if let Some(triage) = store.get_triage(&project_id, &group_id)? {
-            detail.group.status = triage.status;
-            detail.group.note = triage.note;
-        }
-        Ok(Some(detail))
-    })
+    let result = web::block(
+        move || -> crate::errors::Result<Option<ExceptionGroupDetail>> {
+            let sources = analytics::project_source_uris(&store, &project_id)?;
+            let Some(mut detail) = analytics::exception_detail(
+                &store,
+                &parquet_dir,
+                &sources,
+                &group_id,
+                from,
+                to,
+                VARIANT_LIMIT,
+            )?
+            else {
+                return Ok(None);
+            };
+            if let Some(triage) = store.get_triage(&project_id, &group_id)? {
+                detail.group.status = triage.status;
+                detail.group.note = triage.note;
+            }
+            Ok(Some(detail))
+        },
+    )
     .await;
 
     match result {
@@ -173,7 +184,10 @@ pub async fn detail(
         Ok(Err(err)) => internal_error(err),
         Err(err) => {
             error!("exception detail task failed: {err}");
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to load the exception.")
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to load the exception.",
+            )
         }
     }
 }
@@ -199,7 +213,10 @@ pub async fn triage(
         updated_by,
     };
 
-    match state.store.put_triage(&input.project_id, &group_id, &triage) {
+    match state
+        .store
+        .put_triage(&input.project_id, &group_id, &triage)
+    {
         Ok(()) => HttpResponse::NoContent().finish(),
         Err(err) => internal_error(err),
     }

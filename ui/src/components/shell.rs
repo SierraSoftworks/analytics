@@ -64,7 +64,9 @@ pub fn app_shell(props: &AppShellProps) -> Html {
     }
     let reload = {
         let dispatcher = tick.dispatcher();
-        use_memo((), move |_| Callback::from(move |_| dispatcher.dispatch(())))
+        use_memo((), move |_| {
+            Callback::from(move |_| dispatcher.dispatch(()))
+        })
     };
 
     // Create-project drawer state.
@@ -77,13 +79,19 @@ pub fn app_shell(props: &AppShellProps) -> Html {
 
     let open_new = {
         let (drawer_open, new_name, new_error, selected, avail_sources) = (
-            drawer_open.clone(), new_name.clone(), new_error.clone(),
-            selected.clone(), avail_sources.clone(),
+            drawer_open.clone(),
+            new_name.clone(),
+            new_error.clone(),
+            selected.clone(),
+            avail_sources.clone(),
         );
         use_memo((), move |_| {
             let (drawer_open, new_name, new_error, selected, avail_sources) = (
-                drawer_open.clone(), new_name.clone(), new_error.clone(),
-                selected.clone(), avail_sources.clone(),
+                drawer_open.clone(),
+                new_name.clone(),
+                new_error.clone(),
+                selected.clone(),
+                avail_sources.clone(),
             );
             Callback::from(move |_| {
                 new_name.set(String::new());
@@ -131,19 +139,26 @@ pub fn app_shell(props: &AppShellProps) -> Html {
     };
     let on_create = {
         let (new_name, new_error, submitting, drawer_open, selected) = (
-            new_name.clone(), new_error.clone(), submitting.clone(),
-            drawer_open.clone(), selected.clone(),
+            new_name.clone(),
+            new_error.clone(),
+            submitting.clone(),
+            drawer_open.clone(),
+            selected.clone(),
         );
         let (dispatcher, navigator) = (tick.dispatcher(), navigator.clone());
         Callback::from(move |_| {
             let chosen = (*selected).clone();
             // Default the name to the first added source when left blank.
             let mut name = (*new_name).trim().to_string();
-            if name.is_empty() && let Some(first) = chosen.first() {
+            if name.is_empty()
+                && let Some(first) = chosen.first()
+            {
                 name = source_label(first).to_string();
             }
             if name.is_empty() {
-                new_error.set(Some("Enter a project name, or add a source to name it after.".to_string()));
+                new_error.set(Some(
+                    "Enter a project name, or add a source to name it after.".to_string(),
+                ));
                 return;
             }
             let (new_error, submitting, drawer_open) =
@@ -154,8 +169,10 @@ pub fn app_shell(props: &AppShellProps) -> Html {
                 match api::create_project(&ProjectInput { name, slug: None }).await {
                     Ok(project) => {
                         for uri in &chosen {
-                            let input =
-                                SourceInput { project_id: Some(project.id.clone()), ..Default::default() };
+                            let input = SourceInput {
+                                project_id: Some(project.id.clone()),
+                                ..Default::default()
+                            };
                             let _ = api::update_source(uri, &input).await;
                         }
                         dispatcher.dispatch(());

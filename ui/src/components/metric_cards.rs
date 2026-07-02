@@ -100,7 +100,11 @@ fn delta_badge(delta: Option<f64>, invert: bool) -> Html {
     let good = up != invert;
     let class = classes!(
         "stat__delta",
-        if good { "stat__delta--good" } else { "stat__delta--bad" }
+        if good {
+            "stat__delta--good"
+        } else {
+            "stat__delta--bad"
+        }
     );
     let arrow = if up { "▲" } else { "▼" };
     html! {

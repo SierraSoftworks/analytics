@@ -10,12 +10,33 @@ pub struct Referrer {
 }
 
 const SEARCH: &[&str] = &[
-    "google.", "bing.", "duckduckgo.", "yahoo.", "yandex.", "baidu.", "ecosia.", "brave.",
-    "startpage.", "qwant.",
+    "google.",
+    "bing.",
+    "duckduckgo.",
+    "yahoo.",
+    "yandex.",
+    "baidu.",
+    "ecosia.",
+    "brave.",
+    "startpage.",
+    "qwant.",
 ];
 const SOCIAL: &[&str] = &[
-    "facebook.", "twitter.", "x.com", "t.co", "linkedin.", "reddit.", "instagram.", "youtube.",
-    "mastodon", "bsky.", "pinterest.", "tiktok.", "news.ycombinator.com", "lobste.rs", "threads.",
+    "facebook.",
+    "twitter.",
+    "x.com",
+    "t.co",
+    "linkedin.",
+    "reddit.",
+    "instagram.",
+    "youtube.",
+    "mastodon",
+    "bsky.",
+    "pinterest.",
+    "tiktok.",
+    "news.ycombinator.com",
+    "lobste.rs",
+    "threads.",
 ];
 
 /// Resolve a referrer URL to a host + group, treating same-host referrals as
@@ -25,7 +46,10 @@ pub fn classify(referrer: Option<&str>, self_host: &str) -> Referrer {
         return Referrer::default();
     };
 
-    let host = match Url::parse(raw).ok().and_then(|u| u.host_str().map(normalize)) {
+    let host = match Url::parse(raw)
+        .ok()
+        .and_then(|u| u.host_str().map(normalize))
+    {
         Some(h) => h,
         None => return Referrer::default(),
     };
@@ -69,7 +93,9 @@ mod tests {
             }
         );
         assert_eq!(
-            classify(Some("https://t.co/abc"), "example.com").group.as_deref(),
+            classify(Some("https://t.co/abc"), "example.com")
+                .group
+                .as_deref(),
             Some("Social")
         );
     }

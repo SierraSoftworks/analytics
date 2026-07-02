@@ -50,7 +50,13 @@ pub struct PanelTab {
 
 impl PanelTab {
     pub fn new(label: &'static str, dim: Dim, rows: Vec<PanelRow>) -> Self {
-        Self { label, dim, rows, action: None, action_title: "" }
+        Self {
+            label,
+            dim,
+            rows,
+            action: None,
+            action_title: "",
+        }
     }
 
     pub fn with_action(mut self, title: &'static str, action: Callback<String>) -> Self {
@@ -108,7 +114,12 @@ pub fn breakdown_panel(props: &BreakdownPanelProps) -> Html {
     let mut ranked: Vec<&PanelRow> = tab.rows.iter().collect();
     ranked.sort_by_key(|r| std::cmp::Reverse(r.value_for(metric)));
     let total: i64 = ranked.iter().map(|r| r.value_for(metric)).sum();
-    let max: i64 = ranked.iter().map(|r| r.value_for(metric)).max().unwrap_or(1).max(1);
+    let max: i64 = ranked
+        .iter()
+        .map(|r| r.value_for(metric))
+        .max()
+        .unwrap_or(1)
+        .max(1);
     let selected = props
         .active
         .iter()

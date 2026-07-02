@@ -58,7 +58,10 @@ pub fn dashboard(
     }
     let df = lf.collect().or_system_err(ADVICE)?;
 
-    let current = df.clone().lazy().filter(col("received_ms").gt_eq(lit(from_ms)));
+    let current = df
+        .clone()
+        .lazy()
+        .filter(col("received_ms").gt_eq(lit(from_ms)));
     let previous = df.lazy().filter(col("received_ms").lt(lit(from_ms)));
 
     // With a path filter active, `is_unique_user` (which rides only on the first
@@ -73,7 +76,9 @@ pub fn dashboard(
     // The previous series is computed on the *current* window's bucket grid by
     // shifting events forward one window length, guaranteeing index alignment;
     // timestamps are then shifted back to the previous window's own instants.
-    let prev_shifted = previous.clone().with_columns([(col("received_ms") + lit(len)).alias("received_ms")]);
+    let prev_shifted = previous
+        .clone()
+        .with_columns([(col("received_ms") + lit(len)).alias("received_ms")]);
     let mut previous_timeseries = timeseries(prev_shifted, from_ms, to_ms, bucket_ms, unique_flag)?;
     for point in &mut previous_timeseries {
         point.timestamp_ms -= len;
@@ -147,25 +152,66 @@ pub fn exception_groups_by_source(
         .group_by([col("exc_group"), col("source")])
         .agg([
             len().cast(DataType::Int64).alias("count"),
-            col("received_ms").min().cast(DataType::Int64).alias("first_seen"),
-            col("received_ms").max().cast(DataType::Int64).alias("last_seen"),
+            col("received_ms")
+                .min()
+                .cast(DataType::Int64)
+                .alias("first_seen"),
+            col("received_ms")
+                .max()
+                .cast(DataType::Int64)
+                .alias("last_seen"),
             col("exc_type").first().alias("exc_type"),
             col("exc_message").first().alias("sample_message"),
             col("received_ms").alias("times"),
         ])
-        .sort(["last_seen"], SortMultipleOptions::default().with_order_descending(true))
+        .sort(
+            ["last_seen"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
         .limit(500)
         .collect()
         .or_system_err(ADVICE)?;
 
-    let group_id = df.column("exc_group").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let count = df.column("count").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let first = df.column("first_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let last = df.column("last_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let exc_type = df.column("exc_type").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let message = df.column("sample_message").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let source = df.column("source").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let times = df.column("times").or_system_err(ADVICE)?.list().or_system_err(ADVICE)?;
+    let group_id = df
+        .column("exc_group")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let count = df
+        .column("count")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let first = df
+        .column("first_seen")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let last = df
+        .column("last_seen")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let exc_type = df
+        .column("exc_type")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let message = df
+        .column("sample_message")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let source = df
+        .column("source")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let times = df
+        .column("times")
+        .or_system_err(ADVICE)?
+        .list()
+        .or_system_err(ADVICE)?;
 
     Ok((0..df.height())
         .filter_map(|i| {
@@ -215,7 +261,9 @@ pub fn exception_detail(
             col("exc_message"),
             col("exc_stack"),
             col("exc_handled"),
-            col("received_ms").cast(DataType::Int64).alias("received_ms"),
+            col("received_ms")
+                .cast(DataType::Int64)
+                .alias("received_ms"),
             col("ua_browser"),
             col("ua_os"),
             col("ua_device"),
@@ -223,7 +271,10 @@ pub fn exception_detail(
             col("source"),
             col("metadata_json"),
         ])
-        .sort(["received_ms"], SortMultipleOptions::default().with_order_descending(true))
+        .sort(
+            ["received_ms"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
         .collect()
         .or_system_err(ADVICE)?;
 
@@ -232,9 +283,21 @@ pub fn exception_detail(
         return Ok(None);
     }
 
-    let exc_type = df.column("exc_type").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let message = df.column("exc_message").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let received = df.column("received_ms").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let exc_type = df
+        .column("exc_type")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let message = df
+        .column("exc_message")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let received = df
+        .column("received_ms")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
 
     // Rows are newest-first: index 0 is the most recent occurrence, the last
     // index the oldest. The aggregate spans every row.
@@ -259,7 +322,11 @@ pub fn exception_detail(
     };
     let variants = variants_of(&df, limit)?;
 
-    Ok(Some(ExceptionGroupDetail { group, breakdowns, variants }))
+    Ok(Some(ExceptionGroupDetail {
+        group,
+        breakdowns,
+        variants,
+    }))
 }
 
 /// Occurrence counts per value of `column` (nulls under the empty-string
@@ -271,13 +338,24 @@ fn count_by(occurrences: &DataFrame, column: &str) -> Result<Vec<CountRow>> {
         .with_columns([col(column).fill_null(lit("")).alias("key")])
         .group_by([col("key")])
         .agg([len().cast(DataType::Int64).alias("count")])
-        .sort(["count"], SortMultipleOptions::default().with_order_descending(true))
+        .sort(
+            ["count"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
         .limit(BREAKDOWN_LIMIT)
         .collect()
         .or_system_err(ADVICE)?;
 
-    let keys = df.column("key").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let counts = df.column("count").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let keys = df
+        .column("key")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let counts = df
+        .column("count")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
     Ok((0..df.height())
         .filter_map(|i| {
             keys.get(i).map(|key| CountRow {
@@ -308,24 +386,74 @@ fn variants_of(occurrences: &DataFrame, limit: usize) -> Result<Vec<ExceptionVar
             col("app_version").first().alias("app_version"),
             // Metadata is optional per report; surface the latest occurrence
             // that actually carried some.
-            col("metadata_json").drop_nulls().first().alias("metadata_json"),
+            col("metadata_json")
+                .drop_nulls()
+                .first()
+                .alias("metadata_json"),
         ])
-        .sort(["count"], SortMultipleOptions::default().with_order_descending(true))
+        .sort(
+            ["count"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
         .limit(limit as u32)
         .collect()
         .or_system_err(ADVICE)?;
 
-    let message = df.column("exc_message").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let stack = df.column("exc_stack").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let handled = df.column("exc_handled").or_system_err(ADVICE)?.bool().or_system_err(ADVICE)?;
-    let count = df.column("count").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let first = df.column("first_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let last = df.column("last_seen").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let browser = df.column("ua_browser").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let os = df.column("ua_os").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let source = df.column("source").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let version = df.column("app_version").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let metadata = df.column("metadata_json").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
+    let message = df
+        .column("exc_message")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let stack = df
+        .column("exc_stack")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let handled = df
+        .column("exc_handled")
+        .or_system_err(ADVICE)?
+        .bool()
+        .or_system_err(ADVICE)?;
+    let count = df
+        .column("count")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let first = df
+        .column("first_seen")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let last = df
+        .column("last_seen")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let browser = df
+        .column("ua_browser")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let os = df
+        .column("ua_os")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let source = df
+        .column("source")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let version = df
+        .column("app_version")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let metadata = df
+        .column("metadata_json")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
 
     Ok((0..df.height())
         .map(|i| ExceptionVariant {
@@ -438,7 +566,9 @@ fn source_filter(sources: &[String]) -> Expr {
 
 /// Pixel hits and custom application events (counted as `events`, not pageviews).
 fn is_event() -> Expr {
-    col("kind").eq(lit("pixel")).or(col("kind").eq(lit("custom")))
+    col("kind")
+        .eq(lit("pixel"))
+        .or(col("kind").eq(lit("custom")))
 }
 
 fn summary(base: LazyFrame, unique_flag: &str) -> Result<MetricSummary> {
@@ -502,7 +632,12 @@ fn timeseries(
     let bucket_ms = bucket_ms.max(1);
     let is_exception = col("kind").eq(lit("exception"));
     let df = base
-        .filter(col("kind").eq(lit("page_load")).or(is_event()).or(is_exception.clone()))
+        .filter(
+            col("kind")
+                .eq(lit("page_load"))
+                .or(is_event())
+                .or(is_exception.clone()),
+        )
         .with_columns([(col("received_ms") - col("received_ms") % lit(bucket_ms)).alias("bucket")])
         .group_by([col("bucket")])
         .agg([
@@ -523,11 +658,31 @@ fn timeseries(
         .collect()
         .or_system_err(ADVICE)?;
 
-    let bucket = df.column("bucket").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let pageviews = df.column("pageviews").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let visitors = df.column("visitors").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let events = df.column("events").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let exceptions = df.column("exceptions").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let bucket = df
+        .column("bucket")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let pageviews = df
+        .column("pageviews")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let visitors = df
+        .column("visitors")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let events = df
+        .column("events")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let exceptions = df
+        .column("exceptions")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
 
     // Index the populated buckets, then walk every bucket in the window.
     let mut counts: HashMap<i64, (i64, i64, i64, i64)> = HashMap::new();
@@ -545,8 +700,15 @@ fn timeseries(
         }
     }
 
-    let point = |timestamp_ms: i64, (pageviews, visitors, events, exceptions): (i64, i64, i64, i64)| {
-        TimeSeriesPoint { timestamp_ms, pageviews, visitors, events, exceptions }
+    let point = |timestamp_ms: i64,
+                 (pageviews, visitors, events, exceptions): (i64, i64, i64, i64)| {
+        TimeSeriesPoint {
+            timestamp_ms,
+            pageviews,
+            visitors,
+            events,
+            exceptions,
+        }
     };
 
     let first = from_ms - from_ms.rem_euclid(bucket_ms);
@@ -555,8 +717,10 @@ fn timeseries(
     let estimated = ((last - first) / bucket_ms).unsigned_abs() as usize + 1;
     if first > last || estimated > 5_000 {
         // Fall back to the populated buckets only (sorted).
-        let mut points: Vec<TimeSeriesPoint> =
-            counts.into_iter().map(|(b, tuple)| point(b, tuple)).collect();
+        let mut points: Vec<TimeSeriesPoint> = counts
+            .into_iter()
+            .map(|(b, tuple)| point(b, tuple))
+            .collect();
         points.sort_by_key(|p| p.timestamp_ms);
         return Ok(points);
     }
@@ -580,16 +744,34 @@ fn breakdown(pageloads: LazyFrame, column: &str, unique_flag: &str) -> Result<Ve
         .group_by([col("key")])
         .agg([
             len().cast(DataType::Int64).alias("pageviews"),
-            col(unique_flag).sum().cast(DataType::Int64).alias("visitors"),
+            col(unique_flag)
+                .sum()
+                .cast(DataType::Int64)
+                .alias("visitors"),
         ])
-        .sort(["pageviews"], SortMultipleOptions::default().with_order_descending(true))
+        .sort(
+            ["pageviews"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
         .limit(BREAKDOWN_LIMIT)
         .collect()
         .or_system_err(ADVICE)?;
 
-    let keys = df.column("key").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let pageviews = df.column("pageviews").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let visitors = df.column("visitors").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let keys = df
+        .column("key")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let pageviews = df
+        .column("pageviews")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let visitors = df
+        .column("visitors")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
 
     Ok((0..df.height())
         .filter_map(|i| {
@@ -617,16 +799,35 @@ fn source_rollup(base: LazyFrame, unique_flag: &str) -> Result<Vec<BreakdownRow>
                 .sum()
                 .cast(DataType::Int64)
                 .alias("pageviews"),
-            col(unique_flag).sum().cast(DataType::Int64).alias("visitors"),
+            col(unique_flag)
+                .sum()
+                .cast(DataType::Int64)
+                .alias("visitors"),
             is_event().sum().cast(DataType::Int64).alias("events"),
         ])
         .collect()
         .or_system_err(ADVICE)?;
 
-    let sources = df.column("source").or_system_err(ADVICE)?.str().or_system_err(ADVICE)?;
-    let pageviews = df.column("pageviews").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let visitors = df.column("visitors").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
-    let events = df.column("events").or_system_err(ADVICE)?.i64().or_system_err(ADVICE)?;
+    let sources = df
+        .column("source")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let pageviews = df
+        .column("pageviews")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let visitors = df
+        .column("visitors")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let events = df
+        .column("events")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
 
     let mut rows: Vec<BreakdownRow> = (0..df.height())
         .filter_map(|i| {
@@ -665,12 +866,14 @@ fn project_rollup(
     for row in &per_source {
         match uri_project.get(&row.key) {
             Some(project_id) => {
-                let entry = totals.entry(project_id.clone()).or_insert_with(|| BreakdownRow {
-                    key: project_id.clone(),
-                    visitors: 0,
-                    pageviews: 0,
-                    events: 0,
-                });
+                let entry = totals
+                    .entry(project_id.clone())
+                    .or_insert_with(|| BreakdownRow {
+                        key: project_id.clone(),
+                        visitors: 0,
+                        pageviews: 0,
+                        events: 0,
+                    });
                 entry.visitors += row.visitors;
                 entry.pageviews += row.pageviews;
                 entry.events += row.events;
@@ -796,7 +999,9 @@ mod tests {
 
     /// Compile a dashboard `q` expression (panics on error — tests only).
     fn dash_filter(store: &Store, q: &str) -> CompiledFilter {
-        filter::compile_query(q, filter::FieldSet::Dashboard, store).unwrap().unwrap()
+        filter::compile_query(q, filter::FieldSet::Dashboard, store)
+            .unwrap()
+            .unwrap()
     }
 
     fn source_q(source: &str) -> String {
@@ -830,7 +1035,10 @@ mod tests {
 
         assert_eq!(dash.summary.pageviews, 3);
         assert_eq!(dash.summary.visitors, 2); // two unique loads for a.com
-        assert_eq!(dash.breakdowns.pages.first().map(|p| p.key.as_str()), Some("/home"));
+        assert_eq!(
+            dash.breakdowns.pages.first().map(|p| p.key.as_str()),
+            Some("/home")
+        );
         assert_eq!(dash.breakdowns.pages.first().map(|p| p.pageviews), Some(3));
 
         drop(store);
@@ -851,14 +1059,17 @@ mod tests {
             .unwrap();
 
         let filter = dash_filter(&store, &source_q("https://a.com"));
-        let dash =
-            dashboard(&store, "/none", Some(&filter), 0, 3 * day, day).unwrap();
+        let dash = dashboard(&store, "/none", Some(&filter), 0, 3 * day, day).unwrap();
 
         // Buckets at 0, 1d, 2d — empty days filled with zeros, not dropped
         // (the range is half-open, so the bucket at 3d is not included).
         assert_eq!(dash.timeseries.len(), 3);
         assert_eq!(dash.timeseries[0].pageviews, 2);
-        assert!(dash.timeseries[1..].iter().all(|p| p.pageviews == 0 && p.visitors == 0));
+        assert!(
+            dash.timeseries[1..]
+                .iter()
+                .all(|p| p.pageviews == 0 && p.visitors == 0)
+        );
 
         // The comparison series is index-aligned: identical length, shifted stamps.
         assert_eq!(dash.previous_timeseries.len(), dash.timeseries.len());
@@ -885,15 +1096,7 @@ mod tests {
             .unwrap();
 
         let filter = dash_filter(&store, &source_q("https://a.com"));
-        let dash = dashboard(
-            &store,
-            "/none",
-            Some(&filter),
-            10_000,
-            20_000,
-            86_400_000,
-        )
-        .unwrap();
+        let dash = dashboard(&store, "/none", Some(&filter), 10_000, 20_000, 86_400_000).unwrap();
 
         assert_eq!(dash.summary.pageviews, 2);
         assert_eq!(dash.previous_summary.pageviews, 1);
@@ -949,7 +1152,9 @@ mod tests {
     fn source_filter_matches_bare_hostnames() {
         let redb = temp_redb();
         let store = Store::open(&redb).unwrap();
-        store.append_events(&[load("https://a.com", 1_000, true, None)]).unwrap();
+        store
+            .append_events(&[load("https://a.com", 1_000, true, None)])
+            .unwrap();
 
         let filter = dash_filter(&store, r#"source == "a.com""#);
         let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
@@ -977,7 +1182,12 @@ mod tests {
         let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 2);
         assert_eq!(dash.summary.events, 1); // the pixel matched via pixel://p1
-        assert!(dash.breakdowns.sources.iter().all(|r| r.key != "https://c.com"));
+        assert!(
+            dash.breakdowns
+                .sources
+                .iter()
+                .all(|r| r.key != "https://c.com")
+        );
 
         // Mixed bare and fully-qualified names work too.
         let filter = dash_filter(&store, r#"source in ["https://a.com", "b.com"]"#);
@@ -1009,7 +1219,12 @@ mod tests {
         let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 1);
         assert_eq!(dash.summary.events, 0);
-        assert!(dash.breakdowns.sources.iter().all(|r| r.key != "pixel://p1"));
+        assert!(
+            dash.breakdowns
+                .sources
+                .iter()
+                .all(|r| r.key != "pixel://p1")
+        );
 
         drop(store);
         let _ = std::fs::remove_file(&redb);
@@ -1065,7 +1280,9 @@ mod tests {
     fn project_with_no_sources_sees_no_traffic() {
         let redb = temp_redb();
         let store = Store::open(&redb).unwrap();
-        store.append_events(&[load("https://a.com", 1_000, true, None)]).unwrap();
+        store
+            .append_events(&[load("https://a.com", 1_000, true, None)])
+            .unwrap();
 
         let filter = dash_filter(&store, r#"project == "empty-project""#);
         let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
@@ -1183,15 +1400,20 @@ mod tests {
     fn exception_group_lookup_ignores_the_recency_cap() {
         let redb = temp_redb();
         let store = Store::open(&redb).unwrap();
-        let events: Vec<_> = (1..=505).map(|i| exc(&format!("g{i}"), i * 1_000)).collect();
+        let events: Vec<_> = (1..=505)
+            .map(|i| exc(&format!("g{i}"), i * 1_000))
+            .collect();
         store.append_events(&events).unwrap();
         let sources = ["https://a.com".to_string()];
 
         // g1 is the oldest, so it falls outside the top-500-by-recency listing...
-        let listing_filter =
-            filter::compile_query(&source_q("https://a.com"), filter::FieldSet::Exceptions, &store)
-                .unwrap()
-                .unwrap();
+        let listing_filter = filter::compile_query(
+            &source_q("https://a.com"),
+            filter::FieldSet::Exceptions,
+            &store,
+        )
+        .unwrap()
+        .unwrap();
         let listed =
             exception_groups_by_source(&store, "/none", 0, 10_000_000, Some(&listing_filter))
                 .unwrap();
@@ -1246,19 +1468,33 @@ mod tests {
         // Two distinct variants; the repeated one carries its count and the
         // context (source-as-app, version, metadata) of its latest occurrence.
         assert_eq!(detail.variants.len(), 2);
-        let repeated = detail.variants.iter().find(|v| v.message == "boom at start").unwrap();
+        let repeated = detail
+            .variants
+            .iter()
+            .find(|v| v.message == "boom at start")
+            .unwrap();
         assert_eq!(repeated.count, 2);
         assert_eq!(repeated.source.as_deref(), Some("https://a.com"));
         assert_eq!(repeated.app_version.as_deref(), Some("1.1.0"));
-        assert_eq!(repeated.metadata.as_deref(), Some(r#"{"feature_flag":"checkout-v2"}"#));
+        assert_eq!(
+            repeated.metadata.as_deref(),
+            Some(r#"{"feature_flag":"checkout-v2"}"#)
+        );
 
         // Distributions cover app versions (1.1.0 twice, 1.0.0 once), and the
         // sources card doubles as the per-application distribution.
         let versions = &detail.breakdowns.app_versions;
-        assert_eq!(versions.first().map(|r| (r.key.as_str(), r.count)), Some(("1.1.0", 2)));
+        assert_eq!(
+            versions.first().map(|r| (r.key.as_str(), r.count)),
+            Some(("1.1.0", 2))
+        );
         assert!(versions.iter().any(|r| r.key == "1.0.0" && r.count == 1));
         assert_eq!(
-            detail.breakdowns.sources.first().map(|r| (r.key.as_str(), r.count)),
+            detail
+                .breakdowns
+                .sources
+                .first()
+                .map(|r| (r.key.as_str(), r.count)),
             Some(("https://a.com", 3))
         );
 
@@ -1307,11 +1543,19 @@ mod tests {
 
         // The website keeps its visitor count; pixel/custom count as events, not
         // pageviews, in both the rollup and the headline summary.
-        let site = dash.unassigned.iter().find(|u| u.key == "https://a.com").unwrap();
+        let site = dash
+            .unassigned
+            .iter()
+            .find(|u| u.key == "https://a.com")
+            .unwrap();
         assert_eq!(site.visitors, 1);
         assert_eq!(site.pageviews, 1);
         assert_eq!(site.events, 0);
-        let pixel = dash.unassigned.iter().find(|u| u.key == "pixel://p1").unwrap();
+        let pixel = dash
+            .unassigned
+            .iter()
+            .find(|u| u.key == "pixel://p1")
+            .unwrap();
         assert_eq!(pixel.events, 1);
         assert_eq!(dash.summary.pageviews, 1);
         assert_eq!(dash.summary.events, 2);

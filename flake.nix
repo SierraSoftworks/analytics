@@ -4,10 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
-    crane = {
-      url = "github:ipetkov/crane";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    crane.url = "github:ipetkov/crane";
 
     fenix = {
       url = "github:nix-community/fenix";
@@ -37,8 +34,10 @@
         uiDistFilter = path: _type: builtins.match ".*/ui/dist/.*" path != null;
         # Likewise the built tracking beacon, embedded via include_str!.
         trackerDistFilter = path: _type: builtins.match ".*/tracker/dist/.*" path != null;
+        # The example config is embedded via include_str! and exercised by tests.
+        configExampleFilter = path: _type: builtins.match ".*/config\.example\.yaml$" path != null;
         sourceFilter = path: type:
-          (gifDataFilter path type) || (uiDistFilter path type) || (trackerDistFilter path type) || (craneLib.filterCargoSources path type);
+          (gifDataFilter path type) || (uiDistFilter path type) || (trackerDistFilter path type) || (configExampleFilter path type) || (craneLib.filterCargoSources path type);
 
         src = lib.cleanSourceWith {
           src = ./.;
@@ -109,6 +108,13 @@
           # Audit dependencies
           analytics-audit = craneLib.cargoAudit {
             inherit src advisory-db;
+
+            # RUSTSEC-2023-0071 (Marvin timing sidechannel in `rsa`) is pulled in
+            # transitively via jsonwebtoken and has no fixed upgrade available. It
+            # only affects RSA private-key operations, which the agent does not
+            # perform (JWTs are verified with provider public keys), so accept it.
+            # `yanked` is ignored because the sandbox has no crates.io index.
+            cargoAuditExtraArgs = "--ignore yanked --ignore RUSTSEC-2023-0071";
           };
 
           # Audit licenses
