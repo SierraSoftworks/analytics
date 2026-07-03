@@ -33,7 +33,7 @@ tracing-batteries = { git = "https://github.com/sierrasoftworks/tracing-batterie
 
 # Errors & filtering (SierraSoftworks)
 human-errors = "0.2.3"
-filt-rs = { git = "https://github.com/SierraSoftworks/filters", features = [
+filt-rs = { version = "1.1.1", features = [
   "serde",
   "chrono",
   "regex",
