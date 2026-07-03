@@ -103,6 +103,10 @@ pub struct Breakdowns {
     pub countries: Vec<BreakdownRow>,
     pub languages: Vec<BreakdownRow>,
     pub browsers: Vec<BreakdownRow>,
+    /// UA-derived client versions (browser or application). `serde(default)`
+    /// tolerates payloads from agents predating the column.
+    #[serde(default)]
+    pub versions: Vec<BreakdownRow>,
     pub operating_systems: Vec<BreakdownRow>,
     pub devices: Vec<BreakdownRow>,
     pub utm_sources: Vec<BreakdownRow>,

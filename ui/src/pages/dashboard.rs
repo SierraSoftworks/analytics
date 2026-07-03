@@ -264,6 +264,11 @@ pub fn dashboard() -> Html {
                     plain(&dash.breakdowns.browsers, "Unknown"),
                 ),
                 PanelTab::new(
+                    "Versions",
+                    Dim::Version,
+                    plain(&dash.breakdowns.versions, "Unknown"),
+                ),
+                PanelTab::new(
                     "OS",
                     Dim::Os,
                     plain(&dash.breakdowns.operating_systems, "Unknown"),
@@ -441,6 +446,7 @@ fn build_suggestions(
                 .collect(),
         ),
         (Dim::Browser, rows(&dash.breakdowns.browsers, "Unknown")),
+        (Dim::Version, rows(&dash.breakdowns.versions, "Unknown")),
         (Dim::Os, rows(&dash.breakdowns.operating_systems, "Unknown")),
         (Dim::Device, rows(&dash.breakdowns.devices, "Unknown")),
         (Dim::UtmSource, rows(&dash.breakdowns.utm_sources, "None")),

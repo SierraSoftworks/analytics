@@ -41,6 +41,7 @@ pub fn build_dataframe(events: &[StoredEvent]) -> PolarsResult<DataFrame> {
         "country" => col!(country),
         "language" => col!(language),
         "ua_browser" => col!(ua_browser),
+        "ua_version" => col!(ua_version),
         "ua_os" => col!(ua_os),
         "ua_device" => col!(ua_device),
         "utm_source" => col!(utm_source),

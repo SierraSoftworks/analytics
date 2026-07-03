@@ -60,6 +60,11 @@ pub struct StoredEvent {
     pub country: Option<String>,
     pub language: Option<String>,
     pub ua_browser: Option<String>,
+    /// The client's version as derived from the User-Agent (browser version,
+    /// or an application's reported version). `serde(default)` keeps
+    /// pre-existing redb rows readable.
+    #[serde(default)]
+    pub ua_version: Option<String>,
     pub ua_os: Option<String>,
     pub ua_device: Option<String>,
     pub utm_source: Option<String>,

@@ -41,6 +41,9 @@ impl FieldSet {
         match (self, property) {
             (_, "source") => string("source"),
             (_, "browser") => string("ua_browser"),
+            // The UA-derived client version (`app_version` is the version the
+            // reporting application claims for itself on exception reports).
+            (_, "version") => string("ua_version"),
             (_, "os") => string("ua_os"),
             (_, "device") => string("ua_device"),
             (FieldSet::Dashboard, "path") => string("pathname"),
@@ -68,11 +71,12 @@ impl FieldSet {
     fn known(self) -> &'static str {
         match self {
             FieldSet::Dashboard => {
-                "project, source, path, referrer, country, language, browser, os, device, \
-                 utm_source, utm_medium, utm_campaign"
+                "project, source, path, referrer, country, language, browser, version, os, \
+                 device, utm_source, utm_medium, utm_campaign"
             }
             FieldSet::Exceptions => {
-                "project, source, browser, os, device, app, app_version, type, message, handled"
+                "project, source, browser, version, os, device, app, app_version, type, \
+                 message, handled"
             }
         }
     }

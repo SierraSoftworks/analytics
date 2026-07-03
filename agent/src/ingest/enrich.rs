@@ -31,9 +31,10 @@ pub fn build_event(
         return None;
     }
 
+    // Bots (and UAs with nothing recognisable in them) are dropped; browsers
+    // and application clients are kept.
     let ua = ua::classify(user_agent);
-    // Bot, or a UA with no recognisable browser/OS/device — drop it.
-    if ua.is_bot || (ua.browser.is_none() && ua.os.is_none() && ua.device.is_none()) {
+    if ua.kind == ua::UaKind::Bot {
         return None;
     }
 
@@ -65,9 +66,10 @@ pub fn build_event(
         referrer_group: referrer.group,
         country,
         language,
-        ua_browser: ua.browser,
+        ua_browser: ua.app,
+        ua_version: ua.version,
         ua_os: ua.os,
-        ua_device: ua.device,
+        ua_device: Some(ua.kind.as_str().to_string()),
         utm_source,
         utm_medium,
         utm_campaign,
@@ -166,7 +168,23 @@ mod tests {
     #[test]
     fn drops_bots_and_bad_urls() {
         assert!(build_event(base("https://example.com/"), "Googlebot/2.1", None, 1).is_none());
+        assert!(build_event(base("https://example.com/"), "", None, 1).is_none());
         assert!(build_event(base("not a url"), chrome(), None, 1).is_none());
+    }
+
+    #[test]
+    fn keeps_application_clients() {
+        let e = build_event(
+            base("https://example.com/"),
+            "MyApp/2.4.1 (Windows NT 10.0; Win64; x64)",
+            None,
+            1,
+        )
+        .expect("event");
+        assert_eq!(e.ua_browser.as_deref(), Some("MyApp"));
+        assert_eq!(e.ua_version.as_deref(), Some("2.4.1"));
+        assert_eq!(e.ua_os.as_deref(), Some("Windows"));
+        assert_eq!(e.ua_device.as_deref(), Some("App"));
     }
 
     #[test]

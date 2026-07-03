@@ -40,6 +40,7 @@ pub enum Dim {
     Country,
     Language,
     Browser,
+    Version,
     Os,
     Device,
     UtmSource,
@@ -49,7 +50,7 @@ pub enum Dim {
 }
 
 impl Dim {
-    pub const ALL: [Dim; 13] = [
+    pub const ALL: [Dim; 14] = [
         Dim::Project,
         Dim::Source,
         Dim::Path,
@@ -57,6 +58,7 @@ impl Dim {
         Dim::Country,
         Dim::Language,
         Dim::Browser,
+        Dim::Version,
         Dim::Os,
         Dim::Device,
         Dim::UtmSource,
@@ -75,6 +77,7 @@ impl Dim {
             Dim::Country => "country",
             Dim::Language => "language",
             Dim::Browser => "browser",
+            Dim::Version => "version",
             Dim::Os => "os",
             Dim::Device => "device",
             Dim::UtmSource => "utm_source",
@@ -98,6 +101,7 @@ impl Dim {
             Dim::Country => "Country",
             Dim::Language => "Language",
             Dim::Browser => "Browser",
+            Dim::Version => "Version",
             Dim::Os => "OS",
             Dim::Device => "Device",
             Dim::UtmSource => "UTM source",
@@ -121,7 +125,13 @@ impl Dim {
     pub fn applies_to_exceptions(self) -> bool {
         matches!(
             self,
-            Dim::Project | Dim::Source | Dim::Browser | Dim::Os | Dim::Device | Dim::AppVersion
+            Dim::Project
+                | Dim::Source
+                | Dim::Browser
+                | Dim::Version
+                | Dim::Os
+                | Dim::Device
+                | Dim::AppVersion
         )
     }
 
@@ -138,6 +148,7 @@ const EXCEPTION_FIELDS: &[&str] = &[
     "project",
     "source",
     "browser",
+    "version",
     "os",
     "device",
     "app",
@@ -154,6 +165,7 @@ const DASHBOARD_FIELDS: &[&str] = &[
     "country",
     "language",
     "browser",
+    "version",
     "os",
     "device",
     "utm_source",

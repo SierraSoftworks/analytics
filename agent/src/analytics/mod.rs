@@ -99,6 +99,7 @@ pub fn dashboard(
             countries: breakdown(pageloads.clone(), "country", unique_flag)?,
             languages: breakdown(pageloads.clone(), "language", unique_flag)?,
             browsers: breakdown(pageloads.clone(), "ua_browser", unique_flag)?,
+            versions: breakdown(pageloads.clone(), "ua_version", unique_flag)?,
             operating_systems: breakdown(pageloads.clone(), "ua_os", unique_flag)?,
             devices: breakdown(pageloads.clone(), "ua_device", unique_flag)?,
             utm_sources: breakdown(pageloads.clone(), "utm_source", unique_flag)?,
@@ -226,7 +227,7 @@ pub fn exception_groups_by_source(
                         last_seen_ms: last.get(i).unwrap_or(0),
                         status: ExceptionStatus::Unresolved,
                         note: None,
-                        trend: trend_of(list_i64(&times, i).into_iter(), from_ms, to_ms),
+                        trend: trend_of(list_i64(times, i).into_iter(), from_ms, to_ms),
                     },
                     source.get(i).unwrap_or("").to_string(),
                 )
@@ -992,6 +993,7 @@ mod tests {
             is_unique_user: unique,
             is_unique_page: unique,
             ua_browser: Some("Chrome".into()),
+            ua_version: Some("120.0".into()),
             duration_ms: duration,
             ..Default::default()
         }
@@ -1040,6 +1042,10 @@ mod tests {
             Some("/home")
         );
         assert_eq!(dash.breakdowns.pages.first().map(|p| p.pageviews), Some(3));
+        assert_eq!(
+            dash.breakdowns.versions.first().map(|v| v.key.as_str()),
+            Some("120.0")
+        );
 
         drop(store);
         let _ = std::fs::remove_file(&redb);

@@ -22,8 +22,9 @@ deliberately collects only broad, non-identifying signals:
   trick (`If-Modified-Since` vs UTC midnight), so uniqueness resets every day
   without any client-side identifier.
 - The **User-Agent** and **Accept-Language** headers are parsed into broad classes
-  (browser / OS / device, primary language) at the edge — the raw values are never
-  stored.
+  (app / version / OS family / device kind, primary language) at the edge — the
+  raw values are never stored. Browsers and pure application clients are both
+  recognized; bots are dropped.
 - **Country** is derived from the browser's reported timezone, not IP geolocation.
 - `DNT` / `Sec-GPC` signals are honored.
 

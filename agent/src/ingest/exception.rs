@@ -26,7 +26,7 @@ pub fn build_exception(
     }
 
     let ua = ua::classify(user_agent);
-    if ua.is_bot {
+    if ua.kind == ua::UaKind::Bot {
         return None;
     }
 
@@ -45,9 +45,10 @@ pub fn build_exception(
         source: website_source(&hostname),
         is_unique_user: false,
         is_unique_page: false,
-        ua_browser: ua.browser,
+        ua_browser: ua.app,
+        ua_version: ua.version,
         ua_os: ua.os,
-        ua_device: ua.device,
+        ua_device: Some(ua.kind.as_str().to_string()),
         metadata_json: report
             .metadata
             .as_ref()
