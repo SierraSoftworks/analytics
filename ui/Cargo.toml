@@ -1,3 +1,8 @@
+# Standalone workspace: this crate is excluded from the repo root's workspace,
+# and without this cargo walks past it to whatever manifest sits above the
+# checkout (e.g. when building from a nested git worktree).
+[workspace]
+
 [package]
 name = "analytics-ui"
 description = "Client-side-rendered Yew dashboard for the analytics service."
