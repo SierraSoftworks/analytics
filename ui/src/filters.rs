@@ -355,7 +355,7 @@ impl Query {
         let Ok(filter) = Filter::new(advanced.as_str()) else {
             return Vec::new();
         };
-        filter.visit(&mut FieldCollector::default())
+        filter.visit(&mut FieldCollector)
     }
 }
 

@@ -25,7 +25,7 @@ thread_local! {
     /// The last-used status tab and text filter, so a detail round-trip (or any
     /// navigation) restores the inbox the way the operator left it.
     static INBOX_VIEW: RefCell<(StatusTab, String)> =
-        RefCell::new((StatusTab::Unresolved, String::new()));
+        const { RefCell::new((StatusTab::Unresolved, String::new())) };
 }
 
 /// The status tabs across the top of the inbox.

@@ -287,8 +287,8 @@ fn add_filter(props: &AddFilterProps) -> Html {
             let onkeydown = {
                 let submit = submit.clone();
                 let (text, options) = (text.clone(), options.clone());
-                Callback::from(move |e: KeyboardEvent| match e.key().as_str() {
-                    "Enter" => {
+                Callback::from(move |e: KeyboardEvent| {
+                    if e.key() == "Enter" {
                         e.prevent_default();
                         let typed = text.trim().to_string();
                         if !typed.is_empty() {
@@ -297,7 +297,6 @@ fn add_filter(props: &AddFilterProps) -> Html {
                             submit(dim, first.value.clone());
                         }
                     }
-                    _ => {}
                 })
             };
             let back = {

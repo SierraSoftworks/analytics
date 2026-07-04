@@ -335,7 +335,7 @@ pub fn dashboard() -> Html {
     let project_filter = filters.get(Dim::Project).map(str::to_string);
     let heading = project_filter
         .as_deref()
-        .map(|id| project_name(id))
+        .map(&project_name)
         .unwrap_or_else(|| "Dashboard".to_string());
     let subtitle = if project_filter.is_some() {
         "Traffic for this project — click any value to filter, remove the chip to zoom back out."
