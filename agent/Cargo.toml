@@ -38,5 +38,8 @@ redb.workspace = true
 ulid.workspace = true
 polars.workspace = true
 
+[dev-dependencies]
+wiremock = "0.6"
+
 [build-dependencies]
 vergen = { version = "8.3", features = ["git", "gitcl"] }

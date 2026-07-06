@@ -34,6 +34,9 @@ use crate::web::helpers::oidc::{
 
 /// The `HttpOnly` cookie holding the signed-in administrator's OIDC ID token.
 pub const SESSION_COOKIE: &str = "analytics_session";
+/// The `HttpOnly` cookie holding the OIDC refresh token, scoped to the auth
+/// endpoints so it only travels with session-renewal (and logout) requests.
+pub const REFRESH_COOKIE: &str = "analytics_refresh";
 /// The non-`HttpOnly` cookie holding the double-submit CSRF token.
 pub const CSRF_COOKIE: &str = "analytics_csrf";
 /// The short-lived cookie holding in-flight OAuth state during login.
@@ -62,6 +65,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 web::scope("/auth")
                     .route("/login", web::get().to(auth::auth_login))
                     .route("/callback", web::get().to(auth::auth_callback))
+                    .route("/refresh", web::post().to(auth::auth_refresh))
                     .route("/logout", web::post().to(auth::auth_logout)),
             )
             .service(

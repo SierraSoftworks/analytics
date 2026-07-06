@@ -1,6 +1,9 @@
 //! Server-driven OIDC session endpoints and the CSRF token endpoint. The agent
 //! performs the whole Authorization Code + PKCE exchange so the browser never
-//! handles tokens or the client secret. Ported from SierraSoftworks/automate.
+//! handles tokens or the client secret. Ported from SierraSoftworks/automate,
+//! with the session-renewal flow modelled on SierraSoftworks/grey: when the
+//! provider issues a refresh token it is kept in a second `HttpOnly` cookie and
+//! redeemed via `/refresh`, so an expired ID token no longer ends the session.
 
 use actix_web::cookie::time::Duration as CookieDuration;
 use actix_web::cookie::{Cookie, SameSite};
@@ -10,16 +13,25 @@ use actix_web::{HttpRequest, HttpResponse, web};
 use serde::{Deserialize, Serialize};
 use tracing_batteries::prelude::*;
 
-use super::{CSRF_COOKIE, OAUTH_COOKIE, SESSION_COOKIE, json_error};
+use super::{CSRF_COOKIE, OAUTH_COOKIE, REFRESH_COOKIE, SESSION_COOKIE, json_error};
 use crate::state::AppState;
 use crate::web::extract::{base_url, is_https};
 use crate::web::helpers::oidc::{
-    authorize_url, discovery, exchange_code, generate_pkce, random_token, validate_token,
+    authorize_url, discovery, exchange_code, generate_pkce, random_token, refresh_tokens,
+    validate_token,
 };
 
 const DEFAULT_SESSION_SECONDS: i64 = 8 * 60 * 60;
 const OAUTH_STATE_SECONDS: i64 = 10 * 60;
+/// How long the refresh-token cookie survives. This only bounds how long the
+/// *browser* keeps the cookie — the provider decides whether the token inside is
+/// still redeemable, so a stale cookie simply fails the grant and falls back to
+/// an interactive sign-in.
+const REFRESH_COOKIE_SECONDS: i64 = 30 * 24 * 60 * 60;
 const COOKIE_PATH: &str = "/";
+/// The auth-scoped cookies (in-flight OAuth state and the refresh token) are only
+/// needed by the endpoints under this path, so they never travel with ordinary
+/// API requests.
 const OAUTH_COOKIE_PATH: &str = "/api/v1/auth";
 
 /// Transient state persisted across the redirect to the identity provider.
@@ -163,7 +175,7 @@ pub async fn auth_callback(
         }
     };
 
-    let id_token = match exchange_code(
+    let tokens = match exchange_code(
         &state.http,
         oidc,
         &discovery,
@@ -173,14 +185,15 @@ pub async fn auth_callback(
     )
     .await
     {
-        Ok(token) => token,
+        Ok(tokens) => tokens,
         Err(err) => {
             warn!("OIDC token exchange failed: {err}");
             return clear_oauth_and_redirect("/?auth_error=exchange");
         }
     };
 
-    let claims = match validate_token(&state.http, &state.oidc_cache, oidc, &id_token).await {
+    let claims = match validate_token(&state.http, &state.oidc_cache, oidc, &tokens.id_token).await
+    {
         Ok(claims) => claims,
         Err(err) => {
             warn!("OIDC provider issued an ID token that failed validation: {err}");
@@ -188,6 +201,107 @@ pub async fn auth_callback(
         }
     };
 
+    let mut oauth_removal = Cookie::build(OAUTH_COOKIE, "")
+        .path(OAUTH_COOKIE_PATH)
+        .finish();
+    oauth_removal.make_removal();
+
+    let mut response = HttpResponse::Found();
+    response
+        .cookie(session_cookie(tokens.id_token, &claims, secure))
+        .cookie(oauth_removal);
+    match tokens.refresh_token {
+        Some(refresh) => {
+            response.cookie(refresh_cookie(refresh, secure));
+        }
+        // No refresh token issued: drop any leftover from a previous session so a
+        // stale token can't shadow this (non-renewable) one.
+        None => {
+            response.cookie(refresh_cookie_removal());
+        }
+    }
+    response
+        .insert_header((LOCATION, oauth_state.return_to))
+        .finish()
+}
+
+/// `POST /api/v1/auth/refresh` — renew the session by redeeming the refresh-token
+/// cookie, re-issuing the session cookie without another interactive sign-in.
+///
+/// Like `/logout` this lives in the public `/auth` scope (an expired session must
+/// still be able to renew itself), but unlike logout it needs no CSRF check: the
+/// refresh cookie is `SameSite=Lax`, so a forged cross-site `POST` never carries
+/// it and simply fails with a 401.
+pub async fn auth_refresh(state: web::Data<AppState>, req: HttpRequest) -> HttpResponse {
+    let secure = is_https(state.config.web.trust_proxy, &req);
+
+    let Some(oidc) = state.config.web.admin.oidc.as_ref() else {
+        // No identity provider: there is no session to renew.
+        return expired_session();
+    };
+
+    let Some(refresh_token) = req
+        .cookie(REFRESH_COOKIE)
+        .map(|c| c.value().to_string())
+        .filter(|token| !token.is_empty())
+    else {
+        return expired_session();
+    };
+
+    let discovery = match discovery(&state.http, &state.oidc_cache, oidc).await {
+        Ok(d) => d,
+        Err(err) => {
+            error!("Failed to load OIDC discovery document during session renewal: {err}");
+            return json_error(
+                StatusCode::BAD_GATEWAY,
+                "We could not reach the configured identity provider.",
+            );
+        }
+    };
+
+    let tokens = match refresh_tokens(&state.http, oidc, &discovery, &refresh_token).await {
+        Ok(tokens) => tokens,
+        // The provider rejected the grant (revoked/expired/rotated-away token):
+        // the session is over, so drop both cookies and ask for a fresh sign-in.
+        Err(err) if err.is(human_errors::Kind::User) => {
+            info!("The OIDC provider rejected the session renewal: {err}");
+            return expired_session();
+        }
+        // A transport/provider failure says nothing about the session itself;
+        // keep the cookies so renewal can be retried once the provider recovers.
+        Err(err) => {
+            error!("OIDC session renewal failed: {err}");
+            return json_error(
+                StatusCode::BAD_GATEWAY,
+                "We could not reach the configured identity provider.",
+            );
+        }
+    };
+
+    let claims = match validate_token(&state.http, &state.oidc_cache, oidc, &tokens.id_token).await
+    {
+        Ok(claims) => claims,
+        Err(err) => {
+            warn!("OIDC provider issued an ID token that failed validation during renewal: {err}");
+            return expired_session();
+        }
+    };
+
+    let mut response = HttpResponse::NoContent();
+    response.cookie(session_cookie(tokens.id_token, &claims, secure));
+    if let Some(refresh) = tokens.refresh_token {
+        response.cookie(refresh_cookie(refresh, secure));
+    }
+    response.finish()
+}
+
+/// Build the session cookie for a freshly validated ID token, living as long as
+/// the token itself does.
+fn session_cookie(
+    id_token: String,
+    claims: &serde_json::Map<String, serde_json::Value>,
+    secure: bool,
+) -> Cookie<'static> {
     let max_age = claims
         .get("exp")
         .and_then(|v| v.as_i64())
@@ -195,29 +309,52 @@ pub async fn auth_callback(
         .filter(|secs| *secs > 0)
         .unwrap_or(DEFAULT_SESSION_SECONDS);
 
-    let session_cookie = Cookie::build(SESSION_COOKIE, id_token)
+    Cookie::build(SESSION_COOKIE, id_token)
         .path(COOKIE_PATH)
         .http_only(true)
         .secure(secure)
         .same_site(SameSite::Lax)
         .max_age(CookieDuration::seconds(max_age))
-        .finish();
-
-    let mut oauth_removal = Cookie::build(OAUTH_COOKIE, "")
-        .path(OAUTH_COOKIE_PATH)
-        .finish();
-    oauth_removal.make_removal();
-
-    HttpResponse::Found()
-        .cookie(session_cookie)
-        .cookie(oauth_removal)
-        .insert_header((LOCATION, oauth_state.return_to))
         .finish()
 }
 
-/// `POST /api/v1/auth/logout` — clear the session cookie. This endpoint is public
-/// (outside `api_auth`), so it enforces the double-submit CSRF check itself to
-/// prevent a cross-site forced logout.
+/// Build the refresh-token cookie, scoped to the auth endpoints.
+fn refresh_cookie(refresh_token: String, secure: bool) -> Cookie<'static> {
+    Cookie::build(REFRESH_COOKIE, refresh_token)
+        .path(OAUTH_COOKIE_PATH)
+        .http_only(true)
+        .secure(secure)
+        .same_site(SameSite::Lax)
+        .max_age(CookieDuration::seconds(REFRESH_COOKIE_SECONDS))
+        .finish()
+}
+
+fn refresh_cookie_removal() -> Cookie<'static> {
+    let mut removal = Cookie::build(REFRESH_COOKIE, "")
+        .path(OAUTH_COOKIE_PATH)
+        .finish();
+    removal.make_removal();
+    removal
+}
+
+/// A 401 that also clears the session and refresh cookies: the session cannot be
+/// renewed, so the browser should stop presenting its remnants.
+fn expired_session() -> HttpResponse {
+    let mut session_removal = Cookie::build(SESSION_COOKIE, "").path(COOKIE_PATH).finish();
+    session_removal.make_removal();
+
+    let mut response = json_error(
+        StatusCode::UNAUTHORIZED,
+        "Your session has expired. Please sign in again.",
+    );
+    let _ = response.add_cookie(&session_removal);
+    let _ = response.add_cookie(&refresh_cookie_removal());
+    response
+}
+
+/// `POST /api/v1/auth/logout` — clear the session and refresh cookies. This
+/// endpoint is public (outside `api_auth`), so it enforces the double-submit CSRF
+/// check itself to prevent a cross-site forced logout.
 pub async fn auth_logout(req: HttpRequest) -> HttpResponse {
     if !csrf_ok(&req) {
         return json_error(
@@ -227,7 +364,10 @@ pub async fn auth_logout(req: HttpRequest) -> HttpResponse {
     }
     let mut removal = Cookie::build(SESSION_COOKIE, "").path(COOKIE_PATH).finish();
     removal.make_removal();
-    HttpResponse::NoContent().cookie(removal).finish()
+    HttpResponse::NoContent()
+        .cookie(removal)
+        .cookie(refresh_cookie_removal())
+        .finish()
 }
 
 /// Double-submit CSRF check against an `HttpRequest` (the middleware version in
