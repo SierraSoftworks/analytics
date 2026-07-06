@@ -20,7 +20,10 @@ web:
     #   endpoint: "https://idp.example.com"
     #   client_id: "analytics-dashboard"
     #   client_secret: "${{ env.OIDC_CLIENT_SECRET }}"
-    #   scopes: ["profile", "email", "groups"]
+    #   # Include "offline_access" (where your provider supports/requires it) so a
+    #   # refresh token is issued and sessions renew silently instead of ending
+    #   # when the ID token expires.
+    #   scopes: ["profile", "email", "groups", "offline_access"]
 
 storage:
   redb_path: "analytics.redb"

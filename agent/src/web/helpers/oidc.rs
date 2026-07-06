@@ -1,6 +1,6 @@
 //! OpenID Connect machinery for the server-driven admin login: discovery + JWKS
 //! fetching/caching, ID token validation, the authorization-URL builder, the
-//! confidential token exchange, and claim filtering.
+//! confidential token exchange, the refresh-token grant, and claim filtering.
 //!
 //! The agent performs the entire Authorization Code + PKCE exchange itself; the
 //! issued ID token is stored in an `HttpOnly` session cookie and never exposed to
@@ -88,6 +88,15 @@ pub struct OidcDiscovery {
 #[derive(serde::Deserialize)]
 struct ProviderTokenResponse {
     id_token: String,
+    refresh_token: Option<String>,
+}
+
+/// Tokens issued by the provider's token endpoint. `id_token` becomes the session
+/// cookie; `refresh_token` (when the provider issues one) lets the agent renew the
+/// session without another interactive login.
+pub struct TokenSet {
+    pub id_token: String,
+    pub refresh_token: Option<String>,
 }
 
 /// A PKCE verifier and its derived S256 challenge.
@@ -363,7 +372,7 @@ fn verify_token(
     Ok(data.claims)
 }
 
-/// Exchange an authorization code (+ PKCE verifier) for the ID token. The
+/// Exchange an authorization code (+ PKCE verifier) for the issued tokens. The
 /// confidential client secret never leaves the server.
 pub async fn exchange_code(
     http: &reqwest::Client,
@@ -372,7 +381,7 @@ pub async fn exchange_code(
     code: &str,
     code_verifier: &str,
     redirect_uri: &str,
-) -> Result<String> {
+) -> Result<TokenSet> {
     let params = [
         ("grant_type", "authorization_code"),
         ("code", code),
@@ -381,27 +390,76 @@ pub async fn exchange_code(
         ("client_id", oidc.client_id.as_str()),
         ("client_secret", oidc.client_secret.as_str()),
     ];
+    token_request(
+        http,
+        &discovery.token_endpoint,
+        &params,
+        "The OIDC provider rejected the authorization code exchange.",
+        &["Start the sign-in process again from the beginning."],
+    )
+    .await
+}
+
+/// Renew a session from a previously issued refresh token, returning a fresh ID
+/// token (and a rotated refresh token when the provider supplies one). Providers
+/// that don't rotate refresh tokens omit it from the response, so the caller's
+/// token is carried over to keep the session renewable.
+pub async fn refresh_tokens(
+    http: &reqwest::Client,
+    oidc: &OidcConfig,
+    discovery: &OidcDiscovery,
+    refresh_token: &str,
+) -> Result<TokenSet> {
+    let params = [
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token),
+        ("client_id", oidc.client_id.as_str()),
+        ("client_secret", oidc.client_secret.as_str()),
+    ];
+    let mut tokens = token_request(
+        http,
+        &discovery.token_endpoint,
+        &params,
+        "The OIDC provider rejected the session renewal.",
+        ADVICE_REAUTH,
+    )
+    .await?;
+    if tokens.refresh_token.is_none() {
+        tokens.refresh_token = Some(refresh_token.to_string());
+    }
+    Ok(tokens)
+}
+
+/// POST a form-encoded grant to the provider's token endpoint and parse the
+/// issued tokens.
+async fn token_request(
+    http: &reqwest::Client,
+    token_endpoint: &str,
+    params: &[(&str, &str)],
+    rejection: &'static str,
+    rejection_advice: &'static [&'static str],
+) -> Result<TokenSet> {
     let response: ProviderTokenResponse = http
-        .post(&discovery.token_endpoint)
-        .form(&params)
+        .post(token_endpoint)
+        .form(params)
         .send()
         .await
         .wrap_system_err(
-            "Failed to exchange the authorization code.",
+            "Failed to reach the OIDC provider's token endpoint.",
             ADVICE_PROVIDER,
         )?
         .error_for_status()
-        .wrap_user_err(
-            "The OIDC provider rejected the authorization code exchange.",
-            &["Start the sign-in process again from the beginning."],
-        )?
+        .wrap_user_err(rejection, rejection_advice)?
         .json()
         .await
         .wrap_system_err(
             "Failed to parse the token response from the provider.",
             ADVICE_PROVIDER,
         )?;
-    Ok(response.id_token)
+    Ok(TokenSet {
+        id_token: response.id_token,
+        refresh_token: response.refresh_token,
+    })
 }
 
 /// Derive the display identity from a validated claim set.
@@ -474,6 +532,129 @@ mod tests {
         assert!(filtered.contains_key("groups"));
         assert!(!filtered.contains_key("exp"));
         assert!(!filtered.contains_key("iss"));
+    }
+
+    /// Build a discovery document pointing every endpoint at the given mock server.
+    fn mock_discovery(base: &str) -> OidcDiscovery {
+        OidcDiscovery {
+            issuer: base.to_string(),
+            authorization_endpoint: format!("{base}/authorize"),
+            token_endpoint: format!("{base}/token"),
+            jwks_uri: format!("{base}/jwks"),
+        }
+    }
+
+    fn test_oidc_config(base: &str) -> crate::config::OidcConfig {
+        crate::config::OidcConfig {
+            endpoint: base.to_string(),
+            client_id: "test-client".into(),
+            client_secret: "test-secret".into(),
+            scopes: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn exchange_code_captures_the_refresh_token() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("grant_type=authorization_code"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id_token": "header.payload.sig",
+                "refresh_token": "refresh-123",
+            })))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let tokens = exchange_code(
+            &http,
+            &test_oidc_config(&server.uri()),
+            &mock_discovery(&server.uri()),
+            "auth-code",
+            "verifier",
+            "http://localhost/api/v1/auth/callback",
+        )
+        .await
+        .unwrap();
+        assert_eq!(tokens.id_token, "header.payload.sig");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("refresh-123"));
+    }
+
+    #[tokio::test]
+    async fn refresh_reuses_the_old_token_when_the_provider_does_not_rotate() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("grant_type=refresh_token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id_token": "renewed.id.token",
+            })))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let tokens = refresh_tokens(
+            &http,
+            &test_oidc_config(&server.uri()),
+            &mock_discovery(&server.uri()),
+            "refresh-123",
+        )
+        .await
+        .unwrap();
+        assert_eq!(tokens.id_token, "renewed.id.token");
+        assert_eq!(
+            tokens.refresh_token.as_deref(),
+            Some("refresh-123"),
+            "a non-rotating provider's response must not discard the caller's refresh token"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_adopts_a_rotated_token_and_surfaces_rejections() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("refresh_token=live-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id_token": "renewed.id.token",
+                "refresh_token": "rotated-456",
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("refresh_token=revoked-token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "invalid_grant",
+            })))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let oidc = test_oidc_config(&server.uri());
+        let discovery = mock_discovery(&server.uri());
+
+        let tokens = refresh_tokens(&http, &oidc, &discovery, "live-token")
+            .await
+            .unwrap();
+        assert_eq!(tokens.refresh_token.as_deref(), Some("rotated-456"));
+
+        assert!(
+            refresh_tokens(&http, &oidc, &discovery, "revoked-token")
+                .await
+                .is_err(),
+            "a rejected grant must surface as an error so the session is dropped"
+        );
     }
 
     #[test]

@@ -3,7 +3,9 @@
 //! Auth relies on the agent's `HttpOnly` session cookie (sent automatically on
 //! same-origin requests); the UI never sees a token. Mutating requests carry a
 //! double-submit CSRF token in `X-CSRF-Token`, fetched once and cached. A `401`
-//! surfaces as [`ApiError::Unauthorized`] so callers can redirect to login.
+//! first triggers a transparent session renewal ([`crate::auth::refresh_session`])
+//! and a single retry; only when the session truly cannot be renewed does it
+//! surface as [`ApiError::Unauthorized`] so callers can redirect to login.
 
 use std::cell::RefCell;
 
@@ -66,10 +68,8 @@ fn cached_csrf() -> Option<String> {
 }
 
 async fn fetch_csrf() -> Result<String, ApiError> {
-    let resp = Request::get(&format!("{API_BASE}/csrf"))
-        .send()
-        .await
-        .map_err(net)?;
+    let url = format!("{API_BASE}/csrf");
+    let resp = send_with_session(|| Request::get(&url).build()).await?;
     if !resp.ok() {
         return Err(error_from(resp).await);
     }
@@ -89,11 +89,28 @@ fn invalidate_csrf() {
     CSRF_TOKEN.with(|t| *t.borrow_mut() = None);
 }
 
+/// Send a request, transparently renewing the session and retrying once when the
+/// server rejects it with a `401` (the session cookie lapsed, but the agent may
+/// hold a refresh token it can redeem). The renewal is coalesced across
+/// concurrent callers, so a page's parallel fetches failing together produce a
+/// single refresh. When renewal fails the original `401` is returned untouched.
+async fn send_with_session<F>(build: F) -> Result<gloo_net::http::Response, ApiError>
+where
+    F: Fn() -> Result<Request, gloo_net::Error>,
+{
+    let resp = build().map_err(net)?.send().await.map_err(net)?;
+    if resp.status() != 401 {
+        return Ok(resp);
+    }
+    if crate::auth::refresh_session().await.is_err() {
+        return Ok(resp);
+    }
+    build().map_err(net)?.send().await.map_err(net)
+}
+
 async fn get_json<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
-    let resp = Request::get(&format!("{API_BASE}{path}"))
-        .send()
-        .await
-        .map_err(net)?;
+    let url = format!("{API_BASE}{path}");
+    let resp = send_with_session(|| Request::get(&url).build()).await?;
     if !resp.ok() {
         return Err(error_from(resp).await);
     }
@@ -108,7 +125,7 @@ where
     let mut refreshed = false;
     loop {
         let token = ensure_csrf().await?;
-        let resp = build(&token).map_err(net)?.send().await.map_err(net)?;
+        let resp = send_with_session(|| build(&token)).await?;
         if resp.ok() {
             return Ok(resp);
         }
@@ -153,10 +170,8 @@ fn enc(value: &str) -> String {
 // ------------------------------------------------------------------ endpoints
 
 pub async fn me() -> Result<Option<AdminUser>, ApiError> {
-    let resp = Request::get(&format!("{API_BASE}/me"))
-        .send()
-        .await
-        .map_err(net)?;
+    let url = format!("{API_BASE}/me");
+    let resp = send_with_session(|| Request::get(&url).build()).await?;
     if resp.status() == 204 {
         return Ok(None);
     }
