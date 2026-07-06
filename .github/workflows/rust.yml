@@ -310,7 +310,9 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=${{ env.FULL_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true,annotation-index.org.opencontainers.image.description=\"Lightweight, privacy-preserving analytics for your websites and applications\"
+          annotations: |
+            index:org.opencontainers.image.description=Lightweight, privacy-preserving analytics for your websites and applications
+          outputs: type=image,name=${{ env.FULL_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
         run: |
