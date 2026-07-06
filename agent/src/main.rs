@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
-use tracing_batteries::{OpenTelemetry, Sentry, Session, prelude::*};
+use tracing_batteries::{Analytics, OpenTelemetry, Sentry, Session, prelude::*};
 
 use crate::config::Config;
 use crate::errors::ResultExt;
@@ -124,8 +124,9 @@ fn build_telemetry(config: &Config) -> Session {
 
     // `Session::new` returns a builder; the first `with_battery` transitions it into
     // the live `Session`, so add the unconditional battery first.
-    let mut session =
-        Session::new(service_name, version!("v")).with_battery(OpenTelemetry::new(otlp_endpoint));
+    let mut session = Session::new(service_name, version!("v"))
+        .with_battery(OpenTelemetry::new(otlp_endpoint))
+        .with_battery(Analytics::new("https://analytics.sierrasoftworks.com"));
     if let Some(dsn) = sentry_dsn {
         session = session.with_battery(Sentry::new((
             dsn,
