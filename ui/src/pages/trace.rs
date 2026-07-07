@@ -1,7 +1,8 @@
 //! One session in forensic detail: the visit's context (source, client,
-//! locale, claimed release) and a vertical timeline of its page views, custom
-//! events, and exceptions, in arrival order. Page views fold their unload
-//! beacon in as a time-on-page badge.
+//! locale, claimed release) and a vertical timeline of its page views. Each
+//! page view spans from its load to its unload (a time-on-page badge), and the
+//! custom events and exceptions that fired while it was open — matched by
+//! beacon id — hang beneath it on a nested child timeline.
 
 use std::collections::{HashMap, HashSet};
 
@@ -120,9 +121,12 @@ fn summary_panel(trace: &SessionTraceData) -> Html {
     html! { <div class="panel trace-facts">{ for cells }</div> }
 }
 
-/// The vertical timeline. A page view's unload (matched by beacon id) is
-/// folded into the view's row as its time-on-page; unloads whose load fell
-/// outside the returned window still render on their own.
+/// The vertical timeline. Page views form the parent spine: each spans from its
+/// load to its unload (a time-on-page badge), matched by beacon id. The custom
+/// events and exceptions that share a page view's beacon id hang beneath it on a
+/// nested child timeline — so it reads at a glance which activity happened
+/// within which page view. Events whose page view fell outside the returned
+/// window (and unloads whose load did) still render on the parent spine.
 fn timeline(trace: &SessionTraceData) -> Html {
     let mut durations: HashMap<&str, i64> = HashMap::new();
     let mut loads: HashSet<&str> = HashSet::new();
@@ -140,21 +144,90 @@ fn timeline(trace: &SessionTraceData) -> Html {
         }
     }
 
+    // Bucket each page view's events/exceptions under its beacon id, preserving
+    // arrival order. Only events whose page view is present in this window are
+    // nested; the rest fall through to the parent spine as orphans.
+    let mut children: HashMap<&str, Vec<(usize, &TraceEvent)>> = HashMap::new();
+    for (i, event) in trace.events.iter().enumerate() {
+        if matches!(
+            event.kind,
+            TraceEventKind::Custom | TraceEventKind::Exception
+        ) && loads.contains(event.bid.as_str())
+        {
+            children
+                .entry(event.bid.as_str())
+                .or_default()
+                .push((i, event));
+        }
+    }
+
     let started = trace.started_ms;
     let rows = trace.events.iter().enumerate().filter_map(|(i, event)| {
-        // Fold paired unloads into their page view's row.
-        if event.kind == TraceEventKind::PageUnload && loads.contains(event.bid.as_str()) {
-            return None;
+        let paired = !event.bid.is_empty() && loads.contains(event.bid.as_str());
+        match event.kind {
+            TraceEventKind::PageLoad => {
+                let duration = durations.get(event.bid.as_str()).copied();
+                let kids = children.get(event.bid.as_str());
+                Some(page_view(event, started, duration, kids, i))
+            }
+            // Paired unloads and nested events are drawn within their page view.
+            TraceEventKind::PageUnload if paired => None,
+            TraceEventKind::Custom | TraceEventKind::Exception if paired => None,
+            // Orphans (page view outside the window) still get a parent row.
+            _ => Some(entry(event, started, event.duration_ms, i)),
         }
-        let duration = match event.kind {
-            TraceEventKind::PageLoad => durations.get(event.bid.as_str()).copied(),
-            TraceEventKind::PageUnload => event.duration_ms,
-            _ => None,
-        };
-        Some(entry(event, started, duration, i))
     });
 
     html! { <ol class="trace-timeline">{ for rows }</ol> }
+}
+
+/// A page view on the parent spine: its path and time-on-page span, with the
+/// events and exceptions that fired while it was open nested beneath it. The
+/// nested timeline is omitted entirely when the page view saw no such activity.
+fn page_view(
+    event: &TraceEvent,
+    started_ms: i64,
+    duration: Option<i64>,
+    children: Option<&Vec<(usize, &TraceEvent)>>,
+    index: usize,
+) -> Html {
+    let offset = event.received_ms - started_ms;
+    let nested = children.filter(|kids| !kids.is_empty()).map(|kids| {
+        let rows = kids.iter().map(|(i, ev)| entry(ev, started_ms, None, *i));
+        html! {
+            <div class="trace-span">
+                <ol class="trace-timeline trace-timeline--nested">{ for rows }</ol>
+            </div>
+        }
+    });
+
+    html! {
+        <li class={classes!("trace-entry", "trace-entry--page")} key={index.to_string()}>
+            <span class="trace-entry__marker" aria-hidden="true" />
+            <div class="trace-entry__body">
+                <div class="trace-entry__head">
+                    <span class="trace-entry__kind">{ "Page view" }</span>
+                    <span class="trace-entry__time" title={tooltip_label(event.received_ms, 0)}>
+                        { clock_time(event.received_ms) }
+                    </span>
+                    <span class="trace-entry__offset" title="Since the session started">
+                        { format!("+{}", format_duration(offset)) }
+                    </span>
+                </div>
+                <div class="trace-entry__line">
+                    <code class="trace-entry__path">
+                        { event.pathname.clone().unwrap_or_else(|| "/".into()) }
+                    </code>
+                    if let Some(duration) = duration {
+                        <span class="badge badge--muted" title="Time on page">
+                            { format!("{} on page", format_duration(duration)) }
+                        </span>
+                    }
+                </div>
+                { nested.unwrap_or_default() }
+            </div>
+        </li>
+    }
 }
 
 fn entry(event: &TraceEvent, started_ms: i64, duration: Option<i64>, index: usize) -> Html {

@@ -361,6 +361,52 @@
   }
 }
 
+// A page view's activity span: the events and exceptions that fired while it
+// was open, matched by beacon id and nested under the page view. The brand rail
+// down its left edge reads as the page's lifetime — load at the top, exit at
+// the bottom — with each child event hanging from it.
+.trace-span {
+  position: relative;
+  margin: 0.5rem 0 0.15rem;
+  padding-left: 1.05rem;
+
+  &::before {
+    content: '';
+    position: absolute;
+    left: 3px;
+    top: 0.1rem;
+    bottom: 0.4rem;
+    width: 2px;
+    border-radius: 1px;
+    background: linear-gradient(var(--brand-border), var(--brand-soft));
+  }
+}
+
+// The nested child timeline drops the card chrome and the neutral per-row rail:
+// the span's brand rail is the only spine at this level, and the child markers
+// hang from it. Their kind colours (event/exception) carry over unchanged.
+.trace-timeline--nested {
+  border: none;
+  background: transparent;
+  border-radius: 0;
+  margin: 0;
+  padding: 0;
+
+  .trace-entry {
+    padding: 0.35rem 0;
+
+    &::before {
+      display: none;
+    }
+
+    &__marker {
+      width: 7px;
+      height: 7px;
+      margin-top: 0.5rem;
+    }
+  }
+}
+
 @media (max-width: $bp-sm) {
   .trace-row__counts,
   .trace-row__open {
