@@ -14,6 +14,7 @@ mod projects;
 mod query;
 mod sources;
 mod stats;
+mod traces;
 
 use actix_web::http::StatusCode;
 use actix_web::{
@@ -91,7 +92,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                     .route("/pixels/{id}", web::delete().to(pixels::delete))
                     .route("/exceptions", web::get().to(exceptions::list_all))
                     .route("/exceptions/{group}", web::get().to(exceptions::detail))
-                    .route("/exceptions/{group}", web::patch().to(exceptions::triage)),
+                    .route("/exceptions/{group}", web::patch().to(exceptions::triage))
+                    .route("/traces/{session}", web::get().to(traces::detail)),
             ),
     );
 }

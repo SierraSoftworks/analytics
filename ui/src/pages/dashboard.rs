@@ -5,18 +5,22 @@
 
 use std::rc::Rc;
 
-use analytics_api::{Dashboard as DashboardData, SourceInput, source_label};
+use analytics_api::{Dashboard as DashboardData, SourceInput, TraceSummary, source_label};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::api::{self, ApiError};
+use crate::app::Route;
 use crate::components::charts::Metric;
 use crate::components::{
     ApiErrorAlert, BreakdownPanel, Dropdown, DropdownItem, FilterBar, MetricCards, PageHeader,
     PanelRow, PanelTab, ProjectDrawer, ProjectsContext, SuggestOption, TimeSeriesChart,
 };
-use crate::filters::{Dim, TimeRange, use_apply_filters, use_filters};
-use crate::format::{country_flag, country_name, group_thousands, language_name};
+use crate::filters::{Dim, TimeRange, use_apply_filters, use_filters, use_navigate_with_filters};
+use crate::format::{
+    ago, country_flag, country_name, group_thousands, language_name, short_session_id,
+    tooltip_label, trace_counts,
+};
 
 #[function_component(Dashboard)]
 pub fn dashboard() -> Html {
@@ -327,6 +331,7 @@ pub fn dashboard() -> Html {
                         <BreakdownPanel tabs={platform_tabs} metric={*metric} on_filter={on_filter.clone()} active={active.clone()} />
                         <BreakdownPanel tabs={project_tabs} metric={*metric} on_filter={on_filter.clone()} active={active.clone()} />
                     </div>
+                    <SessionTraces traces={dash.traces.clone()} />
                 </div>
             }
         }
@@ -456,6 +461,102 @@ fn build_suggestions(
             rows(&dash.breakdowns.utm_campaigns, "None"),
         ),
     ]
+}
+
+#[derive(Properties, PartialEq)]
+struct SessionTracesProps {
+    traces: Vec<TraceSummary>,
+}
+
+/// A vertical timeline sampling the most recent session traces matching the
+/// active filters. Each entry identifies the visit (short id, when, where,
+/// on what client, landing page) and opens the full trace view.
+#[function_component(SessionTraces)]
+fn session_traces(props: &SessionTracesProps) -> Html {
+    let filters = use_filters();
+    let navigate = use_navigate_with_filters();
+
+    let entries = props.traces.iter().map(|trace| {
+        let open = {
+            let (navigate, filters) = (navigate.clone(), filters.clone());
+            let id = trace.session_id.clone();
+            move || navigate.emit((Route::Trace { id: id.clone() }, filters.clone()))
+        };
+        let onclick = {
+            let open = open.clone();
+            Callback::from(move |_: MouseEvent| open())
+        };
+        let onkeydown = Callback::from(move |e: KeyboardEvent| {
+            if matches!(e.key().as_str(), "Enter" | " ") {
+                e.prevent_default();
+                open();
+            }
+        });
+
+        // The client application (a browser, or an application UA) + version;
+        // exception-reported releases surface as an extra `v…` tag.
+        let client = match (&trace.ua_browser, &trace.ua_version) {
+            (Some(browser), Some(version)) => Some(format!("{browser} {version}")),
+            (Some(browser), None) => Some(browser.clone()),
+            _ => None,
+        };
+        let country = trace.country.as_ref().map(|code| match country_flag(code) {
+            Some(flag) => format!("{flag} {}", country_name(code)),
+            None => country_name(code),
+        });
+
+        html! {
+            <li class="trace-row" key={trace.session_id.clone()} role="button" tabindex="0"
+                {onclick} {onkeydown}>
+                <span class={classes!("trace-row__marker", (trace.exceptions > 0).then_some("trace-row__marker--exceptions"))}
+                    aria-hidden="true" />
+                <div class="trace-row__body">
+                    <div class="trace-row__head">
+                        <code class="trace-row__id">{ short_session_id(&trace.session_id) }</code>
+                        <span class="trace-row__time" title={tooltip_label(trace.started_ms, 0)}>
+                            { ago(trace.started_ms) }
+                        </span>
+                        <span class="trace-row__counts muted">
+                            { trace_counts(trace.pageviews, trace.events, trace.exceptions) }
+                        </span>
+                    </div>
+                    <div class="trace-row__meta">
+                        <span class="trace-row__source" title={trace.source.clone()}>
+                            { source_label(&trace.source) }
+                        </span>
+                        if let Some(country) = country {
+                            <span>{ country }</span>
+                        }
+                        if let Some(client) = client {
+                            <span>{ client }</span>
+                        }
+                        if let Some(version) = &trace.app_version {
+                            <span><code>{ format!("v{version}") }</code></span>
+                        }
+                        if let Some(path) = &trace.entry_path {
+                            <code class="trace-row__path" title={path.clone()}>{ path.clone() }</code>
+                        }
+                    </div>
+                </div>
+            </li>
+        }
+    });
+
+    html! {
+        <div class="panel trace-sample">
+            <div class="panel__head">
+                <h2 class="panel__title">{ "Session traces" }</h2>
+                <span class="panel__hint">{ "The most recent sessions matching the filters above" }</span>
+            </div>
+            if props.traces.is_empty() {
+                <p class="trace-sample__empty">
+                    { "No session traces in this period — traces appear once visits report a session id." }
+                </p>
+            } else {
+                <ol class="trace-sample__list">{ for entries }</ol>
+            }
+        </div>
+    }
 }
 
 #[derive(Properties, PartialEq)]

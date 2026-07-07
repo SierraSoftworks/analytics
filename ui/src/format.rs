@@ -93,6 +93,45 @@ pub fn short_date(ms: i64) -> String {
     format!("{} {}", month_short(date.get_month()), date.get_date())
 }
 
+/// The wall-clock time of an instant, to the second (trace timeline rows).
+pub fn clock_time(ms: i64) -> String {
+    let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms as f64));
+    format!(
+        "{:02}:{:02}:{:02}",
+        date.get_hours(),
+        date.get_minutes(),
+        date.get_seconds()
+    )
+}
+
+/// A short display id for a session: the tail of the client-generated id
+/// (its random part — the head is a timestamp shared by concurrent sessions).
+pub fn short_session_id(sid: &str) -> String {
+    let chars: Vec<char> = sid.chars().collect();
+    let tail: String = chars[chars.len().saturating_sub(8)..].iter().collect();
+    format!("#{tail}")
+}
+
+/// A session's activity in one phrase: "4 pages · 2 events · 1 exception"
+/// (zero counts dropped, except pages, which anchor the phrase).
+pub fn trace_counts(pageviews: i64, events: i64, exceptions: i64) -> String {
+    let plural = |n: i64, word: &str| {
+        format!(
+            "{} {word}{}",
+            group_thousands(n),
+            if n == 1 { "" } else { "s" }
+        )
+    };
+    let mut parts = vec![plural(pageviews, "page")];
+    if events > 0 {
+        parts.push(plural(events, "event"));
+    }
+    if exceptions > 0 {
+        parts.push(plural(exceptions, "exception"));
+    }
+    parts.join(" · ")
+}
+
 fn month_short(month: u32) -> &'static str {
     [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",

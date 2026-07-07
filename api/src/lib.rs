@@ -12,6 +12,7 @@ mod pixel;
 mod project;
 mod source;
 mod stats;
+mod trace;
 mod track;
 
 pub use auth::{AdminUser, CsrfToken};
@@ -30,4 +31,5 @@ pub use source::{
 pub use stats::{
     BreakdownRow, Breakdowns, CountRow, Dashboard, DashboardQuery, MetricSummary, TimeSeriesPoint,
 };
+pub use trace::{SessionTrace, TraceEvent, TraceEventKind, TraceSummary};
 pub use track::{BeaconKind, TrackEvent};

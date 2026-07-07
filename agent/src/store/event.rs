@@ -46,6 +46,13 @@ pub struct StoredEvent {
     pub seq: u64,
     /// Per-page-load beacon id linking the events of a single page view.
     pub bid: String,
+    /// Per-visit session id linking the events of one continuous visit (the
+    /// tracker holds it in memory only — SPA navigations share it, a full
+    /// reload starts a new one). Absent on pixel hits and on events from
+    /// trackers predating sessions. `serde(default)` keeps pre-existing redb
+    /// rows readable.
+    #[serde(default)]
+    pub sid: Option<String>,
     pub kind: EventKind,
 
     /// Canonical source URI this event is attributed to.

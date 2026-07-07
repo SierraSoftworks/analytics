@@ -8,6 +8,11 @@ pub struct TrackEvent {
     /// Per-page-load beacon id, linking the events of a single page view.
     #[serde(rename = "b")]
     pub beacon: String,
+    /// Per-visit session id, linking the page views of one continuous visit.
+    /// Held only in the tracker's memory (never a cookie or storage), so it
+    /// spans SPA navigations and resets on a full reload.
+    #[serde(rename = "s", default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     #[serde(rename = "e", default)]
     pub kind: BeaconKind,
     /// Full page URL (hostname + path + query are derived server-side).

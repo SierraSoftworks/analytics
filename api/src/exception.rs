@@ -22,6 +22,10 @@ pub struct ExceptionReport {
     pub url: String,
     #[serde(rename = "b", default, skip_serializing_if = "Option::is_none")]
     pub beacon: Option<String>,
+    /// The per-visit session id (see [`crate::TrackEvent::session`]), linking
+    /// the report to the visit's page views. (`s` is taken by the stack.)
+    #[serde(rename = "sid", default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     /// The exception type/name (e.g. "TypeError").
     #[serde(rename = "ty")]
     pub exc_type: String,
@@ -93,6 +97,10 @@ pub struct ExceptionVariant {
     /// recent occurrence of this variant that carried any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<String>,
+    /// The session the most recent session-linked occurrence belonged to,
+    /// linking the exemplar to its session trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// How a group's occurrences distribute across key dimensions (empty keys mean

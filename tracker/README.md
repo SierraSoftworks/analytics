@@ -15,6 +15,9 @@ beacon) and adds opt-in, Sentry-style client exception reporting.
 
 - **Page views** — a per-page-view beacon id links the `load` and `unload` events;
   there is no cookie or persistent identifier.
+- **Session traces** — a per-visit session id links one visit's page views, events,
+  and exceptions into a timeline. It lives only in the tracker's memory (never a
+  cookie or storage): SPA navigations share it, a full reload starts a new session.
 - **Daily uniques** — derived server-side from two cache-trick pings (one per site for
   `q`, one per page for `p`); no client-side storage.
 - **Time on page** — sent on `unload` via `navigator.sendBeacon`.

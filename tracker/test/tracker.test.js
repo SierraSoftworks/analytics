@@ -106,6 +106,7 @@ describe("init — page load", () => {
     expect(loads[0]).toMatchObject({ e: "load", q: true, p: true });
     expect(loads[0].u).toContain("example.test");
     expect(typeof loads[0].b).toBe("string");
+    expect(typeof loads[0].s).toBe("string");
   });
 
   it("reports a non-unique visit when the oracle says so", async () => {
@@ -162,6 +163,20 @@ describe("init — SPA navigation", () => {
     expect(loads[0].u).toContain("/next");
   });
 
+  it("keeps the session id across navigations but rotates the beacon id", async () => {
+    init({ fetch: fetchMock, navigator: navMock });
+    await tick();
+    const first = postBodies(fetchMock, "/track/hit")[0];
+    fetchMock.mockClear();
+
+    window.history.pushState({}, "", "/next");
+    await tick();
+
+    const second = postBodies(fetchMock, "/track/hit")[0];
+    expect(second.s).toBe(first.s);
+    expect(second.b).not.toBe(first.b);
+  });
+
   it("ignores a same-path replaceState", async () => {
     init({ fetch: fetchMock, navigator: navMock });
     await tick();
@@ -187,6 +202,8 @@ describe("init — exceptions", () => {
     expect(bodies).toHaveLength(1);
     expect(bodies[0]).toMatchObject({ ty: "TypeError", m: "kaboom", h: false });
     expect(bodies[0].u).toContain("example.test");
+    // The report is linked to the same session as the page views.
+    expect(bodies[0].sid).toBe(postBodies(fetchMock, "/track/hit")[0].s);
   });
 
   it("auto-captures unhandled promise rejections", async () => {

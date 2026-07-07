@@ -14,8 +14,8 @@ use crate::api::{self, ApiError};
 use crate::app::Route;
 use crate::components::status::{status_class, status_label};
 use crate::components::{ApiErrorAlert, Crumb, PageHeader, Sparkline, icons};
-use crate::filters::use_filters;
-use crate::format::{ago, compact, group_thousands};
+use crate::filters::{use_filters, use_navigate_with_filters};
+use crate::format::{ago, compact, group_thousands, short_session_id};
 
 #[derive(Properties, PartialEq)]
 pub struct ExceptionDetailProps {
@@ -179,6 +179,8 @@ struct VariantScrubberProps {
 #[function_component(VariantScrubber)]
 fn variant_scrubber(props: &VariantScrubberProps) -> Html {
     let index = use_state(|| 0usize);
+    let filters = use_filters();
+    let navigate = use_navigate_with_filters();
     let count = props.variants.len();
     if count == 0 {
         return html! {};
@@ -206,6 +208,23 @@ fn variant_scrubber(props: &VariantScrubberProps) -> Html {
         match &variant.app_version {
             Some(version) => format!("{label} @ {version}"),
             None => label,
+        }
+    });
+
+    // Jump to the session this exemplar occurred in, when it reported one.
+    let trace_link = variant.session_id.as_ref().map(|sid| {
+        let onclick = {
+            let (navigate, filters) = (navigate.clone(), filters.clone());
+            let id = sid.clone();
+            Callback::from(move |_: MouseEvent| {
+                navigate.emit((Route::Trace { id: id.clone() }, filters.clone()));
+            })
+        };
+        html! {
+            <button class="btn btn--small" onclick={onclick}
+                title={format!("Open session {}", short_session_id(sid))}>
+                { "View session trace" }
+            </button>
         }
     });
 
@@ -238,6 +257,7 @@ fn variant_scrubber(props: &VariantScrubberProps) -> Html {
                         { if variant.handled { "handled" } else { "unhandled" } }
                     </span>
                     <span class="muted">{ format!("last seen {}", ago(variant.last_seen_ms)) }</span>
+                    { trace_link }
                 </div>
                 <div class="occurrence__message">{ &variant.message }</div>
                 { metadata_table(variant.metadata.as_deref()) }

@@ -31,6 +31,7 @@ pub fn build_dataframe(events: &[StoredEvent]) -> PolarsResult<DataFrame> {
         "received_ms" => col!(received_ms),
         "seq" => col!(seq),
         "bid" => col!(bid),
+        "sid" => col!(sid),
         "kind" => kind,
         "source" => col!(source),
         "pathname" => col!(pathname),
