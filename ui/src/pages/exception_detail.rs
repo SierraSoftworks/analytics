@@ -1,6 +1,6 @@
 //! One exception group in forensic detail: triage controls, the occurrence
 //! trend, how failures distribute across key dimensions (app version, OS,
-//! browser, …), and a scrubber over the group's **distinct variants** — one
+//! application, …), and a scrubber over the group's **distinct variants** — one
 //! representative example per unique message/stack, with a count of the
 //! occurrences it stands for.
 
@@ -119,7 +119,7 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
                             <div class="dist-grid">
                                 { distribution("App versions", &detail.breakdowns.app_versions, detail.group.count) }
                                 { distribution("Apps / sources", &detail.breakdowns.sources, detail.group.count) }
-                                { distribution("Browsers", &detail.breakdowns.browsers, detail.group.count) }
+                                { distribution("Applications", &detail.breakdowns.browsers, detail.group.count) }
                                 { distribution("Operating systems", &detail.breakdowns.operating_systems, detail.group.count) }
                                 { distribution("Devices", &detail.breakdowns.devices, detail.group.count) }
                             </div>

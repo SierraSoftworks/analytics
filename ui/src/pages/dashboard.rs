@@ -60,16 +60,24 @@ pub fn dashboard() -> Html {
         });
     }
 
-    // Toggle semantics: clicking a row that is already the active filter for
-    // its dimension clears that filter instead of re-applying it.
+    // Toggle semantics: clicking a row whose terms (most rows carry one; a
+    // version row also pins its application) are all already active clears
+    // them instead of re-applying them.
     let on_filter = {
         let (apply, filters) = (apply.clone(), filters.clone());
-        Callback::from(move |(dim, value): (Dim, String)| {
-            if filters.get(dim) == Some(value.as_str()) {
-                apply.emit(filters.without(dim));
-            } else {
-                apply.emit(filters.with(dim, value));
+        Callback::from(move |terms: Vec<(Dim, String)>| {
+            let active = terms
+                .iter()
+                .all(|(dim, value)| filters.get(*dim) == Some(value.as_str()));
+            let mut next = filters.clone();
+            for (dim, value) in terms {
+                next = if active {
+                    next.without(dim)
+                } else {
+                    next.with(dim, value)
+                };
             }
+            apply.emit(next);
         })
     };
 
@@ -154,9 +162,27 @@ pub fn dashboard() -> Html {
                         pageviews: r.pageviews,
                         events: r.events,
                         title: (!r.key.is_empty()).then(|| r.key.clone()),
+                        extra: None,
                     })
                     .collect()
             };
+            let versions = dash
+                .breakdowns
+                .versions
+                .iter()
+                .map(|r| PanelRow {
+                    value: r.version.clone(),
+                    label: version_label(r),
+                    icon: None,
+                    visitors: r.visitors,
+                    pageviews: r.pageviews,
+                    events: r.events,
+                    title: (!r.app.is_empty() || !r.version.is_empty()).then(|| version_label(r)),
+                    // The version alone would also match other applications'
+                    // releases, so clicking pins the application with it.
+                    extra: Some((Dim::Browser, r.app.clone())),
+                })
+                .collect::<Vec<_>>();
             let countries = dash
                 .breakdowns
                 .countries
@@ -173,6 +199,7 @@ pub fn dashboard() -> Html {
                     pageviews: r.pageviews,
                     events: r.events,
                     title: None,
+                    extra: None,
                 })
                 .collect::<Vec<_>>();
             let languages = dash
@@ -191,6 +218,7 @@ pub fn dashboard() -> Html {
                     pageviews: r.pageviews,
                     events: r.events,
                     title: (!r.key.is_empty()).then(|| r.key.clone()),
+                    extra: None,
                 })
                 .collect::<Vec<_>>();
             let project_rows = dash
@@ -205,6 +233,7 @@ pub fn dashboard() -> Html {
                     pageviews: r.pageviews,
                     events: r.events,
                     title: None,
+                    extra: None,
                 })
                 .collect::<Vec<_>>();
             let source_rows = dash
@@ -219,6 +248,7 @@ pub fn dashboard() -> Html {
                     pageviews: r.pageviews,
                     events: r.events,
                     title: Some(r.key.clone()),
+                    extra: None,
                 })
                 .collect::<Vec<_>>();
 
@@ -259,15 +289,11 @@ pub fn dashboard() -> Html {
             ];
             let platform_tabs = vec![
                 PanelTab::new(
-                    "Browsers",
+                    "Applications",
                     Dim::Browser,
                     plain(&dash.breakdowns.browsers, "Unknown"),
                 ),
-                PanelTab::new(
-                    "Versions",
-                    Dim::Version,
-                    plain(&dash.breakdowns.versions, "Unknown"),
-                ),
+                PanelTab::new("Versions", Dim::Version, versions),
                 PanelTab::new(
                     "OS",
                     Dim::Os,
@@ -446,7 +472,17 @@ fn build_suggestions(
                 .collect(),
         ),
         (Dim::Browser, rows(&dash.breakdowns.browsers, "Unknown")),
-        (Dim::Version, rows(&dash.breakdowns.versions, "Unknown")),
+        (
+            Dim::Version,
+            dash.breakdowns
+                .versions
+                .iter()
+                .map(|r| SuggestOption {
+                    value: r.version.clone(),
+                    label: version_label(r),
+                })
+                .collect(),
+        ),
         (Dim::Os, rows(&dash.breakdowns.operating_systems, "Unknown")),
         (Dim::Device, rows(&dash.breakdowns.devices, "Unknown")),
         (Dim::UtmSource, rows(&dash.breakdowns.utm_sources, "None")),
@@ -456,6 +492,18 @@ fn build_suggestions(
             rows(&dash.breakdowns.utm_campaigns, "None"),
         ),
     ]
+}
+
+/// The display form of a client-version row: qualified by its application,
+/// since a bare version number is meaningless across applications. Falls back
+/// to whichever half is known when the other is absent.
+fn version_label(row: &analytics_api::VersionRow) -> String {
+    match (row.app.is_empty(), row.version.is_empty()) {
+        (false, false) => format!("{} @ {}", row.app, row.version),
+        (false, true) => row.app.clone(),
+        (true, false) => row.version.clone(),
+        (true, true) => "Unknown".to_string(),
+    }
 }
 
 #[derive(Properties, PartialEq)]

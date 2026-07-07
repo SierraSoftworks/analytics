@@ -29,5 +29,6 @@ pub use source::{
 };
 pub use stats::{
     BreakdownRow, Breakdowns, CountRow, Dashboard, DashboardQuery, MetricSummary, TimeSeriesPoint,
+    VersionRow,
 };
 pub use track::{BeaconKind, TrackEvent};
