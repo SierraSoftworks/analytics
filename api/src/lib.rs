@@ -30,6 +30,7 @@ pub use source::{
 };
 pub use stats::{
     BreakdownRow, Breakdowns, CountRow, Dashboard, DashboardQuery, MetricSummary, TimeSeriesPoint,
+    VersionRow,
 };
 pub use trace::{SessionTrace, TraceEvent, TraceEventKind, TraceSummary};
 pub use track::{BeaconKind, TrackEvent};

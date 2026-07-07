@@ -109,6 +109,9 @@ pub struct ExceptionVariant {
 /// by source, so the sources distribution *is* the per-app distribution.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ExceptionBreakdowns {
+    /// Reported releases, keyed as `app @ version` (the app being the source's
+    /// label) since a release number is only meaningful within its application.
+    /// Versionless occurrences aggregate under the empty sentinel.
     pub app_versions: Vec<crate::CountRow>,
     pub browsers: Vec<crate::CountRow>,
     pub operating_systems: Vec<crate::CountRow>,

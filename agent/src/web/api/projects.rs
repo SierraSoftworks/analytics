@@ -26,6 +26,11 @@ pub async fn create(state: web::Data<AppState>, body: web::Json<ProjectInput>) -
     if name.is_empty() {
         return json_error(StatusCode::BAD_REQUEST, "A project name is required.");
     }
+    match name_taken(&state, &name, None) {
+        Ok(false) => {}
+        Ok(true) => return name_conflict(&name),
+        Err(err) => return internal_error(err),
+    }
     let project = Project {
         id: ulid::Ulid::new().to_string(),
         slug: input
@@ -62,6 +67,13 @@ pub async fn update(
     };
     let input = body.into_inner();
     let name = input.name.trim().to_string();
+    if !name.is_empty() {
+        match name_taken(&state, &name, Some(&id)) {
+            Ok(false) => {}
+            Ok(true) => return name_conflict(&name),
+            Err(err) => return internal_error(err),
+        }
+    }
     let updated = Project {
         slug: input
             .slug
@@ -97,6 +109,30 @@ pub async fn delete(state: web::Data<AppState>, path: web::Path<String>) -> Http
             )
         }
     }
+}
+
+/// Whether a project other than `except` already uses `name`. Names are
+/// compared case-insensitively because the filter language resolves
+/// `project == "<name>"` case-insensitively — a duplicate would make that
+/// lookup ambiguous.
+fn name_taken(
+    state: &web::Data<AppState>,
+    name: &str,
+    except: Option<&str>,
+) -> crate::errors::Result<bool> {
+    let needle = name.to_lowercase();
+    Ok(state
+        .store
+        .list_projects()?
+        .iter()
+        .any(|p| p.name.to_lowercase() == needle && Some(p.id.as_str()) != except))
+}
+
+fn name_conflict(name: &str) -> HttpResponse {
+    json_error(
+        StatusCode::CONFLICT,
+        format!("A project named \"{name}\" already exists — project names must be unique."),
+    )
 }
 
 /// Lower-case, hyphenated slug derived from a name.

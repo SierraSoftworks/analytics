@@ -177,9 +177,10 @@ pub fn app_shell(props: &AppShellProps) -> Html {
                         }
                         dispatcher.dispatch(());
                         drawer_open.set(false);
-                        // Land on the dashboard filtered to the new project.
+                        // Land on the dashboard filtered to the new project
+                        // (filters address projects by name).
                         if let Some(nav) = &navigator {
-                            let filters = FilterSet::default().with(Dim::Project, project.id);
+                            let filters = FilterSet::default().with(Dim::Project, project.name);
                             let _ = nav.push_with_query(&Route::Overview, &filters.to_pairs());
                         }
                     }
