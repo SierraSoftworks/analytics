@@ -9,21 +9,92 @@ use yew::prelude::*;
 use crate::api::{self, ApiError};
 use crate::app::AuthHandle;
 use crate::components::{
-    ApiErrorAlert, Dropdown, DropdownItem, PageHeader, ProjectsContext, icons,
+    ApiErrorAlert, Dropdown, DropdownItem, PageHeader, ProjectDrawer, ProjectsContext, icons,
 };
 
 #[function_component(Settings)]
 pub fn settings() -> Html {
     html! {
         <div class="page">
-            <PageHeader title="Settings" subtitle="Your account, this instance, and onboarding." />
+            <PageHeader title="Settings" subtitle="Your account, this instance, projects, and onboarding." />
             <div class="settings">
                 <AccountCard />
                 <InstanceCard />
+                <ProjectsCard />
                 <SourcesCard />
                 <TrackerCard />
                 <DangerZone />
             </div>
+        </div>
+    }
+}
+
+/// Project management: the project list with per-project management (rename,
+/// membership, delete via the shared drawer) and project creation.
+#[function_component(ProjectsCard)]
+fn projects_card() -> Html {
+    let projects_ctx = use_context::<ProjectsContext>();
+    let manage = use_state(|| None::<String>);
+    let projects = projects_ctx
+        .as_ref()
+        .map(|c| c.projects.clone())
+        .unwrap_or_default();
+
+    let on_new = {
+        let open_new = projects_ctx.as_ref().map(|c| c.open_new.clone());
+        Callback::from(move |_: MouseEvent| {
+            if let Some(open_new) = &open_new {
+                open_new.emit(());
+            }
+        })
+    };
+    let close_manage = {
+        let manage = manage.clone();
+        Callback::from(move |_: ()| manage.set(None))
+    };
+    let on_changed = {
+        let reload = projects_ctx.as_ref().map(|c| c.reload.clone());
+        Callback::from(move |_: ()| {
+            if let Some(reload) = &reload {
+                reload.emit(());
+            }
+        })
+    };
+
+    let body = if projects.is_empty() {
+        html! { <p class="muted">{ "No projects yet — create one to group your reporting sources." }</p> }
+    } else {
+        let rows = projects
+            .iter()
+            .map(|p| {
+                let onclick = {
+                    let (manage, id) = (manage.clone(), p.id.clone());
+                    Callback::from(move |_: MouseEvent| manage.set(Some(id.clone())))
+                };
+                html! {
+                    <div class="toggle-row" key={p.id.clone()}>
+                        <span class="toggle-row__label">{ &p.name }</span>
+                        <button class="btn btn--small btn--ghost" onclick={onclick}>
+                            <span class="menu__icon">{ icons::gear() }</span>{ "Manage" }
+                        </button>
+                    </div>
+                }
+            })
+            .collect::<Html>();
+        html! { <div class="settings-card__list">{ rows }</div> }
+    };
+
+    html! {
+        <div class="settings-card">
+            <div class="settings-card__head">
+                <h2 class="settings-card__title">{ "Projects" }</h2>
+                <button class="btn btn--primary btn--small" onclick={on_new}>
+                    <span class="menu__icon">{ icons::plus() }</span>{ "New project" }
+                </button>
+            </div>
+            <p class="settings-card__desc">{ "Group reporting sources into projects to view them in aggregate." }</p>
+            { body }
+            <ProjectDrawer project_id={(*manage).clone()} on_close={close_manage} on_changed={on_changed} />
         </div>
     }
 }

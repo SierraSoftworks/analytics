@@ -36,7 +36,6 @@ pub async fn list_all(
     query: web::Query<ExceptionsQuery>,
 ) -> HttpResponse {
     let query = query.into_inner();
-    let (from, to, _) = resolve_range(query.from, query.to, None);
     let store = state.store.clone();
     let parquet_dir = state.config.storage.parquet_dir.clone();
 
@@ -49,6 +48,13 @@ pub async fn list_all(
     };
 
     let result = web::block(move || -> crate::errors::Result<Vec<GlobalException>> {
+        // `from=0` means "all time": anchor at the earliest stored event so the
+        // per-group trend buckets cover the data, not decades of empty space.
+        let from = match query.from {
+            Some(f) if f <= 0 => analytics::earliest_event_ms(&store, &parquet_dir)?,
+            other => other,
+        };
+        let (from, to, _) = resolve_range(from, query.to, None);
         let per_source =
             analytics::exception_groups_by_source(&store, &parquet_dir, from, to, filter.as_ref())?;
 

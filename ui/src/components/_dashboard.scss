@@ -20,11 +20,11 @@
   color: var(--text-3);
 }
 
-// The operator inbox for sources that belong to no project yet.
+// The operator inbox for sources that belong to no project yet. The single
+// bold warn edge is the "needs attention" cue on an otherwise neutral canvas.
 .unassigned {
   @include card;
-  border-color: var(--warn);
-  border-left-width: 3px;
+  border-left: 3px solid var(--warn);
   padding: 0.8rem 1rem;
   margin-bottom: 1.1rem;
   display: flex;

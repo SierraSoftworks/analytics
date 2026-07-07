@@ -21,16 +21,23 @@
   min-width: 0;
 }
 
+// Fluid width: the dashboard grid fills the viewport instead of pooling
+// whitespace to the right of a capped column.
 .app-content {
-  max-width: var(--content-max);
-  padding: 1.75rem 2.25rem 4rem;
+  padding: 1.5rem 2rem 4rem;
 }
 
 .app-footer {
-  padding: 1.5rem 2.25rem;
-  font-size: 0.78rem;
-  color: var(--text-3);
+  padding: 1.25rem 2rem;
+  font-size: 0.75rem;
+  color: var(--text-4);
   border-top: 1px solid var(--border);
+}
+
+// The backdrop behind the mobile navigation overlay (rendered only while the
+// overlay is open; inert on desktop, where the sidebar is a fixed column).
+.app-scrim {
+  display: none;
 }
 
 @media (max-width: $bp-sm) {
@@ -38,6 +45,16 @@
     grid-template-columns: 1fr;
   }
   .app-content {
-    padding: 1.25rem 1.25rem 3rem;
+    padding: 1rem 1rem 3rem;
+  }
+  .app-footer {
+    padding: 1rem;
+  }
+  .app-scrim {
+    display: block;
+    position: fixed;
+    inset: var(--bar-h) 0 0 0;
+    z-index: 25;
+    background: rgba(0, 0, 0, 0.55);
   }
 }

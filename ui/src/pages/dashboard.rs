@@ -388,20 +388,9 @@ pub fn dashboard() -> Html {
     } else {
         "Traffic across every project — click any value to filter."
     };
-    let on_new = {
-        let open_new = projects_ctx.as_ref().map(|c| c.open_new.clone());
-        Callback::from(move |_: MouseEvent| {
-            if let Some(open_new) = &open_new {
-                open_new.emit(());
-            }
-        })
-    };
-
     html! {
         <div class="page">
-            <PageHeader title={heading} subtitle={subtitle}>
-                <button class="btn btn--primary" onclick={on_new}>{ "New project" }</button>
-            </PageHeader>
+            <PageHeader title={heading} subtitle={subtitle} />
             <FilterBar suggestions={Rc::new(suggestions)} />
             { body }
             <ProjectDrawer

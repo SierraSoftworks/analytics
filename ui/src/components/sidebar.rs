@@ -4,6 +4,9 @@
 //! Dashboard/Exceptions links carry the current filter state along so switching
 //! views never silently drops active filters. Project entries apply a project
 //! filter on the dashboard rather than navigating to a separate page.
+//!
+//! On small screens the sidebar renders as an overlay drawer toggled from the
+//! app bar's hamburger button; navigating closes it.
 
 use yew::prelude::*;
 use yew_router::prelude::*;
@@ -13,12 +16,24 @@ use crate::components::ProjectsContext;
 use crate::components::icons;
 use crate::filters::{Dim, use_filters, use_navigate_with_filters};
 
+#[derive(Properties, PartialEq)]
+pub struct SidebarProps {
+    /// Whether the mobile overlay is open (ignored by the desktop layout,
+    /// where the sidebar is a fixed column).
+    #[prop_or(false)]
+    pub open: bool,
+    /// Fired on any navigation so the shell can close the mobile overlay.
+    #[prop_or_default]
+    pub on_navigate: Callback<()>,
+}
+
 #[function_component(Sidebar)]
-pub fn sidebar() -> Html {
+pub fn sidebar(props: &SidebarProps) -> Html {
     let projects_ctx = use_context::<ProjectsContext>();
     let route = use_route::<Route>();
     let filters = use_filters();
     let navigate = use_navigate_with_filters();
+    let on_navigate = props.on_navigate.clone();
 
     let projects = projects_ctx
         .as_ref()
@@ -36,7 +51,11 @@ pub fn sidebar() -> Html {
     let menu_item = |active: bool, route: Route, icon: Html, label: &str| {
         let onclick = {
             let (navigate, filters) = (navigate.clone(), filters.clone());
-            Callback::from(move |_: MouseEvent| navigate.emit((route.clone(), filters.clone())))
+            let on_navigate = on_navigate.clone();
+            Callback::from(move |_: MouseEvent| {
+                navigate.emit((route.clone(), filters.clone()));
+                on_navigate.emit(());
+            })
         };
         let class = classes!("menu__item", active.then_some("menu__item--active"));
         html! {
@@ -60,8 +79,10 @@ pub fn sidebar() -> Html {
                     .is_some_and(|v| v.to_lowercase() == p.name.to_lowercase() || v == p.id);
             let onclick = {
                 let (navigate, filters, name) = (navigate.clone(), filters.clone(), p.name.clone());
+                let on_navigate = on_navigate.clone();
                 Callback::from(move |_: MouseEvent| {
                     navigate.emit((Route::Overview, filters.with(Dim::Project, name.clone())));
+                    on_navigate.emit(());
                 })
             };
             let class = classes!("menu__subitem", active.then_some("menu__subitem--active"));
@@ -77,7 +98,7 @@ pub fn sidebar() -> Html {
         .collect::<Html>();
 
     html! {
-        <nav class="app-sidebar">
+        <nav class={classes!("app-sidebar", props.open.then_some("app-sidebar--open"))}>
             <ul class="menu">
                 { menu_item(is_dashboard && active_project.is_none(), Route::Overview, icons::overview(), "Dashboard") }
                 { menu_item(is_exceptions, Route::Exceptions, icons::exceptions(), "Exceptions") }

@@ -84,8 +84,18 @@ pub fn trace_list(props: &TraceListProps) -> Html {
                             { ago(trace.started_ms) }
                         </span>
                         <span class="trace-row__counts muted">
-                            { trace_counts(trace.pageviews, trace.events, trace.exceptions) }
+                            { trace_counts(trace.pageviews, trace.events, 0) }
+                            // Exceptions are the attention signal: set apart in
+                            // the status colour rather than folded into the
+                            // neutral counts.
+                            if trace.exceptions > 0 {
+                                <span class="trace-row__exceptions">
+                                    { format!(" · {} exception{}", trace.exceptions,
+                                        if trace.exceptions == 1 { "" } else { "s" }) }
+                                </span>
+                            }
                         </span>
+                        <span class="trace-row__open" aria-hidden="true">{ icons::chevron_right() }</span>
                     </div>
                     <div class="trace-row__meta">
                         <code class="trace-row__location" title={location.clone()}>{ location }</code>

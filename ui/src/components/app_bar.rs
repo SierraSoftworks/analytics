@@ -1,12 +1,13 @@
-//! The persistent top app bar: brand mark, the filter **query bar** (a filt-rs
-//! expression editing the same state the chips render), and the signed-in
-//! user chip.
+//! The persistent top app bar: the mobile navigation toggle, brand mark, the
+//! filter **query bar** (a filt-rs expression editing the same state the chips
+//! render), and the signed-in user chip.
 
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 use yew_router::prelude::*;
 
 use crate::app::{AuthHandle, AuthStatus, Route};
+use crate::components::icons;
 use crate::filters::{Query, use_apply_filters, use_filters, validate_expression};
 
 /// Up-to-two uppercase initials from a display name or email.
@@ -124,10 +125,26 @@ fn query_bar() -> Html {
     }
 }
 
+#[derive(Properties, PartialEq)]
+pub struct AppBarProps {
+    /// Toggles the navigation sidebar (rendered as an overlay on small
+    /// screens; the toggle button only shows there).
+    #[prop_or_default]
+    pub on_menu: Callback<()>,
+    /// Whether the mobile navigation overlay is open (for `aria-expanded`).
+    #[prop_or(false)]
+    pub nav_open: bool,
+}
+
 #[function_component(AppBar)]
-pub fn app_bar() -> Html {
+pub fn app_bar(props: &AppBarProps) -> Html {
     let auth = use_context::<AuthHandle>().expect("AuthHandle context");
     let signed_in = matches!(auth.status, AuthStatus::SignedIn(_) | AuthStatus::Disabled);
+
+    let on_menu = {
+        let on_menu = props.on_menu.clone();
+        Callback::from(move |_: MouseEvent| on_menu.emit(()))
+    };
 
     let user = match &auth.user {
         Some(user) => {
@@ -135,17 +152,15 @@ pub fn app_bar() -> Html {
                 let signout = auth.signout.clone();
                 Callback::from(move |_: MouseEvent| signout.emit(()))
             };
-            let email = match &user.email {
-                Some(email) => html! { <span class="user-chip__email">{ email.clone() }</span> },
-                None => html! {},
+            // Name and email travel in the tooltip; the bar itself stays lean.
+            let title = match &user.email {
+                Some(email) => format!("{} · {email}", user.name),
+                None => user.name.clone(),
             };
             html! {
-                <div class="user-chip">
+                <div class="user-chip" title={title}>
                     <span class="user-chip__avatar">{ initials(&user.name) }</span>
-                    <span class="user-chip__meta">
-                        <span class="user-chip__name">{ user.name.clone() }</span>
-                        { email }
-                    </span>
+                    <span class="user-chip__name">{ user.name.clone() }</span>
                     <button class="user-chip__signout" onclick={on_signout}>{ "Sign out" }</button>
                 </div>
             }
@@ -155,10 +170,15 @@ pub fn app_bar() -> Html {
 
     html! {
         <header class="app-bar">
+            if signed_in {
+                <button class="app-bar__menu" onclick={on_menu}
+                    aria-label="Toggle navigation" aria-expanded={props.nav_open.to_string()}>
+                    { icons::menu() }
+                </button>
+            }
             <Link<Route> to={Route::Overview} classes="app-bar__brand">
                 <img src="https://cdn.sierrasoftworks.com/logos/icon.svg" alt="Sierra Softworks" />
                 <span class="app-bar__brand-name">{ "Analytics" }</span>
-                <span class="app-bar__brand-by">{ "by Sierra Softworks" }</span>
             </Link<Route>>
             if signed_in {
                 <QueryBar />
