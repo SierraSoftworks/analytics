@@ -345,7 +345,6 @@ pub fn exception_detail(
         browsers: count_by(&df, "ua_browser")?,
         operating_systems: count_by(&df, "ua_os")?,
         devices: count_by(&df, "ua_device")?,
-        sources: count_by(&df, "source")?,
     };
     let variants = variants_of(&df, limit)?;
 
@@ -2350,14 +2349,6 @@ mod tests {
             Some(("1.1.0", 2))
         );
         assert!(versions.iter().any(|r| r.key == "1.0.0" && r.count == 1));
-        assert_eq!(
-            detail
-                .breakdowns
-                .sources
-                .first()
-                .map(|r| (r.key.as_str(), r.count)),
-            Some(("https://a.com", 3))
-        );
 
         drop(store);
         let _ = std::fs::remove_file(&redb);

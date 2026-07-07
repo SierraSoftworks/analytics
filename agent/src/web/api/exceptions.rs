@@ -14,7 +14,7 @@ use super::query::resolve_range;
 use super::{Authenticated, internal_error, json_error};
 use crate::analytics::{self, filter::FieldSet};
 use crate::state::AppState;
-use crate::store::{ExceptionTriage, Store};
+use crate::store::ExceptionTriage;
 
 const VARIANT_LIMIT: usize = 50;
 
@@ -24,20 +24,6 @@ const VARIANT_LIMIT: usize = 50;
 /// so the `@` join is unambiguous.
 fn scoped_group(group_id: &str, source: &str) -> String {
     format!("{group_id}@{source}")
-}
-
-/// Look up triage for a source-scoped group, falling back to the pre-source
-/// project-wide key so records written before source scoping keep applying.
-fn get_triage_scoped(
-    store: &Store,
-    project_id: &str,
-    group_id: &str,
-    source: &str,
-) -> crate::errors::Result<Option<ExceptionTriage>> {
-    if let Some(triage) = store.get_triage(project_id, &scoped_group(group_id, source))? {
-        return Ok(Some(triage));
-    }
-    store.get_triage(project_id, group_id)
 }
 
 /// Query parameters for the global exceptions inbox: a time range plus a
@@ -105,7 +91,9 @@ pub async fn list_all(
             let project_id = uri_project.get(&source).cloned();
             let mut project_name = None;
             if let Some(pid) = &project_id {
-                if let Some(triage) = get_triage_scoped(&store, pid, &group.group_id, &source)? {
+                if let Some(triage) =
+                    store.get_triage(pid, &scoped_group(&group.group_id, &source))?
+                {
                     group.status = triage.status;
                     group.note = triage.note;
                 }
@@ -139,10 +127,9 @@ pub async fn list_all(
 #[derive(Deserialize)]
 pub struct DetailQuery {
     project: String,
-    /// The source URI the group was seen on. Scopes the detail (and its triage
-    /// state) to that one application; absent on pre-source links, which fall
-    /// back to the project-wide aggregate.
-    source: Option<String>,
+    /// The source URI the group was seen on — part of the group's identity,
+    /// scoping the detail and its triage state to that one application.
+    source: String,
     from: Option<i64>,
     to: Option<i64>,
 }
@@ -160,11 +147,10 @@ pub async fn detail(
 ) -> HttpResponse {
     let group_id = path.into_inner();
     let project_id = query.project.clone();
-    let source = query
-        .source
-        .clone()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let source = query.source.trim().to_string();
+    if source.is_empty() {
+        return json_error(StatusCode::BAD_REQUEST, "A source is required.");
+    }
     let now = Utc::now().timestamp_millis();
     let to = query
         .to
@@ -176,10 +162,7 @@ pub async fn detail(
 
     let result = web::block(
         move || -> crate::errors::Result<Option<ExceptionGroupDetail>> {
-            let sources = match &source {
-                Some(source) => vec![source.clone()],
-                None => analytics::project_source_uris(&store, &project_id)?,
-            };
+            let sources = [source.clone()];
             let Some(mut detail) = analytics::exception_detail(
                 &store,
                 &parquet_dir,
@@ -192,11 +175,9 @@ pub async fn detail(
             else {
                 return Ok(None);
             };
-            let triage = match &source {
-                Some(source) => get_triage_scoped(&store, &project_id, &group_id, source)?,
-                None => store.get_triage(&project_id, &group_id)?,
-            };
-            if let Some(triage) = triage {
+            if let Some(triage) =
+                store.get_triage(&project_id, &scoped_group(&group_id, &source))?
+            {
                 detail.group.status = triage.status;
                 detail.group.note = triage.note;
             }
@@ -240,21 +221,14 @@ pub async fn triage(
         updated_by,
     };
 
-    // Source-scoped when the client says which source the group was seen on;
-    // bare (project-wide) only for pre-source clients.
-    let group_key = match input
-        .source
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(source) => scoped_group(&group_id, source),
-        None => group_id,
-    };
+    let source = input.source.trim();
+    if source.is_empty() {
+        return json_error(StatusCode::BAD_REQUEST, "A source is required.");
+    }
 
     match state
         .store
-        .put_triage(&input.project_id, &group_key, &triage)
+        .put_triage(&input.project_id, &scoped_group(&group_id, source), &triage)
     {
         Ok(()) => HttpResponse::NoContent().finish(),
         Err(err) => internal_error(err),

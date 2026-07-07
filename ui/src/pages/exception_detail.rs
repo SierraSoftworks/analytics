@@ -6,8 +6,7 @@
 //!
 //! A group's identity is source-scoped — fingerprint + the application it was
 //! seen on — carried as a `?source=` query parameter alongside the filter
-//! state. Pre-source deep links (no `source`) fall back to the project-wide
-//! aggregate.
+//! state.
 
 use analytics_api::{
     ExceptionGroupDetail, ExceptionStatus, ExceptionVariant, TriageInput, source_label,
@@ -35,11 +34,14 @@ pub struct ExceptionDetailProps {
 #[function_component(ExceptionDetail)]
 pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
     let (project, group) = (props.project.clone(), props.group.clone());
+    // The source is part of the group's identity (the same fingerprint on two
+    // applications is two independent failures); a link without one is broken.
     let location = use_location();
     let source = location
         .as_ref()
         .and_then(|l| query_param(l.query_str(), "source"))
-        .filter(|s| !s.trim().is_empty());
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let detail = use_state(|| None::<Result<ExceptionGroupDetail, ApiError>>);
     let reload = use_state(|| 0u32);
     // The row that linked here carried the inbox's filter state, so the detail
@@ -56,13 +58,15 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
         use_effect_with(
             (project.clone(), group.clone(), filters.canonical(), *reload),
             move |_| {
+                let Some(source) = source else {
+                    return;
+                };
                 let range = filters.range_query(js_sys::Date::now() as i64);
                 spawn_local(async move {
                     detail.set(Some(
-                        api::exception_detail(&group, &project, source.as_deref(), &range).await,
+                        api::exception_detail(&group, &project, &source, &range).await,
                     ));
                 });
-                || ()
             },
         );
     }
@@ -79,7 +83,7 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
                 project_id: project.clone(),
                 status,
                 note: None,
-                source: source.clone(),
+                source: source.clone().unwrap_or_default(),
             };
             let (group, reload) = (group.clone(), reload.clone());
             Callback::from(move |_: MouseEvent| {
@@ -102,90 +106,125 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
         Crumb::current(title.clone()),
     ];
 
+    let body = match (&source, &*detail) {
+        (None, _) => html! {
+            <ApiErrorAlert error={ApiError::Server(
+                "This exception link is missing its source — open the group from the Exceptions inbox.".into()
+            )} />
+        },
+        (Some(_), None) => html! { <div class="page-loading">{ "Loading…" }</div> },
+        (Some(_), Some(Err(err))) => html! { <ApiErrorAlert error={err.clone()} /> },
+        (Some(source), Some(Ok(detail))) => {
+            let status = detail.group.status;
+            // Colour + glyph carry the verb. Only the transitions that apply
+            // to the current state are offered: an open group can be resolved
+            // or muted; a triaged one reopened (or re-routed to the other
+            // triaged state).
+            let action =
+                |target: ExceptionStatus, class: &'static str, label: &'static str, icon: Html| {
+                    html! {
+                        <button
+                            class={classes!("exc-action", class)}
+                            title={label}
+                            aria-label={label}
+                            onclick={set_status(target)}
+                        >
+                            { icon }
+                        </button>
+                    }
+                };
+            let resolve = || {
+                action(
+                    ExceptionStatus::Resolved,
+                    "exc-action--resolve",
+                    "Mark resolved",
+                    icons::check(),
+                )
+            };
+            let mute = || {
+                action(
+                    ExceptionStatus::Ignored,
+                    "exc-action--ignore",
+                    "Mute",
+                    icons::mute(),
+                )
+            };
+            let reopen = || {
+                action(
+                    ExceptionStatus::Unresolved,
+                    "exc-action--reopen",
+                    "Reopen",
+                    icons::check_struck(),
+                )
+            };
+            let unmute = || {
+                action(
+                    ExceptionStatus::Unresolved,
+                    "exc-action--ignore",
+                    "Unmute",
+                    icons::bell(),
+                )
+            };
+            let actions = match status {
+                ExceptionStatus::Unresolved => html! { <>{ resolve() }{ mute() }</> },
+                ExceptionStatus::Resolved => html! { <>{ reopen() }{ mute() }</> },
+                ExceptionStatus::Ignored => html! { <>{ resolve() }{ unmute() }</> },
+            };
+            let meta = format!(
+                "{} · {} occurrences · first seen {} · last seen {}",
+                source_label(source),
+                group_thousands(detail.group.count),
+                ago(detail.group.first_seen_ms),
+                ago(detail.group.last_seen_ms),
+            );
+            html! {
+                <>
+                    <div class="exc-head panel">
+                        <div class="exc-head__top">
+                            <span class={status_class(status)}>{ status_label(status) }</span>
+                            <span class="exc-head__title">
+                                <b class="exc-head__type">{ &detail.group.exc_type }</b>
+                                <code class="exc-head__message">{ &detail.group.sample_message }</code>
+                            </span>
+                            <div class="exc-head__actions" role="group" aria-label="Triage">
+                                { actions }
+                            </div>
+                        </div>
+                        <div class="exc-head__meta muted">{ meta }</div>
+                        if !detail.group.trend.is_empty() {
+                            <div class="exc-head__trend">
+                                <span class="stat__label">{ range_label.clone() }</span>
+                                <Sparkline points={detail.group.trend.clone()} class={classes!("exc-head__spark")} />
+                            </div>
+                        }
+                    </div>
+
+                    <h2 class="section__title">{ "Distribution" }</h2>
+                    <div class="dist-grid">
+                        { distribution("App versions", &detail.breakdowns.app_versions, detail.group.count) }
+                        { distribution("Applications", &detail.breakdowns.browsers, detail.group.count) }
+                        { distribution("Operating systems", &detail.breakdowns.operating_systems, detail.group.count) }
+                        { distribution("Devices", &detail.breakdowns.devices, detail.group.count) }
+                    </div>
+
+                    <VariantScrubber
+                        variants={detail.variants.clone()}
+                        key={detail.group.group_id.clone()}
+                    />
+                    // Pick which of the group's sessions to inspect.
+                    <TraceList
+                        traces={detail.traces.clone()}
+                        hint="Sessions this exception occurred in"
+                    />
+                </>
+            }
+        }
+    };
+
     html! {
         <div class="page">
             <PageHeader crumbs={crumbs} title={title} />
-            {
-                match &*detail {
-                    None => html! { <div class="page-loading">{ "Loading…" }</div> },
-                    Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
-                    Some(Ok(detail)) => {
-                        let status = detail.group.status;
-                        // Colour + glyph carry the verb; the current state's
-                        // action is a no-op and renders disabled.
-                        let action = |target: ExceptionStatus, class: &'static str, label: &'static str, icon: Html| html! {
-                            <button
-                                class={classes!("exc-action", class)}
-                                title={label}
-                                aria-label={label}
-                                disabled={status == target}
-                                onclick={set_status(target)}
-                            >
-                                { icon }
-                            </button>
-                        };
-                        let meta = format!(
-                            "{} occurrences · first seen {} · last seen {}",
-                            group_thousands(detail.group.count),
-                            ago(detail.group.first_seen_ms),
-                            ago(detail.group.last_seen_ms),
-                        );
-                        let meta = match &source {
-                            Some(source) => format!("{} · {meta}", source_label(source)),
-                            None => meta,
-                        };
-                        html! {
-                        <>
-                            <div class="exc-head panel">
-                                <div class="exc-head__top">
-                                    <span class={status_class(status)}>{ status_label(status) }</span>
-                                    <span class="exc-head__title">
-                                        <b class="exc-head__type">{ &detail.group.exc_type }</b>
-                                        <code class="exc-head__message">{ &detail.group.sample_message }</code>
-                                    </span>
-                                    <div class="exc-head__actions">
-                                        { action(ExceptionStatus::Resolved, "exc-action--resolve", "Mark resolved", icons::check()) }
-                                        { action(ExceptionStatus::Ignored, "exc-action--ignore", "Ignore", icons::mute()) }
-                                        { action(ExceptionStatus::Unresolved, "exc-action--reopen", "Reopen", icons::check_struck()) }
-                                    </div>
-                                </div>
-                                <div class="exc-head__meta muted">{ meta }</div>
-                                if !detail.group.trend.is_empty() {
-                                    <div class="exc-head__trend">
-                                        <span class="stat__label">{ range_label.clone() }</span>
-                                        <Sparkline points={detail.group.trend.clone()} class={classes!("exc-head__spark")} />
-                                    </div>
-                                }
-                            </div>
-
-                            <h2 class="section__title">{ "Distribution" }</h2>
-                            <div class="dist-grid">
-                                { distribution("App versions", &detail.breakdowns.app_versions, detail.group.count) }
-                                // Scoped to one source, the sources card is a
-                                // single 100% row — the header names it instead.
-                                if source.is_none() {
-                                    { distribution("Apps / sources", &detail.breakdowns.sources, detail.group.count) }
-                                }
-                                { distribution("Applications", &detail.breakdowns.browsers, detail.group.count) }
-                                { distribution("Operating systems", &detail.breakdowns.operating_systems, detail.group.count) }
-                                { distribution("Devices", &detail.breakdowns.devices, detail.group.count) }
-                            </div>
-
-                            <VariantScrubber
-                                variants={detail.variants.clone()}
-                                scoped={source.is_some()}
-                                key={detail.group.group_id.clone()}
-                            />
-                            // Pick which of the group's sessions to inspect.
-                            <TraceList
-                                traces={detail.traces.clone()}
-                                hint="Sessions this exception occurred in"
-                            />
-                        </>
-                        }
-                    },
-                }
-            }
+            { body }
         </div>
     }
 }
@@ -193,10 +232,6 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
 #[derive(Properties, PartialEq)]
 struct VariantScrubberProps {
     variants: Vec<ExceptionVariant>,
-    /// Whether the view is scoped to one source — the application is then
-    /// given, so releases read as bare version numbers.
-    #[prop_or_default]
-    scoped: bool,
 }
 
 /// Scrub through a group's distinct examples with ‹ › navigation; each shows
@@ -227,22 +262,11 @@ fn variant_scrubber(props: &VariantScrubberProps) -> Html {
         (None, Some(os)) => os.clone(),
         _ => "unknown client".to_string(),
     };
-    // The source is the application; pair it with the reported release. In a
-    // source-scoped view the application is given, so the release stands alone.
-    let app = if props.scoped {
-        variant
-            .app_version
-            .as_ref()
-            .map(|version| format!("v{version}"))
-    } else {
-        variant.source.as_ref().map(|source| {
-            let label = source_label(source).to_string();
-            match &variant.app_version {
-                Some(version) => format!("{label} @ {version}"),
-                None => label,
-            }
-        })
-    };
+    // The view is scoped to one source, so the reported release stands alone.
+    let app = variant
+        .app_version
+        .as_ref()
+        .map(|version| format!("v{version}"));
     let metadata = Metadata::parse(variant.metadata.as_deref());
 
     // Jump to the session this exemplar occurred in, when it reported one.

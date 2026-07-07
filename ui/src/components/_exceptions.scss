@@ -176,12 +176,15 @@
     font-size: 0.8rem;
   }
 
+  // The triage controls: a segmented button group, joined edge to edge.
   &__actions {
     margin-left: auto;
     align-self: flex-start;
-    display: flex;
-    gap: 0.45rem;
+    display: inline-flex;
     flex-shrink: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
   }
 
   &__trend {
@@ -206,31 +209,32 @@
   }
 }
 
-// The triage actions: square icon chips whose colour + glyph carry the verb
-// (green check = resolve, violet muted bell = ignore, struck check = reopen).
-// The current state's action renders disabled.
+// One segment of the triage group: colour + glyph carry the verb (green
+// check = resolve, violet muted bell = mute, struck check = reopen, violet
+// bell = unmute). Only the transitions that apply to the group's current
+// state are rendered.
 .exc-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 2rem;
+  width: 2.1rem;
   height: 2rem;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-strong);
+  border: none;
   background: var(--surface-2);
   cursor: pointer;
-  transition:
-    background var(--transition),
-    border-color var(--transition);
+  transition: filter var(--transition);
+
+  & + & {
+    border-left: 1px solid var(--border-strong);
+  }
 
   svg {
     width: 17px;
     height: 17px;
   }
 
-  &:disabled {
-    opacity: 0.4;
-    cursor: default;
+  &:hover {
+    filter: brightness(1.35);
   }
 
   &:focus-visible {
@@ -240,19 +244,11 @@
   &--resolve {
     color: var(--ok);
     background: var(--ok-soft);
-
-    &:hover:not(:disabled) {
-      border-color: var(--ok);
-    }
   }
 
   &--ignore {
     color: var(--mute);
     background: var(--mute-soft);
-
-    &:hover:not(:disabled) {
-      border-color: var(--mute);
-    }
   }
 
   // A white checkmark struck through in red: "this is no longer resolved".
@@ -262,10 +258,6 @@
 
     .icon-strike {
       stroke: var(--danger);
-    }
-
-    &:hover:not(:disabled) {
-      border-color: var(--danger);
     }
   }
 }

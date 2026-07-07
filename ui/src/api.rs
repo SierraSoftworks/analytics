@@ -267,17 +267,19 @@ pub async fn event_detail(name: &str, query: &str) -> Result<EventDetail, ApiErr
 /// `range` is a pre-encoded `from=…&to=…` pair (empty for the server's
 /// all-time default) so the detail numbers cover the same window as the inbox
 /// row the operator clicked. `source` scopes the group to the application it
-/// was seen on (`None` only on pre-source deep links).
+/// was seen on — it is part of the group's identity.
 pub async fn exception_detail(
     group: &str,
     project: &str,
-    source: Option<&str>,
+    source: &str,
     range: &str,
 ) -> Result<ExceptionGroupDetail, ApiError> {
-    let mut url = format!("/exceptions/{}?project={}", enc(group), enc(project));
-    if let Some(source) = source {
-        url.push_str(&format!("&source={}", enc(source)));
-    }
+    let mut url = format!(
+        "/exceptions/{}?project={}&source={}",
+        enc(group),
+        enc(project),
+        enc(source)
+    );
     if !range.is_empty() {
         url.push('&');
         url.push_str(range);

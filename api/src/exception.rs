@@ -105,18 +105,18 @@ pub struct ExceptionVariant {
 }
 
 /// How a group's occurrences distribute across key dimensions (empty keys mean
-/// the dimension was absent on those occurrences). Applications are identified
-/// by source, so the sources distribution *is* the per-app distribution.
+/// the dimension was absent on those occurrences). The detail view is scoped
+/// to one source, so there is no per-source distribution — the source is part
+/// of the group's identity.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ExceptionBreakdowns {
-    /// Reported releases, keyed as `app @ version` (the app being the source's
-    /// label) since a release number is only meaningful within its application.
-    /// Versionless occurrences aggregate under the empty sentinel.
+    /// Reported releases, keyed by bare version number (the application is
+    /// given by the view's source). Versionless occurrences aggregate under
+    /// the empty sentinel.
     pub app_versions: Vec<crate::CountRow>,
     pub browsers: Vec<crate::CountRow>,
     pub operating_systems: Vec<crate::CountRow>,
     pub devices: Vec<crate::CountRow>,
-    pub sources: Vec<crate::CountRow>,
 }
 
 /// An exception group with its dimension distributions and distinct examples.
@@ -148,9 +148,8 @@ pub struct GlobalException {
 }
 
 /// Payload for updating an exception group's triage state. Triage is scoped to
-/// the group's source (the same fingerprint on two applications is two
-/// independent failures); `source` is optional only for compatibility with
-/// pre-source clients, whose triage applies project-wide.
+/// the group's source — the same fingerprint on two applications is two
+/// independent failures.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TriageInput {
     pub project_id: String,
@@ -158,6 +157,5 @@ pub struct TriageInput {
     #[serde(default)]
     pub note: Option<String>,
     /// The source URI the triaged group was seen on.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
+    pub source: String,
 }

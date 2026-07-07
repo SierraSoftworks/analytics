@@ -139,6 +139,16 @@ pub fn check() -> Html {
     })
 }
 
+/// A bell (the unmute action: surface this group again).
+pub fn bell() -> Html {
+    icon(html! {
+        <>
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+            <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+        </>
+    })
+}
+
 /// A muted bell (the ignore action).
 pub fn mute() -> Html {
     icon(html! {
