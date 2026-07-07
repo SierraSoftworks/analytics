@@ -11,7 +11,7 @@ use std::path::Path;
 use analytics_api::{
     BreakdownRow, Breakdowns, CountRow, Dashboard, ExceptionBreakdowns, ExceptionGroup,
     ExceptionGroupDetail, ExceptionStatus, ExceptionVariant, MetricSummary, TREND_BUCKETS,
-    TimeSeriesPoint, pixel_source,
+    TimeSeriesPoint, VersionRow, pixel_source, source_label,
 };
 use chrono::{Datelike, TimeZone, Utc};
 use polars::prelude::*;
@@ -99,7 +99,7 @@ pub fn dashboard(
             countries: breakdown(pageloads.clone(), "country", unique_flag)?,
             languages: breakdown(pageloads.clone(), "language", unique_flag)?,
             browsers: breakdown(pageloads.clone(), "ua_browser", unique_flag)?,
-            versions: breakdown(pageloads.clone(), "ua_version", unique_flag)?,
+            versions: version_breakdown(pageloads.clone(), unique_flag)?,
             operating_systems: breakdown(pageloads.clone(), "ua_os", unique_flag)?,
             devices: breakdown(pageloads.clone(), "ua_device", unique_flag)?,
             utm_sources: breakdown(pageloads.clone(), "utm_source", unique_flag)?,
@@ -333,7 +333,7 @@ pub fn exception_detail(
     };
 
     let breakdowns = ExceptionBreakdowns {
-        app_versions: count_by(&df, "app_version")?,
+        app_versions: app_version_rows(&df)?,
         browsers: count_by(&df, "ua_browser")?,
         operating_systems: count_by(&df, "ua_os")?,
         devices: count_by(&df, "ua_device")?,
@@ -383,6 +383,62 @@ fn count_by(occurrences: &DataFrame, column: &str) -> Result<Vec<CountRow>> {
             })
         })
         .collect())
+}
+
+/// Occurrence counts per reported release, keyed as `app @ version` (the app
+/// being the source's label) — a release number is only meaningful within its
+/// application. Occurrences with no reported version aggregate under the
+/// empty sentinel, whichever source they came from.
+fn app_version_rows(occurrences: &DataFrame) -> Result<Vec<CountRow>> {
+    let df = occurrences
+        .clone()
+        .lazy()
+        .with_columns([
+            col("source").fill_null(lit("")).alias("app"),
+            col("app_version").fill_null(lit("")).alias("version"),
+        ])
+        .group_by([col("app"), col("version")])
+        .agg([len().cast(DataType::Int64).alias("count")])
+        .collect()
+        .or_system_err(ADVICE)?;
+
+    let apps = df
+        .column("app")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let versions = df
+        .column("version")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let counts = df
+        .column("count")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+
+    // Distinct sources can share a label (http vs https), so fold by the
+    // display key rather than trusting the group-by to have finished the job.
+    let mut totals: HashMap<String, i64> = HashMap::new();
+    for i in 0..df.height() {
+        let (Some(app), Some(version)) = (apps.get(i), versions.get(i)) else {
+            continue;
+        };
+        let key = match (app.is_empty(), version.is_empty()) {
+            (_, true) => String::new(),
+            (true, false) => version.to_string(),
+            (false, false) => format!("{} @ {version}", source_label(app)),
+        };
+        *totals.entry(key).or_insert(0) += counts.get(i).unwrap_or(0);
+    }
+    let mut rows: Vec<CountRow> = totals
+        .into_iter()
+        .map(|(key, count)| CountRow { key, count })
+        .collect();
+    rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.key.cmp(&b.key)));
+    rows.truncate(BREAKDOWN_LIMIT as usize);
+    Ok(rows)
 }
 
 /// Collapse a group's occurrences (already sorted newest-first) into distinct
@@ -804,6 +860,67 @@ fn breakdown(pageloads: LazyFrame, column: &str, unique_flag: &str) -> Result<Ve
         .collect())
 }
 
+/// The client-versions breakdown over the page-load frame, keyed by the
+/// (application, version) pair — a version number is only meaningful within
+/// its application, so "120.0" from Chrome and "120.0" from Edge stay separate
+/// rows. Nulls aggregate under the empty-string sentinel like every other
+/// breakdown.
+fn version_breakdown(pageloads: LazyFrame, unique_flag: &str) -> Result<Vec<VersionRow>> {
+    let df = pageloads
+        .with_columns([
+            col("ua_browser").fill_null(lit("")).alias("app"),
+            col("ua_version").fill_null(lit("")).alias("version"),
+        ])
+        .group_by([col("app"), col("version")])
+        .agg([
+            len().cast(DataType::Int64).alias("pageviews"),
+            col(unique_flag)
+                .sum()
+                .cast(DataType::Int64)
+                .alias("visitors"),
+        ])
+        .sort(
+            ["pageviews"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
+        .limit(BREAKDOWN_LIMIT)
+        .collect()
+        .or_system_err(ADVICE)?;
+
+    let apps = df
+        .column("app")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let versions = df
+        .column("version")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let pageviews = df
+        .column("pageviews")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let visitors = df
+        .column("visitors")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+
+    Ok((0..df.height())
+        .filter_map(|i| {
+            Some(VersionRow {
+                app: apps.get(i)?.to_string(),
+                version: versions.get(i)?.to_string(),
+                pageviews: pageviews.get(i).unwrap_or(0),
+                visitors: visitors.get(i).unwrap_or(0),
+                events: 0,
+            })
+        })
+        .collect())
+}
+
 /// Per-source totals. Page loads count as `pageviews`; pixel hits and custom
 /// events count as `events` so pixel-only and application sources still surface;
 /// `visitors` uses the same daily-unique flag as every other aggregation in the
@@ -1061,8 +1178,11 @@ mod tests {
         );
         assert_eq!(dash.breakdowns.pages.first().map(|p| p.pageviews), Some(3));
         assert_eq!(
-            dash.breakdowns.versions.first().map(|v| v.key.as_str()),
-            Some("120.0")
+            dash.breakdowns
+                .versions
+                .first()
+                .map(|v| (v.app.as_str(), v.version.as_str())),
+            Some(("Chrome", "120.0"))
         );
 
         drop(store);
@@ -1563,14 +1683,19 @@ mod tests {
             Some(r#"{"feature_flag":"checkout-v2"}"#)
         );
 
-        // Distributions cover app versions (1.1.0 twice, 1.0.0 once), and the
-        // sources card doubles as the per-application distribution.
+        // Distributions cover app releases (1.1.0 twice, 1.0.0 once), keyed as
+        // `app @ version` since a release is only meaningful within its app;
+        // the sources card doubles as the per-application distribution.
         let versions = &detail.breakdowns.app_versions;
         assert_eq!(
             versions.first().map(|r| (r.key.as_str(), r.count)),
-            Some(("1.1.0", 2))
+            Some(("a.com @ 1.1.0", 2))
         );
-        assert!(versions.iter().any(|r| r.key == "1.0.0" && r.count == 1));
+        assert!(
+            versions
+                .iter()
+                .any(|r| r.key == "a.com @ 1.0.0" && r.count == 1)
+        );
         assert_eq!(
             detail
                 .breakdowns

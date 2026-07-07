@@ -24,6 +24,9 @@ pub struct PanelRow {
     pub events: i64,
     /// Hovering the label shows this (defaults to the label).
     pub title: Option<String>,
+    /// An additional filter term applied (and toggled) together with the
+    /// row's main value — e.g. a version row also pins its application.
+    pub extra: Option<(Dim, String)>,
 }
 
 impl PanelRow {
@@ -70,8 +73,9 @@ impl PanelTab {
 pub struct BreakdownPanelProps {
     pub tabs: Vec<PanelTab>,
     pub metric: Metric,
-    /// Invoked with `(dim, raw value)` when a row is clicked.
-    pub on_filter: Callback<(Dim, String)>,
+    /// Invoked with the row's filter terms — `(dim, raw value)` pairs, the
+    /// tab's dimension first — when a row is clicked.
+    pub on_filter: Callback<Vec<(Dim, String)>>,
     /// The active filter value per dimension (highlights the selected row).
     #[prop_or_default]
     pub active: Vec<(Dim, String)>,
@@ -132,12 +136,19 @@ pub fn breakdown_panel(props: &BreakdownPanelProps) -> Html {
         let value = row.value_for(metric);
         let share = if total > 0 { value as f64 / total as f64 * 100.0 } else { 0.0 };
         let bar = if max > 0 { value as f64 / max as f64 * 100.0 } else { 0.0 };
-        let is_selected = selected.as_deref() == Some(row.value.to_lowercase().as_str());
+        let is_selected = selected.as_deref() == Some(row.value.to_lowercase().as_str())
+            && row.extra.as_ref().is_none_or(|(dim, value)| {
+                props
+                    .active
+                    .iter()
+                    .any(|(d, v)| d == dim && v.to_lowercase() == value.to_lowercase())
+            });
 
         let onclick = {
             let on_filter = props.on_filter.clone();
-            let (dim, value) = (tab.dim, row.value.clone());
-            Callback::from(move |_: MouseEvent| on_filter.emit((dim, value.clone())))
+            let mut terms = vec![(tab.dim, row.value.clone())];
+            terms.extend(row.extra.clone());
+            Callback::from(move |_: MouseEvent| on_filter.emit(terms.clone()))
         };
         // The action is a sibling of the row button (never a child — nested
         // interactive elements are invalid HTML and confuse assistive tech),

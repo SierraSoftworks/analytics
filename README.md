@@ -33,8 +33,8 @@ deliberately collects only broad, non-identifying signals:
 - **Projects & sources** — group multiple hostnames (and applications) into a
   project; filter to subsets; auto-register new reporting hostnames.
 - **Metrics** — visitors, page views, bounce rate, median time on page, time
-  series, and breakdowns by page, referrer, browser, OS, device, country,
-  language, and source.
+  series, and breakdowns by page, referrer, application (browser or client
+  app) and its version, OS, device, country, language, and source.
 - **Tracking pixels** — admin-created, project-bound tracking GIFs (e.g. for email
   opens) with attached metadata. Unknown pixel ids are rejected — there is no open
   pixel endpoint.
