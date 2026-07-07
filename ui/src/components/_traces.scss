@@ -108,6 +108,34 @@
     font-variant-numeric: tabular-nums;
   }
 
+  // Sessions with exceptions carry the attention colour on the count itself,
+  // matching the marker (colour marks what needs looking at).
+  &__exceptions {
+    color: var(--danger);
+    font-weight: 500;
+  }
+
+  // The open-trace affordance, revealed on hover like the breakdown rows'
+  // filter hint — one shared "this row acts" language.
+  &__open {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-self: center;
+    color: var(--brand-2);
+    opacity: 0;
+    transition: opacity var(--transition);
+
+    svg {
+      width: 14px;
+      height: 14px;
+    }
+  }
+
+  &:hover &__open,
+  &:focus-visible &__open {
+    opacity: 1;
+  }
+
   &__meta {
     display: flex;
     align-items: center;
@@ -334,7 +362,8 @@
 }
 
 @media (max-width: $bp-sm) {
-  .trace-row__counts {
+  .trace-row__counts,
+  .trace-row__open {
     display: none;
   }
 
