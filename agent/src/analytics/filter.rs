@@ -195,7 +195,7 @@ impl Compiler<'_> {
             .iter()
             .flat_map(|name| self.project_sources(name))
             .collect();
-        col("source").is_in(lit(Series::new("sources".into(), uris)), false)
+        col("source").is_in(lit(Series::new("sources".into(), uris)).implode(false), false)
     }
 
     /// `column == value` with the language's semantics: case-insensitive, and
@@ -371,7 +371,7 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
                     col(field.column).str().to_lowercase()
                 };
                 Ok(Node::Predicate(
-                    column.is_in(lit(Series::new("values".into(), values)), false),
+                    column.is_in(lit(Series::new("values".into(), values)).implode(false), false),
                 ))
             }
 
@@ -480,7 +480,7 @@ fn source_in(values: &[String]) -> Expr {
     col("source")
         .str()
         .to_lowercase()
-        .is_in(lit(Series::new("sources".into(), forms)), false)
+        .is_in(lit(Series::new("sources".into(), forms)).implode(false), false)
 }
 
 /// Case-fold a column/needle pair for the case-insensitive operator variants.
