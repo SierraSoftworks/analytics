@@ -347,10 +347,40 @@ pub fn exception_detail(
     };
     let variants = variants_of(&df, limit)?;
 
+    // The sessions the group's occurrences belonged to, newest first, so the
+    // operator can pick which trace to open. The occurrence frame is already
+    // newest-first; a second scan summarizes those sessions in full (their
+    // page views and events, not just the exceptions).
+    let sid = df
+        .column("sid")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let mut sids: Vec<String> = Vec::new();
+    for i in 0..height {
+        if let Some(sid) = sid.get(i)
+            && !sid.is_empty()
+            && !sids.iter().any(|seen| seen == sid)
+        {
+            sids.push(sid.to_string());
+            if sids.len() >= TRACE_SAMPLE as usize {
+                break;
+            }
+        }
+    }
+    let traces = if sids.is_empty() {
+        Vec::new()
+    } else {
+        let sessions = combined(store, parquet_dir, from_ms, to_ms)?
+            .filter(col("sid").is_in(lit(Series::new("sids".into(), sids)), false));
+        recent_traces(sessions, TRACE_SAMPLE)?
+    };
+
     Ok(Some(ExceptionGroupDetail {
         group,
         breakdowns,
         variants,
+        traces,
     }))
 }
 
@@ -589,6 +619,7 @@ fn recent_traces(base: LazyFrame, limit: u32) -> Result<Vec<TraceSummary>> {
             col("country").drop_nulls().first().alias("country"),
             col("ua_browser").drop_nulls().first().alias("ua_browser"),
             col("ua_version").drop_nulls().first().alias("ua_version"),
+            col("ua_device").drop_nulls().first().alias("ua_device"),
             // Exception reports carry the app's claimed release.
             col("app_version").drop_nulls().first().alias("app_version"),
             col("kind")
@@ -651,6 +682,11 @@ fn recent_traces(base: LazyFrame, limit: u32) -> Result<Vec<TraceSummary>> {
         .or_system_err(ADVICE)?
         .str()
         .or_system_err(ADVICE)?;
+    let ua_device = df
+        .column("ua_device")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
     let app_version = df
         .column("app_version")
         .or_system_err(ADVICE)?
@@ -683,6 +719,7 @@ fn recent_traces(base: LazyFrame, limit: u32) -> Result<Vec<TraceSummary>> {
                 country: country.get(i).map(str::to_string),
                 ua_browser: ua_browser.get(i).map(str::to_string),
                 ua_version: ua_version.get(i).map(str::to_string),
+                ua_device: ua_device.get(i).map(str::to_string),
                 app_version: app_version.get(i).map(str::to_string),
                 pageviews: pageviews.get(i).unwrap_or(0),
                 events: events.get(i).unwrap_or(0),
@@ -728,6 +765,7 @@ pub fn session_trace(
             col("metadata_json"),
             col("exc_type"),
             col("exc_message"),
+            col("exc_stack"),
             col("exc_group"),
             col("exc_handled"),
         ])
@@ -787,6 +825,11 @@ pub fn session_trace(
         .or_system_err(ADVICE)?
         .str()
         .or_system_err(ADVICE)?;
+    let exc_stack = df
+        .column("exc_stack")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
     let exc_group = df
         .column("exc_group")
         .or_system_err(ADVICE)?
@@ -818,6 +861,7 @@ pub fn session_trace(
                 metadata: metadata.get(i).map(str::to_string),
                 exc_type: exc_type.get(i).map(str::to_string),
                 exc_message: exc_message.get(i).map(str::to_string),
+                exc_stack: exc_stack.get(i).map(str::to_string),
                 exc_group: exc_group.get(i).map(str::to_string),
                 exc_handled: exc_handled.get(i),
             })
@@ -1992,6 +2036,11 @@ mod tests {
         // occurrence.
         assert_eq!(repeated.session_id.as_deref(), Some("sess-1"));
 
+        // The group's sessions surface as trace summaries for the picker.
+        assert_eq!(detail.traces.len(), 1);
+        assert_eq!(detail.traces[0].session_id, "sess-1");
+        assert_eq!(detail.traces[0].exceptions, 1);
+
         // Distributions cover app releases (1.1.0 twice, 1.0.0 once), keyed as
         // `app @ version` since a release is only meaningful within its app;
         // the sources card doubles as the per-application distribution.
@@ -2046,6 +2095,7 @@ mod tests {
         let mut s2_load = load("https://a.com", 5_000, false, None);
         s2_load.sid = Some("s2".into());
         s2_load.pathname = Some("/pricing".into());
+        s2_load.ua_device = Some("Desktop".into());
         // A sessionless page view (pre-session tracker) forms no trace.
         let plain = load("https://a.com", 6_000, false, None);
         store
@@ -2064,6 +2114,7 @@ mod tests {
         // Newest session first.
         assert_eq!(dash.traces[0].session_id, "s2");
         assert_eq!(dash.traces[0].entry_path.as_deref(), Some("/pricing"));
+        assert_eq!(dash.traces[0].ua_device.as_deref(), Some("Desktop"));
 
         let s1 = &dash.traces[1];
         assert_eq!(s1.session_id, "s1");

@@ -110,28 +110,46 @@
 
   &__meta {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 0.7rem;
     font-size: 0.78rem;
     color: var(--text-3);
     flex-wrap: wrap;
-
-    code {
-      font-size: 0.76rem;
-    }
   }
 
-  &__source {
+  // The visit as one location: source followed by its entry page.
+  &__location {
+    font-size: 0.78rem;
     color: var(--text-2);
     font-weight: 500;
-  }
-
-  &__path {
-    color: var(--text-3);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 22rem;
+    max-width: 26rem;
+  }
+
+  // The client pill (browser or application + version), with a kind icon.
+  &__client {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+
+  &__client-icon {
+    display: inline-flex;
+    color: var(--text-4);
+
+    svg {
+      width: 14px;
+      height: 14px;
+    }
+  }
+
+  // The application's reported release, riding inside the client pill.
+  &__release {
+    color: var(--brand-2);
+    font-weight: 600;
   }
 }
 
@@ -300,19 +318,6 @@
   &__name {
     font-size: 0.86rem;
     color: var(--text);
-  }
-
-  &__meta {
-    font-size: 0.76rem;
-    color: var(--text-3);
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 0.1rem 0.4rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 18rem;
   }
 
   &__exc-type {

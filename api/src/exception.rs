@@ -126,6 +126,11 @@ pub struct ExceptionGroupDetail {
     #[serde(default)]
     pub breakdowns: ExceptionBreakdowns,
     pub variants: Vec<ExceptionVariant>,
+    /// The most recent sessions the group's occurrences belonged to (newest
+    /// first), so an operator can pick which trace to open. `serde(default)`
+    /// tolerates payloads from agents predating traces.
+    #[serde(default)]
+    pub traces: Vec<crate::TraceSummary>,
 }
 
 /// An exception group annotated with the project it belongs to, for the global

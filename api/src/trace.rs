@@ -32,6 +32,10 @@ pub struct TraceSummary {
     pub ua_browser: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ua_version: Option<String>,
+    /// Device class ("Desktop"/"Mobile"/"App"), distinguishing browser visits
+    /// from application runs so the UI can pick a matching icon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ua_device: Option<String>,
     /// The release the reporting application claimed for itself (exception
     /// reports carry it), pinning the trace to a specific version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,6 +71,8 @@ pub struct TraceEvent {
     pub exc_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exc_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exc_stack: Option<String>,
     /// The exception's grouping fingerprint, linking back to its group page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exc_group: Option<String>,

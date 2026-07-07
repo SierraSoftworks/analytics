@@ -11,6 +11,7 @@ use yew::prelude::*;
 
 use crate::api::{self, ApiError};
 use crate::app::Route;
+use crate::components::metadata::Metadata;
 use crate::components::{ApiErrorAlert, Crumb, PageHeader};
 use crate::filters::use_filters;
 use crate::format::{
@@ -178,28 +179,42 @@ fn entry(event: &TraceEvent, started_ms: i64, duration: Option<i64>, index: usiz
                 }
             </div>
         },
-        TraceEventKind::Custom => html! {
-            <div class="trace-entry__line">
-                <strong class="trace-entry__name">
-                    { event.event_name.clone().unwrap_or_else(|| "event".into()) }
-                </strong>
-                { metadata_chips(event.metadata.as_deref()) }
-            </div>
-        },
+        TraceEventKind::Custom => {
+            let metadata = Metadata::parse(event.metadata.as_deref());
+            html! {
+                <>
+                    <div class="trace-entry__line trace-entry__line--wrap">
+                        <strong class="trace-entry__name">
+                            { event.event_name.clone().unwrap_or_else(|| "event".into()) }
+                        </strong>
+                        { metadata.tag_pills() }
+                    </div>
+                    { metadata.context_list() }
+                </>
+            }
+        }
         TraceEventKind::Exception => {
             let handled = event.exc_handled.unwrap_or(false);
+            let metadata = Metadata::parse(event.metadata.as_deref());
             html! {
-                <div class="trace-entry__line trace-entry__line--wrap">
-                    <code class="trace-entry__exc-type">
-                        { event.exc_type.clone().unwrap_or_else(|| "Error".into()) }
-                    </code>
-                    <span class={classes!("badge", if handled { "badge--muted" } else { "badge--warn" })}>
-                        { if handled { "handled" } else { "unhandled" } }
-                    </span>
-                    <span class="trace-entry__exc-message">
-                        { event.exc_message.clone().unwrap_or_default() }
-                    </span>
-                </div>
+                <>
+                    <div class="trace-entry__line trace-entry__line--wrap">
+                        <code class="trace-entry__exc-type">
+                            { event.exc_type.clone().unwrap_or_else(|| "Error".into()) }
+                        </code>
+                        <span class="trace-entry__exc-message">
+                            { event.exc_message.clone().unwrap_or_default() }
+                        </span>
+                        if !handled {
+                            <span class="badge badge--warn">{ "unhandled" }</span>
+                        }
+                        { metadata.tag_pills() }
+                    </div>
+                    { metadata.context_list() }
+                    if let Some(stack) = &event.exc_stack {
+                        <pre class="stack">{ stack.clone() }</pre>
+                    }
+                </>
             }
         }
     };
@@ -220,31 +235,5 @@ fn entry(event: &TraceEvent, started_ms: i64, duration: Option<i64>, index: usiz
                 { body }
             </div>
         </li>
-    }
-}
-
-/// A custom event's metadata as inline `key: value` chips (falling back to the
-/// raw JSON when it isn't an object).
-fn metadata_chips(metadata: Option<&str>) -> Html {
-    let Some(raw) = metadata.filter(|m| !m.trim().is_empty()) else {
-        return html! {};
-    };
-    match serde_json::from_str::<std::collections::BTreeMap<String, serde_json::Value>>(raw) {
-        Ok(fields) if !fields.is_empty() => {
-            let chips = fields.iter().map(|(key, value)| {
-                let value = match value {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                let text = format!("{key}: {value}");
-                html! {
-                    <code class="trace-entry__meta" key={key.clone()} title={text.clone()}>
-                        { text }
-                    </code>
-                }
-            });
-            html! { <>{ for chips }</> }
-        }
-        _ => html! { <code class="trace-entry__meta">{ raw.to_string() }</code> },
     }
 }

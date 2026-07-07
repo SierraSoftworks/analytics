@@ -12,8 +12,9 @@ use yew::prelude::*;
 
 use crate::api::{self, ApiError};
 use crate::app::Route;
+use crate::components::metadata::Metadata;
 use crate::components::status::{status_class, status_label};
-use crate::components::{ApiErrorAlert, Crumb, PageHeader, Sparkline, icons};
+use crate::components::{ApiErrorAlert, Crumb, PageHeader, Sparkline, TraceList, icons};
 use crate::filters::{use_filters, use_navigate_with_filters};
 use crate::format::{ago, compact, group_thousands, short_session_id};
 
@@ -128,6 +129,11 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
                                 variants={detail.variants.clone()}
                                 key={detail.group.group_id.clone()}
                             />
+                            // Pick which of the group's sessions to inspect.
+                            <TraceList
+                                traces={detail.traces.clone()}
+                                hint="Sessions this exception occurred in"
+                            />
                         </>
                     },
                 }
@@ -210,6 +216,7 @@ fn variant_scrubber(props: &VariantScrubberProps) -> Html {
             None => label,
         }
     });
+    let metadata = Metadata::parse(variant.metadata.as_deref());
 
     // Jump to the session this exemplar occurred in, when it reported one.
     let trace_link = variant.session_id.as_ref().map(|sid| {
@@ -257,50 +264,18 @@ fn variant_scrubber(props: &VariantScrubberProps) -> Html {
                         { if variant.handled { "handled" } else { "unhandled" } }
                     </span>
                     <span class="muted">{ format!("last seen {}", ago(variant.last_seen_ms)) }</span>
-                    { trace_link }
+                    // Set apart from the descriptive metadata, at the row's end.
+                    <span class="occurrence__actions">{ trace_link }</span>
                 </div>
-                <div class="occurrence__message">{ &variant.message }</div>
-                { metadata_table(variant.metadata.as_deref()) }
+                <div class="occurrence__message">
+                    { &variant.message }
+                    { metadata.tag_pills() }
+                </div>
+                { metadata.context_list() }
                 if let Some(stack) = &variant.stack {
                     <pre class="stack">{ stack }</pre>
                 }
             </div>
         </>
-    }
-}
-
-/// The reporter-supplied metadata of the variant's latest occurrence, rendered
-/// as a key/value grid (falling back to the raw JSON if it isn't an object).
-fn metadata_table(metadata: Option<&str>) -> Html {
-    let Some(raw) = metadata.filter(|m| !m.trim().is_empty()) else {
-        return html! {};
-    };
-    match serde_json::from_str::<std::collections::BTreeMap<String, serde_json::Value>>(raw) {
-        Ok(fields) if !fields.is_empty() => {
-            let rows = fields.iter().map(|(key, value)| {
-                let value = match value {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                html! {
-                    <div class="exc-meta__row" key={key.clone()}>
-                        <span class="exc-meta__key">{ key.clone() }</span>
-                        <span class="exc-meta__value" title={value.clone()}>{ value.clone() }</span>
-                    </div>
-                }
-            });
-            html! {
-                <div class="exc-meta">
-                    <span class="exc-meta__title">{ "Metadata" }</span>
-                    <div class="exc-meta__rows">{ for rows }</div>
-                </div>
-            }
-        }
-        _ => html! {
-            <div class="exc-meta">
-                <span class="exc-meta__title">{ "Metadata" }</span>
-                <pre class="stack">{ raw.to_string() }</pre>
-            </div>
-        },
     }
 }
