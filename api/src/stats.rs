@@ -14,14 +14,16 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct DashboardQuery {
     /// Range start (epoch millis, inclusive); defaults to 7 days before `to`.
+    /// `0` means "all time": the server anchors the window at its earliest
+    /// stored event instead of the epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<i64>,
     /// Range end (epoch millis, exclusive); defaults to now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<i64>,
-    /// Time-series bucket: `minute` | `hour` | `6h` | `day` | `week`. Defaults
-    /// to `day`; the server coarsens it if the range would produce an
-    /// unreasonable number of buckets.
+    /// Time-series bucket: `minute` | `15m` | `hour` | `4h` | `6h` | `day` |
+    /// `week`. Defaults to `day`; the server coarsens it if the range would
+    /// produce an unreasonable number of buckets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interval: Option<String>,
     /// The filter expression; absent or blank means unfiltered.

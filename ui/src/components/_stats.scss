@@ -66,9 +66,9 @@
     }
   }
 
+  // The selected metric: a crisp brand hairline and coloured label, no wash.
   &--active {
     border-color: var(--brand-border);
-    background: linear-gradient(var(--brand-soft), transparent 80%), var(--surface);
 
     .stat__label {
       color: var(--brand-2);

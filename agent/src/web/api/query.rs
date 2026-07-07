@@ -6,7 +6,9 @@ const DAY_MS: i64 = 86_400_000;
 /// when even `week` would overflow [`MAX_BUCKETS`].
 const BUCKETS_MS: &[(&str, i64)] = &[
     ("minute", 60_000),
+    ("15m", 900_000),
     ("hour", 3_600_000),
+    ("4h", 4 * 3_600_000),
     ("6h", 6 * 3_600_000),
     ("day", DAY_MS),
     ("week", 7 * DAY_MS),
@@ -76,9 +78,17 @@ mod tests {
     #[test]
     fn coarsens_an_interval_that_would_overflow_the_series() {
         // 90 days of minute buckets would be 129,600 points; hourly is still over
-        // the cap (2,160), so the ladder settles on 6-hour buckets (360).
+        // the cap (2,160), so the ladder settles on 4-hour buckets (540).
         let (_, _, bucket) = resolve_range(Some(0), Some(90 * DAY_MS), Some("minute"));
-        assert_eq!(bucket, 6 * 3_600_000);
+        assert_eq!(bucket, 4 * 3_600_000);
+    }
+
+    #[test]
+    fn honours_the_fine_grained_rungs() {
+        let (_, _, bucket) = resolve_range(Some(0), Some(DAY_MS), Some("15m"));
+        assert_eq!(bucket, 900_000);
+        let (_, _, bucket) = resolve_range(Some(0), Some(30 * DAY_MS), Some("4h"));
+        assert_eq!(bucket, 4 * 3_600_000);
     }
 
     #[test]

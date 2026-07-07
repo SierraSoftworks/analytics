@@ -81,9 +81,15 @@ pub struct BreakdownPanelProps {
     pub active: Vec<(Dim, String)>,
 }
 
+/// Rows shown per panel before the "Show all" affordance takes over — enough
+/// to read the shape of a distribution without letting a 25-row breakdown
+/// stretch the page.
+const VISIBLE_ROWS: usize = 8;
+
 #[function_component(BreakdownPanel)]
 pub fn breakdown_panel(props: &BreakdownPanelProps) -> Html {
     let tab_index = use_state(|| 0usize);
+    let expanded = use_state(|| false);
     let index = (*tab_index).min(props.tabs.len().saturating_sub(1));
     let Some(tab) = props.tabs.get(index) else {
         return html! {};
@@ -92,8 +98,11 @@ pub fn breakdown_panel(props: &BreakdownPanelProps) -> Html {
     let tabs = props.tabs.iter().enumerate().map(|(i, t)| {
         let active = i == index;
         let onclick = {
-            let tab_index = tab_index.clone();
-            Callback::from(move |_: MouseEvent| tab_index.set(i))
+            let (tab_index, expanded) = (tab_index.clone(), expanded.clone());
+            Callback::from(move |_: MouseEvent| {
+                tab_index.set(i);
+                expanded.set(false);
+            })
         };
         html! {
             <button key={i.to_string()}
@@ -132,7 +141,14 @@ pub fn breakdown_panel(props: &BreakdownPanelProps) -> Html {
         .find(|(d, _)| *d == tab.dim)
         .map(|(_, v)| v.to_lowercase());
 
-    let rows = ranked.iter().enumerate().map(|(i, row)| {
+    let hidden = ranked.len().saturating_sub(VISIBLE_ROWS);
+    let shown = if *expanded || hidden == 0 {
+        ranked.len()
+    } else {
+        VISIBLE_ROWS
+    };
+
+    let rows = ranked.iter().take(shown).enumerate().map(|(i, row)| {
         let value = row.value_for(metric);
         let share = if total > 0 { value as f64 / total as f64 * 100.0 } else { 0.0 };
         let bar = if max > 0 { value as f64 / max as f64 * 100.0 } else { 0.0 };
@@ -198,6 +214,18 @@ pub fn breakdown_panel(props: &BreakdownPanelProps) -> Html {
                 <div class="panel-card__empty">{ "No data in this period." }</div>
             } else {
                 <ul class="panel-card__rows">{ for rows }</ul>
+                if hidden > 0 {
+                    <button class="panel-card__more" onclick={{
+                        let expanded = expanded.clone();
+                        Callback::from(move |_: MouseEvent| expanded.set(!*expanded))
+                    }}>
+                        { if *expanded {
+                            "Show fewer".to_string()
+                        } else {
+                            format!("Show all {}", ranked.len())
+                        } }
+                    </button>
+                }
             }
         </section>
     }

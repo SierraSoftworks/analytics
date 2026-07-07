@@ -1080,6 +1080,37 @@ fn parquet_files_in_range(dir: &Path, from_ms: i64, to_ms: i64) -> Vec<std::path
     out
 }
 
+/// The timestamp of the earliest stored event, or `None` when nothing has been
+/// recorded yet. Used to resolve "all time" queries (`from=0`) to the real
+/// start of the data, so the time series isn't padded with decades of empty
+/// buckets. The cold archive is date-partitioned, so its earliest partition
+/// directory answers without scanning any data; only a store with no cold
+/// partitions yet (first hours of a deployment) reads the hot store.
+pub fn earliest_event_ms(store: &Store, parquet_dir: &str) -> Result<Option<i64>> {
+    if let Some(ms) = earliest_partition_ms(Path::new(parquet_dir)) {
+        return Ok(Some(ms));
+    }
+    let df = store.hot_dataframe()?;
+    Ok(df
+        .column("received_ms")
+        .ok()
+        .and_then(|c| c.i64().ok())
+        .and_then(|a| a.min()))
+}
+
+/// The UTC-midnight instant of the earliest `YYYY/MM/DD` partition directory,
+/// if any exist.
+fn earliest_partition_ms(dir: &Path) -> Option<i64> {
+    let year = numeric_subdirs::<i32>(dir).into_iter().min()?;
+    let year_dir = dir.join(format!("{year:04}"));
+    let month = numeric_subdirs::<u32>(&year_dir).into_iter().min()?;
+    let month_dir = year_dir.join(format!("{month:02}"));
+    let day = numeric_subdirs::<u32>(&month_dir).into_iter().min()?;
+    Utc.with_ymd_and_hms(year, month, day, 0, 0, 0)
+        .single()
+        .map(|dt| dt.timestamp_millis())
+}
+
 /// `(year, month, day)` in UTC for an epoch-millis instant (epoch on overflow).
 fn day_of(ms: i64) -> (i32, u32, u32) {
     let dt = Utc
@@ -1143,6 +1174,50 @@ mod tests {
 
     fn source_q(source: &str) -> String {
         format!(r#"source == "{source}""#)
+    }
+
+    #[test]
+    fn earliest_event_ms_prefers_the_cold_archive_and_falls_back_to_hot() {
+        let parquet_dir = std::env::temp_dir().join(format!(
+            "analytics-earliest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        // With no partitions and an empty hot store there is no earliest event.
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        assert_eq!(
+            earliest_event_ms(&store, parquet_dir.to_str().unwrap()).unwrap(),
+            None
+        );
+
+        // Hot-only: the earliest hot event answers.
+        store
+            .append_events(&[load("https://a.com", 5_000, true, None)])
+            .unwrap();
+        assert_eq!(
+            earliest_event_ms(&store, parquet_dir.to_str().unwrap()).unwrap(),
+            Some(5_000)
+        );
+
+        // A date partition (even an empty directory tree counts — partitions
+        // only exist once written) beats the hot store.
+        std::fs::create_dir_all(parquet_dir.join("2024/03/07")).unwrap();
+        std::fs::create_dir_all(parquet_dir.join("2025/01/01")).unwrap();
+        let expected = Utc
+            .with_ymd_and_hms(2024, 3, 7, 0, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(
+            earliest_event_ms(&store, parquet_dir.to_str().unwrap()).unwrap(),
+            Some(expected)
+        );
+        std::fs::remove_dir_all(&parquet_dir).ok();
     }
 
     #[test]

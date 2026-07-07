@@ -1,24 +1,29 @@
 // Design tokens (CSS custom properties), shared SCSS mixins, and breakpoints.
 // Every other partial does `@use '../styles/variables' as *;` to reach the mixins
 // and breakpoints; the `:root` block below is emitted once into the bundle.
+//
+// The palette is a crisp white-on-black in the Linear mould: a neutral
+// near-black canvas, hairline borders and small surface lifts for depth, high
+// contrast type, and colour reserved for accents — lightweight icons, selected
+// states, and areas that need attention.
 
 :root {
-  // Canvas & surfaces (near-black, faintly blue; each step lifts toward light).
-  --bg: #0e1014;
-  --surface: #16181d;
-  --surface-2: #1b1e25;
-  --surface-3: #232730;
-  --overlay: #1b1e25;
+  // Canvas & surfaces (neutral near-black; each step lifts toward light).
+  --bg: #08090a;
+  --surface: #0f1011;
+  --surface-2: #16181a;
+  --surface-3: #1e2023;
+  --overlay: #131416;
 
   // Hairlines.
-  --border: #262a32;
-  --border-strong: #333945;
+  --border: #1d1f22;
+  --border-strong: #2b2e32;
 
   // Text (descending emphasis).
-  --text: #e7e9ee;
-  --text-2: #b6bcc7;
-  --text-3: #888f9c;
-  --text-4: #5d6470;
+  --text: #f7f8f8;
+  --text-2: #c9cdd2;
+  --text-3: #8a8f98;
+  --text-4: #5e646c;
 
   // Brand — a Sierra Softworks teal. `--brand` is bright enough to read as text
   // and icons on the dark canvas; `--brand-strong` is darkened so white text on a
@@ -27,7 +32,7 @@
   --brand-2: #5cb8ea;
   --brand-strong: #1c7aac;
   --brand-strong-2: #2189bd;
-  --brand-soft: rgba(61, 164, 220, 0.14);
+  --brand-soft: rgba(61, 164, 220, 0.13);
   --brand-border: rgba(61, 164, 220, 0.38);
 
   // Status.
@@ -41,7 +46,7 @@
   --info-soft: rgba(139, 146, 160, 0.14);
 
   // Charts & breakdown bars.
-  --chart-grid: rgba(255, 255, 255, 0.05);
+  --chart-grid: rgba(255, 255, 255, 0.04);
   --chart-prev: #6b7280;
   --chart-bar: rgba(61, 164, 220, 0.12);
   --chart-bar-hover: rgba(61, 164, 220, 0.22);
@@ -50,14 +55,13 @@
   --radius-sm: 5px;
   --radius: 7px;
   --radius-lg: 10px;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 8px 28px rgba(0, 0, 0, 0.45);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.55);
   --transition: 120ms ease;
 
   // Metrics.
-  --sidebar-w: 248px;
-  --bar-h: 56px;
-  --content-max: 1180px;
+  --sidebar-w: 220px;
+  --bar-h: 48px;
 
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
     Arial, sans-serif;

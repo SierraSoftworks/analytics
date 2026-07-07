@@ -185,16 +185,22 @@ pub enum RangePreset {
     Week,
     Month,
     Quarter,
+    HalfYear,
     Year,
+    /// Everything on record. Serialized as `from=0`; the server clamps the
+    /// window start to its earliest stored event.
+    All,
 }
 
 impl RangePreset {
-    pub const ALL: [RangePreset; 5] = [
+    pub const ALL: [RangePreset; 7] = [
         RangePreset::Day,
         RangePreset::Week,
         RangePreset::Month,
         RangePreset::Quarter,
+        RangePreset::HalfYear,
         RangePreset::Year,
+        RangePreset::All,
     ];
 
     pub fn token(self) -> &'static str {
@@ -203,7 +209,10 @@ impl RangePreset {
             RangePreset::Week => "7d",
             RangePreset::Month => "30d",
             RangePreset::Quarter => "90d",
+            RangePreset::HalfYear => "180d",
+            // Kept as `12m` (not `365d`) so previously shared links keep working.
             RangePreset::Year => "12m",
+            RangePreset::All => "all",
         }
     }
 
@@ -217,7 +226,9 @@ impl RangePreset {
             RangePreset::Week => "Last 7 days",
             RangePreset::Month => "Last 30 days",
             RangePreset::Quarter => "Last 90 days",
+            RangePreset::HalfYear => "Last 6 months",
             RangePreset::Year => "Last 12 months",
+            RangePreset::All => "All time",
         }
     }
 
@@ -227,17 +238,25 @@ impl RangePreset {
             RangePreset::Week => 7,
             RangePreset::Month => 30,
             RangePreset::Quarter => 90,
+            RangePreset::HalfYear => 180,
             RangePreset::Year => 365,
+            // Only a sentinel — `TimeRange::resolve` anchors All at epoch 0
+            // instead of a lookback, and the server clamps that to its
+            // earliest stored event.
+            RangePreset::All => 36_500,
         }
     }
 
-    /// The bucket size paired with this window (coarser windows, coarser buckets).
+    /// The bucket size paired with this window. Time-series buckets are cheap
+    /// to render, so each window gets the finest interval that still reads
+    /// well: 15m @ 24h, 1h @ 7d, 4h @ 30d, 1d @ 90/180d, 7d @ 365d and beyond.
     fn interval(self) -> &'static str {
         match self {
-            RangePreset::Day => "hour",
-            RangePreset::Week => "6h",
-            RangePreset::Month | RangePreset::Quarter => "day",
-            RangePreset::Year => "week",
+            RangePreset::Day => "15m",
+            RangePreset::Week => "hour",
+            RangePreset::Month => "4h",
+            RangePreset::Quarter | RangePreset::HalfYear => "day",
+            RangePreset::Year | RangePreset::All => "week",
         }
     }
 }
@@ -256,19 +275,25 @@ impl Default for TimeRange {
 }
 
 impl TimeRange {
-    /// Resolve to `(from, to, interval)`, anchoring presets to `now`.
+    /// Resolve to `(from, to, interval)`, anchoring presets to `now`. The
+    /// All-time preset resolves to `from = 0`, which the server treats as
+    /// "since the earliest stored event".
     pub fn resolve(self, now_ms: i64) -> (i64, i64, &'static str) {
         match self {
+            TimeRange::Preset(RangePreset::All) => (0, now_ms, RangePreset::All.interval()),
             TimeRange::Preset(preset) => {
                 (now_ms - preset.days() * DAY_MS, now_ms, preset.interval())
             }
             TimeRange::Custom { from, to } => {
                 let span = (to - from).max(1);
+                // The same density ladder as the presets, scaled to the zoom.
                 let interval = if span <= 2 * DAY_MS {
-                    "hour"
+                    "15m"
                 } else if span <= 14 * DAY_MS {
-                    "6h"
-                } else if span <= 120 * DAY_MS {
+                    "hour"
+                } else if span <= 60 * DAY_MS {
+                    "4h"
+                } else if span <= 200 * DAY_MS {
                     "day"
                 } else {
                     "week"

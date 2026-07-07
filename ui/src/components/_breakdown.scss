@@ -12,7 +12,7 @@
 .panel-card {
   @include card;
   padding: 0.7rem 0.85rem 0.6rem;
-  min-height: 16rem;
+  min-height: 12rem;
   display: flex;
   flex-direction: column;
 
@@ -55,6 +55,27 @@
     color: var(--text-4);
     font-size: 0.84rem;
     min-height: 8rem;
+  }
+
+  // Reveals the rows past the display cap (the API returns up to 25).
+  &__more {
+    align-self: flex-start;
+    margin-top: 0.3rem;
+    padding: 0.25rem 0.5rem;
+    font: inherit;
+    font-size: 0.76rem;
+    font-weight: 500;
+    color: var(--text-3);
+    background: none;
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background var(--transition), color var(--transition);
+
+    &:hover {
+      color: var(--text);
+      background: var(--surface-2);
+    }
   }
 }
 

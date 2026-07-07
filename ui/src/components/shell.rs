@@ -69,6 +69,17 @@ pub fn app_shell(props: &AppShellProps) -> Html {
         })
     };
 
+    // The mobile navigation overlay (the sidebar is a fixed column on desktop).
+    let nav_open = use_state(|| false);
+    let toggle_nav = {
+        let nav_open = nav_open.clone();
+        Callback::from(move |_: ()| nav_open.set(!*nav_open))
+    };
+    let close_nav = {
+        let nav_open = nav_open.clone();
+        Callback::from(move |_: ()| nav_open.set(false))
+    };
+
     // Create-project drawer state.
     let drawer_open = use_state(|| false);
     let new_name = use_state(String::new);
@@ -198,9 +209,15 @@ pub fn app_shell(props: &AppShellProps) -> Html {
     html! {
         <ContextProvider<ProjectsContext> context={projects_ctx}>
             <div class="app-shell">
-                <AppBar />
+                <AppBar on_menu={toggle_nav} nav_open={*nav_open} />
                 <div class="app-body">
-                    <Sidebar />
+                    <Sidebar open={*nav_open} on_navigate={close_nav.clone()} />
+                    if *nav_open {
+                        <div class="app-scrim" onclick={{
+                            let close_nav = close_nav.clone();
+                            Callback::from(move |_: MouseEvent| close_nav.emit(()))
+                        }} />
+                    }
                     <main class="app-main">
                         <div class="app-content">{ props.children.clone() }</div>
                         <footer class="app-footer">

@@ -1,4 +1,6 @@
 // The left navigation sidebar and its menu (see components/sidebar.rs).
+// A fixed column on desktop; an overlay drawer (toggled from the app bar's
+// hamburger button) on small screens, so it never occupies content space there.
 @use '../styles/variables' as *;
 
 .app-sidebar {
@@ -7,7 +9,7 @@
   height: calc(100vh - var(--bar-h));
   overflow-y: auto;
   border-right: 1px solid var(--border);
-  padding: 1rem 0.75rem;
+  padding: 0.9rem 0.7rem;
 }
 
 .menu {
@@ -16,11 +18,11 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.1rem;
 
   &__section {
-    margin: 1.1rem 0.65rem 0.3rem;
-    font-size: 0.7rem;
+    margin: 1.15rem 0.6rem 0.35rem;
+    font-size: 0.68rem;
     font-weight: 600;
     letter-spacing: 0.07em;
     text-transform: uppercase;
@@ -36,13 +38,13 @@
     align-items: center;
     gap: 0.6rem;
     width: 100%;
-    padding: 0.5rem 0.65rem;
+    padding: 0.45rem 0.6rem;
     border: none;
     border-radius: var(--radius-sm);
     background: none;
     color: var(--text-2);
     font: inherit;
-    font-size: 0.88rem;
+    font-size: 0.86rem;
     font-weight: 500;
     text-align: left;
     cursor: pointer;
@@ -53,12 +55,13 @@
       color: var(--text);
     }
 
+    // Selection reads as a neutral lift; the coloured icon alone draws the eye.
     &--active {
-      background: var(--brand-soft);
-      color: var(--brand-2);
+      background: var(--surface-3);
+      color: var(--text);
 
       .menu__icon {
-        color: var(--brand-2);
+        color: var(--brand);
       }
     }
   }
@@ -67,6 +70,7 @@
     display: inline-flex;
     flex-shrink: 0;
     color: var(--text-3);
+    transition: color var(--transition);
   }
 
   &__label {
@@ -92,13 +96,13 @@
     align-items: center;
     gap: 0.5rem;
     width: 100%;
-    padding: 0.42rem 0.65rem 0.42rem 2.15rem;
+    padding: 0.4rem 0.6rem 0.4rem 2.05rem;
     border: none;
     border-radius: var(--radius-sm);
     background: none;
     color: var(--text-3);
     font: inherit;
-    font-size: 0.85rem;
+    font-size: 0.84rem;
     text-align: left;
     cursor: pointer;
     transition: background var(--transition), color var(--transition);
@@ -109,8 +113,13 @@
     }
 
     &--active {
-      color: var(--brand-2);
-      background: var(--brand-soft);
+      background: var(--surface-3);
+      color: var(--text);
+
+      .menu__dot {
+        background: var(--brand);
+        opacity: 1;
+      }
     }
   }
 
@@ -120,23 +129,34 @@
     border-radius: 50%;
     flex-shrink: 0;
     background: currentColor;
-    opacity: 0.55;
+    opacity: 0.45;
+    transition: background var(--transition), opacity var(--transition);
   }
 
   &__empty {
-    padding: 0.3rem 0.65rem 0.3rem 2.15rem;
+    padding: 0.3rem 0.6rem 0.3rem 2.05rem;
     font-size: 0.82rem;
     color: var(--text-3);
   }
 }
 
 @media (max-width: $bp-sm) {
+  // Overlay drawer: slides in over the scrim, never reserves layout space.
   .app-sidebar {
-    position: static;
+    position: fixed;
+    top: var(--bar-h);
+    bottom: 0;
+    left: 0;
     height: auto;
-    max-height: 45vh;
-    overflow-y: auto;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
+    width: min(var(--sidebar-w), 84vw);
+    z-index: 30;
+    background: var(--bg);
+    transform: translateX(-105%);
+    transition: transform 180ms ease;
+
+    &--open {
+      transform: none;
+      box-shadow: var(--shadow-md);
+    }
   }
 }
