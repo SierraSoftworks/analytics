@@ -94,6 +94,22 @@ pub struct BreakdownRow {
     pub events: i64,
 }
 
+/// One row of the client-versions breakdown. A version number is only
+/// meaningful within its application ("120.0" from Chrome and "120.0" from
+/// Edge are unrelated), so rows are keyed by the (application, version) pair
+/// rather than the bare version string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionRow {
+    /// The UA-derived application (browser or client app) name; empty when unknown.
+    pub app: String,
+    /// The version within that application; empty when unknown.
+    pub version: String,
+    pub visitors: i64,
+    pub pageviews: i64,
+    #[serde(default)]
+    pub events: i64,
+}
+
 /// Every dashboard breakdown, computed over the same filtered event set so the
 /// panels agree with the headline metrics and with each other.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,11 +118,12 @@ pub struct Breakdowns {
     pub referrers: Vec<BreakdownRow>,
     pub countries: Vec<BreakdownRow>,
     pub languages: Vec<BreakdownRow>,
+    /// UA-derived applications: browsers and client apps alike.
     pub browsers: Vec<BreakdownRow>,
-    /// UA-derived client versions (browser or application). `serde(default)`
-    /// tolerates payloads from agents predating the column.
+    /// UA-derived client versions, one row per (application, version) pair.
+    /// `serde(default)` tolerates payloads from agents predating the column.
     #[serde(default)]
-    pub versions: Vec<BreakdownRow>,
+    pub versions: Vec<VersionRow>,
     pub operating_systems: Vec<BreakdownRow>,
     pub devices: Vec<BreakdownRow>,
     pub utm_sources: Vec<BreakdownRow>,

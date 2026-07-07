@@ -100,7 +100,10 @@ impl Dim {
             Dim::Referrer => "Referrer",
             Dim::Country => "Country",
             Dim::Language => "Language",
-            Dim::Browser => "Browser",
+            // Client-side apps report alongside browsers, so the UA-client
+            // dimension is presented as "Application" (the `browser` query
+            // field is kept for expression compatibility).
+            Dim::Browser => "Application",
             Dim::Version => "Version",
             Dim::Os => "OS",
             Dim::Device => "Device",
