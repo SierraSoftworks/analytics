@@ -53,6 +53,9 @@ impl FieldSet {
             (FieldSet::Dashboard, "utm_source") => string("utm_source"),
             (FieldSet::Dashboard, "utm_medium") => string("utm_medium"),
             (FieldSet::Dashboard, "utm_campaign") => string("utm_campaign"),
+            // The name of a custom/pixel event; page views carry none, so an
+            // event filter naturally scopes the view to those events.
+            (FieldSet::Dashboard, "event") => string("event_name"),
             // The application *is* the source (exceptions attribute to the
             // reporting hostname), so `app` is an alias for `source`.
             (FieldSet::Exceptions, "app") => string("source"),
@@ -72,7 +75,7 @@ impl FieldSet {
         match self {
             FieldSet::Dashboard => {
                 "project, source, path, referrer, country, language, browser, version, os, \
-                 device, utm_source, utm_medium, utm_campaign"
+                 device, utm_source, utm_medium, utm_campaign, event"
             }
             FieldSet::Exceptions => {
                 "project, source, browser, version, os, device, app, app_version, type, \
@@ -207,18 +210,19 @@ impl Compiler<'_> {
             // The sentinel means "absent on a page view". Pixel/custom events
             // have *every* dimension null, so on the dashboard field set they
             // must not ride through an empty-valued comparison (the events
-            // metric would ignore the filter entirely). Exception queries run
-            // on a kind-scoped frame where "absent" genuinely means unknown.
+            // metric would ignore the filter entirely). The event-name field
+            // inverts that: it lives only on pixel/custom events, so its
+            // sentinel means "an unnamed event". Exception queries run on a
+            // kind-scoped frame where "absent" genuinely means unknown.
             let absent = col(field.column)
                 .is_null()
                 .or(col(field.column).eq(lit("")));
+            let event_kinds = col("kind")
+                .eq(lit("pixel"))
+                .or(col("kind").eq(lit("custom")));
             return match self.fields {
-                FieldSet::Dashboard => absent.and(
-                    col("kind")
-                        .eq(lit("pixel"))
-                        .or(col("kind").eq(lit("custom")))
-                        .not(),
-                ),
+                FieldSet::Dashboard if field.column == "event_name" => absent.and(event_kinds),
+                FieldSet::Dashboard => absent.and(event_kinds.not()),
                 FieldSet::Exceptions => absent,
             };
         }

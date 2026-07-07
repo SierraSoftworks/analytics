@@ -9,10 +9,10 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use analytics_api::{
-    BreakdownRow, Breakdowns, CountRow, Dashboard, ExceptionBreakdowns, ExceptionGroup,
-    ExceptionGroupDetail, ExceptionStatus, ExceptionVariant, MetricSummary, SessionTrace,
-    TREND_BUCKETS, TimeSeriesPoint, TraceEvent, TraceEventKind, TraceSummary, VersionRow,
-    pixel_source, source_label,
+    BreakdownRow, Breakdowns, CountRow, Dashboard, EventBreakdowns, EventDetail, EventVariant,
+    ExceptionBreakdowns, ExceptionGroup, ExceptionGroupDetail, ExceptionStatus, ExceptionVariant,
+    MetricSummary, SessionTrace, TREND_BUCKETS, TimeSeriesPoint, TraceEvent, TraceEventKind,
+    TraceSummary, VersionRow, pixel_source, source_label,
 };
 use chrono::{Datelike, TimeZone, Utc};
 use polars::prelude::*;
@@ -88,6 +88,7 @@ pub fn dashboard(
     }
 
     let pageloads = current.clone().filter(col("kind").eq(lit("page_load")));
+    let event_names = event_name_breakdown(current.clone().filter(is_event()))?;
     let per_source = source_rollup(current.clone(), unique_flag)?;
     let (projects, sources, unassigned) = project_rollup(store, per_source)?;
     let traces = recent_traces(current.clone(), TRACE_SAMPLE)?;
@@ -109,6 +110,7 @@ pub fn dashboard(
             utm_sources: breakdown(pageloads.clone(), "utm_source", unique_flag)?,
             utm_mediums: breakdown(pageloads.clone(), "utm_medium", unique_flag)?,
             utm_campaigns: breakdown(pageloads, "utm_campaign", unique_flag)?,
+            event_names,
             projects,
             sources,
         },
@@ -343,21 +345,116 @@ pub fn exception_detail(
         browsers: count_by(&df, "ua_browser")?,
         operating_systems: count_by(&df, "ua_os")?,
         devices: count_by(&df, "ua_device")?,
-        sources: count_by(&df, "source")?,
     };
     let variants = variants_of(&df, limit)?;
 
-    // The sessions the group's occurrences belonged to, newest first, so the
-    // operator can pick which trace to open. The occurrence frame is already
-    // newest-first; a second scan summarizes those sessions in full (their
-    // page views and events, not just the exceptions).
-    let sid = df
+    let traces = traces_of_occurrences(store, parquet_dir, &df, from_ms, to_ms)?;
+
+    Ok(Some(ExceptionGroupDetail {
+        group,
+        breakdowns,
+        variants,
+        traces,
+    }))
+}
+
+/// One named custom/pixel event in forensic detail: the aggregate (with
+/// trend), how its occurrences distribute across key dimensions, its
+/// **distinct metadata variants** (one representative per unique reporter
+/// payload), and the sessions it occurred in. `filter` is the dashboard's
+/// compiled `q` expression, so the numbers cover the same slice the operator
+/// was looking at. Returns `None` if the event has no occurrences in
+/// `[from_ms, to_ms)`.
+pub fn event_detail(
+    store: &Store,
+    parquet_dir: &str,
+    name: &str,
+    from_ms: i64,
+    to_ms: i64,
+    filter: Option<&CompiledFilter>,
+    limit: usize,
+) -> Result<Option<EventDetail>> {
+    let mut lf = combined(store, parquet_dir, from_ms, to_ms)?
+        .filter(is_event())
+        .filter(col("event_name").eq(lit(name.to_string())));
+    if let Some(filter) = filter {
+        lf = lf.filter(filter.predicate.clone());
+    }
+    let df = lf
+        .select([
+            col("received_ms")
+                .cast(DataType::Int64)
+                .alias("received_ms"),
+            col("source"),
+            col("pathname"),
+            col("country"),
+            col("language"),
+            col("ua_browser"),
+            col("ua_os"),
+            col("ua_device"),
+            col("metadata_json"),
+            col("sid"),
+        ])
+        .sort(
+            ["received_ms"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
+        .collect()
+        .or_system_err(ADVICE)?;
+
+    let height = df.height();
+    if height == 0 {
+        return Ok(None);
+    }
+
+    let received = df
+        .column("received_ms")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+
+    let breakdowns = EventBreakdowns {
+        sources: count_by(&df, "source")?,
+        pages: count_by(&df, "pathname")?,
+        browsers: count_by(&df, "ua_browser")?,
+        operating_systems: count_by(&df, "ua_os")?,
+        devices: count_by(&df, "ua_device")?,
+        countries: count_by(&df, "country")?,
+        languages: count_by(&df, "language")?,
+    };
+    let variants = event_variants(&df, limit)?;
+    let traces = traces_of_occurrences(store, parquet_dir, &df, from_ms, to_ms)?;
+
+    Ok(Some(EventDetail {
+        name: name.to_string(),
+        count: height as i64,
+        first_seen_ms: received.get(height - 1).unwrap_or(0),
+        last_seen_ms: received.get(0).unwrap_or(0),
+        trend: trend_of((0..height).filter_map(|i| received.get(i)), from_ms, to_ms),
+        breakdowns,
+        variants,
+        traces,
+    }))
+}
+
+/// The sessions an (already newest-first) occurrence frame belonged to, newest
+/// first, so the operator can pick which trace to open. A second scan
+/// summarizes those sessions in full — their page views and events, not just
+/// the occurrences that matched.
+fn traces_of_occurrences(
+    store: &Store,
+    parquet_dir: &str,
+    occurrences: &DataFrame,
+    from_ms: i64,
+    to_ms: i64,
+) -> Result<Vec<TraceSummary>> {
+    let sid = occurrences
         .column("sid")
         .or_system_err(ADVICE)?
         .str()
         .or_system_err(ADVICE)?;
     let mut sids: Vec<String> = Vec::new();
-    for i in 0..height {
+    for i in 0..occurrences.height() {
         if let Some(sid) = sid.get(i)
             && !sid.is_empty()
             && !sids.iter().any(|seen| seen == sid)
@@ -368,20 +465,102 @@ pub fn exception_detail(
             }
         }
     }
-    let traces = if sids.is_empty() {
-        Vec::new()
-    } else {
-        let sessions = combined(store, parquet_dir, from_ms, to_ms)?
-            .filter(col("sid").is_in(lit(Series::new("sids".into(), sids)), false));
-        recent_traces(sessions, TRACE_SAMPLE)?
-    };
+    if sids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sessions = combined(store, parquet_dir, from_ms, to_ms)?
+        .filter(col("sid").is_in(lit(Series::new("sids".into(), sids)), false));
+    recent_traces(sessions, TRACE_SAMPLE)
+}
 
-    Ok(Some(ExceptionGroupDetail {
-        group,
-        breakdowns,
-        variants,
-        traces,
-    }))
+/// Collapse an event's occurrences (already sorted newest-first) into distinct
+/// variants keyed by their reporter metadata: one representative each, counted,
+/// most frequent first. The representative context (client, source, page)
+/// comes from the variant's latest occurrence.
+fn event_variants(occurrences: &DataFrame, limit: usize) -> Result<Vec<EventVariant>> {
+    let df = occurrences
+        .clone()
+        .lazy()
+        .group_by([col("metadata_json")])
+        .agg([
+            len().cast(DataType::Int64).alias("count"),
+            col("received_ms").min().alias("first_seen"),
+            col("received_ms").max().alias("last_seen"),
+            // The frame is newest-first, so `first()` is the latest context.
+            col("ua_browser").first().alias("ua_browser"),
+            col("ua_os").first().alias("ua_os"),
+            col("source").first().alias("source"),
+            col("pathname").first().alias("pathname"),
+            // The session link: the latest occurrence that has one.
+            col("sid").drop_nulls().first().alias("sid"),
+        ])
+        .sort(
+            ["count"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
+        .limit(limit as u32)
+        .collect()
+        .or_system_err(ADVICE)?;
+
+    let metadata = df
+        .column("metadata_json")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let count = df
+        .column("count")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let first = df
+        .column("first_seen")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let last = df
+        .column("last_seen")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let browser = df
+        .column("ua_browser")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let os = df
+        .column("ua_os")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let source = df
+        .column("source")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let pathname = df
+        .column("pathname")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let sid = df
+        .column("sid")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+
+    Ok((0..df.height())
+        .map(|i| EventVariant {
+            metadata: metadata.get(i).map(str::to_string),
+            count: count.get(i).unwrap_or(0),
+            first_seen_ms: first.get(i).unwrap_or(0),
+            last_seen_ms: last.get(i).unwrap_or(0),
+            ua_browser: browser.get(i).map(str::to_string),
+            ua_os: os.get(i).map(str::to_string),
+            source: source.get(i).map(str::to_string),
+            pathname: pathname.get(i).map(str::to_string),
+            session_id: sid.get(i).map(str::to_string),
+        })
+        .collect())
 }
 
 /// Occurrence counts per value of `column` (nulls under the empty-string
@@ -421,10 +600,13 @@ fn count_by(occurrences: &DataFrame, column: &str) -> Result<Vec<CountRow>> {
         .collect())
 }
 
-/// Occurrence counts per reported release, keyed as `app @ version` (the app
-/// being the source's label) — a release number is only meaningful within its
-/// application. Occurrences with no reported version aggregate under the
-/// empty sentinel, whichever source they came from.
+/// Occurrence counts per reported release. When the frame spans several
+/// sources, rows are keyed as `app @ version` (the app being the source's
+/// label) — a release number is only meaningful within its application. A
+/// frame scoped to a single source (the per-source detail view) keys rows by
+/// the bare version number, since the application is given. Occurrences with
+/// no reported version aggregate under the empty sentinel, whichever source
+/// they came from.
 fn app_version_rows(occurrences: &DataFrame) -> Result<Vec<CountRow>> {
     let df = occurrences
         .clone()
@@ -454,8 +636,20 @@ fn app_version_rows(occurrences: &DataFrame) -> Result<Vec<CountRow>> {
         .i64()
         .or_system_err(ADVICE)?;
 
-    // Distinct sources can share a label (http vs https), so fold by the
-    // display key rather than trusting the group-by to have finished the job.
+    // Qualify versions with their application only when the frame genuinely
+    // mixes applications; labels are compared (not URIs) since distinct
+    // sources can share one (http vs https).
+    let mut labels: Vec<&str> = (0..df.height())
+        .filter_map(|i| apps.get(i))
+        .filter(|app| !app.is_empty())
+        .map(source_label)
+        .collect();
+    labels.sort_unstable();
+    labels.dedup();
+    let qualify = labels.len() > 1;
+
+    // Fold by the display key rather than trusting the group-by to have
+    // finished the job (see the label-sharing note above).
     let mut totals: HashMap<String, i64> = HashMap::new();
     for i in 0..df.height() {
         let (Some(app), Some(version)) = (apps.get(i), versions.get(i)) else {
@@ -464,7 +658,8 @@ fn app_version_rows(occurrences: &DataFrame) -> Result<Vec<CountRow>> {
         let key = match (app.is_empty(), version.is_empty()) {
             (_, true) => String::new(),
             (true, false) => version.to_string(),
-            (false, false) => format!("{} @ {version}", source_label(app)),
+            (false, false) if qualify => format!("{} @ {version}", source_label(app)),
+            (false, false) => version.to_string(),
         };
         *totals.entry(key).or_insert(0) += counts.get(i).unwrap_or(0);
     }
@@ -896,17 +1091,6 @@ pub fn session_trace(
     }))
 }
 
-/// Sum two trend vectors element-wise (for folding per-source rows into
-/// per-project rows; both are computed on the same `[from, to)` bucket grid).
-pub fn merge_trends(into: &mut Vec<i64>, other: &[i64]) {
-    if into.len() < other.len() {
-        into.resize(other.len(), 0);
-    }
-    for (i, v) in other.iter().enumerate() {
-        into[i] += v;
-    }
-}
-
 // ----------------------------------------------------------------- internals
 
 /// Occurrence timestamps bucketed into [`TREND_BUCKETS`] equal slices of
@@ -1265,6 +1449,46 @@ fn version_breakdown(pageloads: LazyFrame, unique_flag: &str) -> Result<Vec<Vers
                 pageviews: pageviews.get(i).unwrap_or(0),
                 visitors: visitors.get(i).unwrap_or(0),
                 events: 0,
+            })
+        })
+        .collect())
+}
+
+/// The custom/pixel events breakdown, keyed by event name (unnamed events
+/// aggregate under the empty sentinel). Only the `events` count is meaningful —
+/// these rows have no page views, and visitor uniqueness rides on page loads —
+/// so the panel displays them under the Events metric.
+fn event_name_breakdown(events: LazyFrame) -> Result<Vec<BreakdownRow>> {
+    let df = events
+        .with_columns([col("event_name").fill_null(lit("")).alias("key")])
+        .group_by([col("key")])
+        .agg([len().cast(DataType::Int64).alias("events")])
+        .sort(
+            ["events"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
+        .limit(BREAKDOWN_LIMIT)
+        .collect()
+        .or_system_err(ADVICE)?;
+
+    let keys = df
+        .column("key")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let events = df
+        .column("events")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+
+    Ok((0..df.height())
+        .filter_map(|i| {
+            keys.get(i).map(|key| BreakdownRow {
+                key: key.to_string(),
+                visitors: 0,
+                pageviews: 0,
+                events: events.get(i).unwrap_or(0),
             })
         })
         .collect())
@@ -2116,27 +2340,15 @@ mod tests {
         assert_eq!(detail.traces[0].session_id, "sess-1");
         assert_eq!(detail.traces[0].exceptions, 1);
 
-        // Distributions cover app releases (1.1.0 twice, 1.0.0 once), keyed as
-        // `app @ version` since a release is only meaningful within its app;
-        // the sources card doubles as the per-application distribution.
+        // Distributions cover app releases (1.1.0 twice, 1.0.0 once). All the
+        // occurrences share one source, so versions are keyed bare — the
+        // application is given by the (source-scoped) view.
         let versions = &detail.breakdowns.app_versions;
         assert_eq!(
             versions.first().map(|r| (r.key.as_str(), r.count)),
-            Some(("a.com @ 1.1.0", 2))
+            Some(("1.1.0", 2))
         );
-        assert!(
-            versions
-                .iter()
-                .any(|r| r.key == "a.com @ 1.0.0" && r.count == 1)
-        );
-        assert_eq!(
-            detail
-                .breakdowns
-                .sources
-                .first()
-                .map(|r| (r.key.as_str(), r.count)),
-            Some(("https://a.com", 3))
-        );
+        assert!(versions.iter().any(|r| r.key == "1.0.0" && r.count == 1));
 
         drop(store);
         let _ = std::fs::remove_file(&redb);
@@ -2154,6 +2366,143 @@ mod tests {
             event_name: Some(name.into()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn dashboard_breaks_down_event_names() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        let mut unnamed = custom_in("https://a.com", "s1", 4_000, "ignored");
+        unnamed.event_name = None;
+        store
+            .append_events(&[
+                load("https://a.com", 1_000, true, None),
+                custom_in("https://a.com", "s1", 2_000, "signup"),
+                custom_in("https://a.com", "s1", 3_000, "signup"),
+                custom_in("https://a.com", "s2", 3_500, "checkout"),
+                unnamed,
+            ])
+            .unwrap();
+
+        let dash = dashboard(&store, "/none", None, 0, 10_000, 86_400_000).unwrap();
+        let names: Vec<(&str, i64)> = dash
+            .breakdowns
+            .event_names
+            .iter()
+            .map(|r| (r.key.as_str(), r.events))
+            .collect();
+        // Ranked by count; unnamed events fold under the empty sentinel; page
+        // loads contribute nothing.
+        assert_eq!(names[0], ("signup", 2));
+        assert!(names.contains(&("checkout", 1)));
+        assert!(names.contains(&("", 1)));
+        assert_eq!(names.len(), 3);
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    #[test]
+    fn event_detail_collapses_metadata_variants() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        let mut with_meta = custom_in("https://a.com", "s1", 2_000, "signup");
+        with_meta.metadata_json = Some(r#"{"plan":"pro"}"#.into());
+        with_meta.pathname = Some("/pricing".into());
+        let mut repeat = custom_in("https://a.com", "s2", 3_000, "signup");
+        repeat.metadata_json = Some(r#"{"plan":"pro"}"#.into());
+        repeat.pathname = Some("/pricing".into());
+        repeat.ua_browser = Some("Firefox".into());
+        store
+            .append_events(&[
+                load("https://a.com", 1_000, true, None),
+                with_meta,
+                repeat,
+                custom_in("https://a.com", "s1", 4_000, "signup"),
+                custom_in("https://a.com", "s1", 5_000, "checkout"),
+            ])
+            .unwrap();
+
+        let detail = event_detail(&store, "/none", "signup", 0, 10_000, None, 10)
+            .unwrap()
+            .expect("signup resolves");
+        assert_eq!(detail.name, "signup");
+        assert_eq!(detail.count, 3);
+        assert_eq!(detail.first_seen_ms, 2_000);
+        assert_eq!(detail.last_seen_ms, 4_000);
+        assert_eq!(detail.trend.iter().sum::<i64>(), 3);
+
+        // Two variants: the shared metadata (count 2, context from its latest
+        // occurrence) and the metadata-less one.
+        assert_eq!(detail.variants.len(), 2);
+        let repeated = detail
+            .variants
+            .iter()
+            .find(|v| v.metadata.is_some())
+            .unwrap();
+        assert_eq!(repeated.count, 2);
+        assert_eq!(repeated.metadata.as_deref(), Some(r#"{"plan":"pro"}"#));
+        assert_eq!(repeated.ua_browser.as_deref(), Some("Firefox"));
+        assert_eq!(repeated.pathname.as_deref(), Some("/pricing"));
+        assert_eq!(repeated.session_id.as_deref(), Some("s2"));
+
+        // Distributions cover the event's occurrences only.
+        let pages = &detail.breakdowns.pages;
+        assert!(pages.iter().any(|r| r.key == "/pricing" && r.count == 2));
+
+        // Both sessions surface as traces; the other event name resolves
+        // separately, and an unknown one not at all.
+        assert_eq!(detail.traces.len(), 2);
+        assert!(
+            event_detail(&store, "/none", "checkout", 0, 10_000, None, 10)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            event_detail(&store, "/none", "nope", 0, 10_000, None, 10)
+                .unwrap()
+                .is_none()
+        );
+
+        // The dashboard filter scopes the detail like every other panel.
+        let filter = dash_filter(&store, r#"source == "https://other.com""#);
+        assert!(
+            event_detail(&store, "/none", "signup", 0, 10_000, Some(&filter), 10)
+                .unwrap()
+                .is_none()
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    #[test]
+    fn exception_versions_qualify_only_across_sources() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        let mut a = exc_on("https://a.com", "g1", 1_000);
+        a.app_version = Some("1.0.0".into());
+        let mut b = exc_on("https://b.com", "g1", 2_000);
+        b.app_version = Some("1.0.0".into());
+        store.append_events(&[a, b]).unwrap();
+
+        // Across two sources the bare number would be ambiguous, so rows stay
+        // qualified as `app @ version`.
+        let sources = ["https://a.com".to_string(), "https://b.com".to_string()];
+        let detail = exception_detail(&store, "/none", &sources, "g1", 0, 10_000, 10)
+            .unwrap()
+            .expect("g1 resolves");
+        let keys: Vec<&str> = detail
+            .breakdowns
+            .app_versions
+            .iter()
+            .map(|r| r.key.as_str())
+            .collect();
+        assert!(keys.contains(&"a.com @ 1.0.0"));
+        assert!(keys.contains(&"b.com @ 1.0.0"));
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
     }
 
     #[test]

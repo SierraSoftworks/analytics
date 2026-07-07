@@ -5,6 +5,7 @@
 //! server and by the WebAssembly `analytics-ui` frontend.
 
 mod auth;
+mod event;
 mod exception;
 mod health;
 mod instance;
@@ -16,6 +17,7 @@ mod trace;
 mod track;
 
 pub use auth::{AdminUser, CsrfToken};
+pub use event::{EventBreakdowns, EventDetail, EventVariant};
 pub use exception::{
     ExceptionBreakdowns, ExceptionGroup, ExceptionGroupDetail, ExceptionReport, ExceptionStatus,
     ExceptionVariant, GlobalException, TREND_BUCKETS, TriageInput,

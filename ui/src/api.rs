@@ -10,8 +10,8 @@
 use std::cell::RefCell;
 
 use analytics_api::{
-    AdminUser, CsrfToken, Dashboard, ExceptionGroupDetail, GlobalException, Instance, Pixel,
-    PixelInput, Project, ProjectInput, SessionTrace, Source, SourceInput, TriageInput,
+    AdminUser, CsrfToken, Dashboard, EventDetail, ExceptionGroupDetail, GlobalException, Instance,
+    Pixel, PixelInput, Project, ProjectInput, SessionTrace, Source, SourceInput, TriageInput,
 };
 use gloo_net::http::Request;
 use serde::Serialize;
@@ -252,15 +252,34 @@ pub async fn list_all_exceptions(query: &str) -> Result<Vec<GlobalException>, Ap
     get_json(&format!("/exceptions?{query}")).await
 }
 
+/// One custom/pixel event in detail. `query` is a pre-encoded dashboard query
+/// (range + `q`) so the numbers cover the same slice as the panel that linked
+/// here.
+pub async fn event_detail(name: &str, query: &str) -> Result<EventDetail, ApiError> {
+    let mut url = format!("/events?name={}", enc(name));
+    if !query.is_empty() {
+        url.push('&');
+        url.push_str(query);
+    }
+    get_json(&url).await
+}
+
 /// `range` is a pre-encoded `from=…&to=…` pair (empty for the server's
 /// all-time default) so the detail numbers cover the same window as the inbox
-/// row the operator clicked.
+/// row the operator clicked. `source` scopes the group to the application it
+/// was seen on — it is part of the group's identity.
 pub async fn exception_detail(
     group: &str,
     project: &str,
+    source: &str,
     range: &str,
 ) -> Result<ExceptionGroupDetail, ApiError> {
-    let mut url = format!("/exceptions/{}?project={}", enc(group), enc(project));
+    let mut url = format!(
+        "/exceptions/{}?project={}&source={}",
+        enc(group),
+        enc(project),
+        enc(source)
+    );
     if !range.is_empty() {
         url.push('&');
         url.push_str(range);

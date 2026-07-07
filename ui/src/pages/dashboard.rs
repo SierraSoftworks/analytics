@@ -10,12 +10,14 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
 use crate::api::{self, ApiError};
+use crate::app::Route;
 use crate::components::charts::Metric;
 use crate::components::{
-    ApiErrorAlert, BreakdownPanel, Dropdown, DropdownItem, FilterBar, MetricCards, PageHeader,
-    PanelRow, PanelTab, ProjectDrawer, ProjectsContext, SuggestOption, TimeSeriesChart, TraceList,
+    ActionIcon, ApiErrorAlert, BreakdownPanel, Dropdown, DropdownItem, FilterBar, MetricCards,
+    PageHeader, PanelRow, PanelTab, ProjectDrawer, ProjectsContext, SuggestOption, TimeSeriesChart,
+    TraceList,
 };
-use crate::filters::{Dim, TimeRange, use_apply_filters, use_filters};
+use crate::filters::{Dim, TimeRange, use_apply_filters, use_filters, use_navigate_with_query};
 use crate::format::{country_flag, country_name, group_thousands, language_name};
 
 #[function_component(Dashboard)]
@@ -132,6 +134,17 @@ pub fn dashboard() -> Html {
     let close_manage = {
         let manage_project = manage_project.clone();
         Callback::from(move |_: ()| manage_project.set(None))
+    };
+    // Open an event's detail view, carrying the filter state so its numbers
+    // cover the same slice as the row that was clicked.
+    let open_event = {
+        let navigate = use_navigate_with_query();
+        let filters = filters.clone();
+        Callback::from(move |name: String| {
+            let mut pairs = filters.to_pairs();
+            pairs.push(("name".into(), name));
+            navigate.emit((Route::Event, pairs));
+        })
     };
     let bump = {
         let reload = reload.clone();
@@ -271,11 +284,20 @@ pub fn dashboard() -> Html {
             // site/app is this?" is the first drill-down an operator reaches
             // for. Projects (which merely group sources) sit last.
             let source_tabs = vec![PanelTab::new("Sources", Dim::Source, source_rows)];
-            let pages_tabs = vec![PanelTab::new(
-                "Top pages",
-                Dim::Path,
-                plain(&dash.breakdowns.pages, "Unknown"),
-            )];
+            let pages_tabs = vec![
+                PanelTab::new(
+                    "Top pages",
+                    Dim::Path,
+                    plain(&dash.breakdowns.pages, "Unknown"),
+                ),
+                PanelTab::new(
+                    "Events",
+                    Dim::EventName,
+                    plain(&dash.breakdowns.event_names, Dim::EventName.absent_label()),
+                )
+                .with_action("View event details", open_event.clone())
+                .with_action_icon(ActionIcon::Open),
+            ];
             let acquisition_tabs = vec![
                 PanelTab::new(
                     "Referrers",
@@ -362,7 +384,10 @@ pub fn dashboard() -> Html {
                     </div>
                     <div class="panel-grid">
                         <BreakdownPanel tabs={source_tabs} metric={*metric} on_filter={on_filter.clone()} active={active.clone()} />
-                        <BreakdownPanel tabs={pages_tabs} metric={*metric} on_filter={on_filter.clone()} active={active.clone()} />
+                        // Follows the metric: Events mode surfaces the event-name
+                        // histogram, the view metrics bring Top pages back.
+                        <BreakdownPanel tabs={pages_tabs} metric={*metric} on_filter={on_filter.clone()} active={active.clone()}
+                            select_tab={Some(if *metric == Metric::Events { 1 } else { 0 })} />
                         <BreakdownPanel tabs={acquisition_tabs} metric={*metric} on_filter={on_filter.clone()} active={active.clone()} />
                         <BreakdownPanel tabs={location_tabs} metric={*metric} on_filter={on_filter.clone()} active={active.clone()} />
                         <BreakdownPanel tabs={platform_tabs} metric={*metric} on_filter={on_filter.clone()} active={active.clone()} />
@@ -443,6 +468,10 @@ fn build_suggestions(
                 .collect(),
         ),
         (Dim::Path, rows(&dash.breakdowns.pages, "Unknown")),
+        (
+            Dim::EventName,
+            rows(&dash.breakdowns.event_names, Dim::EventName.absent_label()),
+        ),
         (
             Dim::Referrer,
             rows(&dash.breakdowns.referrers, Dim::Referrer.absent_label()),

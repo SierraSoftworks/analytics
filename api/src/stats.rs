@@ -131,6 +131,11 @@ pub struct Breakdowns {
     pub utm_sources: Vec<BreakdownRow>,
     pub utm_mediums: Vec<BreakdownRow>,
     pub utm_campaigns: Vec<BreakdownRow>,
+    /// Custom/pixel events keyed by event name (`events` carries the count;
+    /// page-view columns are zero). `serde(default)` tolerates payloads from
+    /// agents predating the column.
+    #[serde(default)]
+    pub event_names: Vec<BreakdownRow>,
     /// Keyed by project id (the UI maps ids to names). Includes pixel and
     /// custom events in `events`.
     pub projects: Vec<BreakdownRow>,
