@@ -2,6 +2,7 @@ mod alert;
 mod app_bar;
 mod breakdown;
 pub mod charts;
+mod distribution;
 mod drawer;
 mod dropdown;
 mod error;
@@ -19,8 +20,9 @@ mod trace_list;
 
 pub use alert::{Alert, AlertKind};
 pub use app_bar::AppBar;
-pub use breakdown::{BreakdownPanel, PanelRow, PanelTab};
+pub use breakdown::{ActionIcon, BreakdownPanel, PanelRow, PanelTab};
 pub use charts::{Sparkline, TimeSeriesChart};
+pub use distribution::distribution;
 pub use drawer::Drawer;
 pub use dropdown::{Dropdown, DropdownItem};
 pub use error::ApiErrorAlert;

@@ -1,4 +1,5 @@
 mod dashboard;
+mod event_detail;
 mod exception_detail;
 mod exceptions;
 mod misc;
@@ -7,6 +8,7 @@ mod settings;
 mod trace;
 
 pub use dashboard::Dashboard;
+pub use event_detail::EventDetail;
 pub use exception_detail::ExceptionDetail;
 pub use exceptions::Exceptions;
 pub use misc::{Login, NotFound};

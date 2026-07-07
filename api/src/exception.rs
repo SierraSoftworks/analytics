@@ -147,11 +147,17 @@ pub struct GlobalException {
     pub source: String,
 }
 
-/// Payload for updating an exception group's triage state.
+/// Payload for updating an exception group's triage state. Triage is scoped to
+/// the group's source (the same fingerprint on two applications is two
+/// independent failures); `source` is optional only for compatibility with
+/// pre-source clients, whose triage applies project-wide.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TriageInput {
     pub project_id: String,
     pub status: ExceptionStatus,
     #[serde(default)]
     pub note: Option<String>,
+    /// The source URI the triaged group was seen on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }

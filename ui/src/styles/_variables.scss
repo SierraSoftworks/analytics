@@ -44,6 +44,9 @@
   --danger-soft: rgba(237, 106, 100, 0.14);
   --info: #8b92a0;
   --info-soft: rgba(139, 146, 160, 0.14);
+  // Muting/ignoring — a violet distinct from every status colour above.
+  --mute: #a78bfa;
+  --mute-soft: rgba(167, 139, 250, 0.16);
 
   // Charts & breakdown bars.
   --chart-grid: rgba(255, 255, 255, 0.04);

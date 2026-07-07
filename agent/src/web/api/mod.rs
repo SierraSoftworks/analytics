@@ -6,6 +6,7 @@
 //! mutating requests, and rate-limits unauthenticated callers by IP.
 
 mod auth;
+mod events;
 mod exceptions;
 mod instance;
 mod me;
@@ -90,6 +91,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                     .route("/pixels/{id}", web::get().to(pixels::get))
                     .route("/pixels/{id}", web::put().to(pixels::update))
                     .route("/pixels/{id}", web::delete().to(pixels::delete))
+                    .route("/events", web::get().to(events::detail))
                     .route("/exceptions", web::get().to(exceptions::list_all))
                     .route("/exceptions/{group}", web::get().to(exceptions::detail))
                     .route("/exceptions/{group}", web::patch().to(exceptions::triage))

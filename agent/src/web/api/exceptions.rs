@@ -14,9 +14,31 @@ use super::query::resolve_range;
 use super::{Authenticated, internal_error, json_error};
 use crate::analytics::{self, filter::FieldSet};
 use crate::state::AppState;
-use crate::store::ExceptionTriage;
+use crate::store::{ExceptionTriage, Store};
 
 const VARIANT_LIMIT: usize = 50;
+
+/// The triage-store group key for a source-scoped exception group. Triage is
+/// per `(project, fingerprint, source)` — the same fingerprint on two
+/// applications is two independent failures. The fingerprint is 16 hex chars,
+/// so the `@` join is unambiguous.
+fn scoped_group(group_id: &str, source: &str) -> String {
+    format!("{group_id}@{source}")
+}
+
+/// Look up triage for a source-scoped group, falling back to the pre-source
+/// project-wide key so records written before source scoping keep applying.
+fn get_triage_scoped(
+    store: &Store,
+    project_id: &str,
+    group_id: &str,
+    source: &str,
+) -> crate::errors::Result<Option<ExceptionTriage>> {
+    if let Some(triage) = store.get_triage(project_id, &scoped_group(group_id, source))? {
+        return Ok(Some(triage));
+    }
+    store.get_triage(project_id, group_id)
+}
 
 /// Query parameters for the global exceptions inbox: a time range plus a
 /// filt-rs `q` expression over the dimensions exception events carry
@@ -74,45 +96,27 @@ pub async fn list_all(
             .map(|p| (p.id, p.name))
             .collect();
 
-        // Fold per-(fingerprint, source) rows up to per-(fingerprint, project) rows
-        // so a project's count matches its detail page. Unassigned sources are keyed
-        // by source so each stays its own row (no project to merge into). Trends are
-        // summed element-wise — every row shares the same [from, to) bucket grid.
-        use std::collections::hash_map::Entry;
-        let mut acc: HashMap<(String, String), GlobalException> = HashMap::new();
-        for (group, source) in per_source {
+        // One row per (fingerprint, source): a group's identity is the failure
+        // *on that application* — the same fingerprint on two sources is two
+        // independent rows, each annotated with its owning project (when the
+        // source is assigned) for display and triage.
+        let mut out: Vec<GlobalException> = Vec::with_capacity(per_source.len());
+        for (mut group, source) in per_source {
             let project_id = uri_project.get(&source).cloned();
-            let bucket = project_id.clone().unwrap_or_else(|| format!("@{source}"));
-            let key = (group.group_id.clone(), bucket);
-            match acc.entry(key) {
-                Entry::Occupied(mut e) => {
-                    let g = &mut e.get_mut().group;
-                    g.count += group.count;
-                    g.first_seen_ms = g.first_seen_ms.min(group.first_seen_ms);
-                    g.last_seen_ms = g.last_seen_ms.max(group.last_seen_ms);
-                    analytics::merge_trends(&mut g.trend, &group.trend);
+            let mut project_name = None;
+            if let Some(pid) = &project_id {
+                if let Some(triage) = get_triage_scoped(&store, pid, &group.group_id, &source)? {
+                    group.status = triage.status;
+                    group.note = triage.note;
                 }
-                Entry::Vacant(e) => {
-                    e.insert(GlobalException {
-                        group,
-                        project_id,
-                        project_name: None,
-                        source,
-                    });
-                }
+                project_name = project_names.get(pid).cloned();
             }
-        }
-
-        let mut out: Vec<GlobalException> = Vec::with_capacity(acc.len());
-        for (_, mut item) in acc {
-            if let Some(pid) = &item.project_id {
-                if let Some(triage) = store.get_triage(pid, &item.group.group_id)? {
-                    item.group.status = triage.status;
-                    item.group.note = triage.note;
-                }
-                item.project_name = project_names.get(pid).cloned();
-            }
-            out.push(item);
+            out.push(GlobalException {
+                group,
+                project_id,
+                project_name,
+                source,
+            });
         }
         out.sort_by_key(|e| std::cmp::Reverse(e.group.last_seen_ms));
         Ok(out)
@@ -135,11 +139,16 @@ pub async fn list_all(
 #[derive(Deserialize)]
 pub struct DetailQuery {
     project: String,
+    /// The source URI the group was seen on. Scopes the detail (and its triage
+    /// state) to that one application; absent on pre-source links, which fall
+    /// back to the project-wide aggregate.
+    source: Option<String>,
     from: Option<i64>,
     to: Option<i64>,
 }
 
-/// `GET /api/v1/exceptions/{group_id}?project=…` — a group with recent occurrences.
+/// `GET /api/v1/exceptions/{group_id}?project=…&source=…` — a group with
+/// recent occurrences, scoped to the source it was seen on.
 ///
 /// Without an explicit range this looks across **all time**: a group linked
 /// from the inbox (which may cover a 12-month window) or from an old bookmark
@@ -151,6 +160,11 @@ pub async fn detail(
 ) -> HttpResponse {
     let group_id = path.into_inner();
     let project_id = query.project.clone();
+    let source = query
+        .source
+        .clone()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let now = Utc::now().timestamp_millis();
     let to = query
         .to
@@ -162,7 +176,10 @@ pub async fn detail(
 
     let result = web::block(
         move || -> crate::errors::Result<Option<ExceptionGroupDetail>> {
-            let sources = analytics::project_source_uris(&store, &project_id)?;
+            let sources = match &source {
+                Some(source) => vec![source.clone()],
+                None => analytics::project_source_uris(&store, &project_id)?,
+            };
             let Some(mut detail) = analytics::exception_detail(
                 &store,
                 &parquet_dir,
@@ -175,7 +192,11 @@ pub async fn detail(
             else {
                 return Ok(None);
             };
-            if let Some(triage) = store.get_triage(&project_id, &group_id)? {
+            let triage = match &source {
+                Some(source) => get_triage_scoped(&store, &project_id, &group_id, source)?,
+                None => store.get_triage(&project_id, &group_id)?,
+            };
+            if let Some(triage) = triage {
                 detail.group.status = triage.status;
                 detail.group.note = triage.note;
             }
@@ -219,9 +240,21 @@ pub async fn triage(
         updated_by,
     };
 
+    // Source-scoped when the client says which source the group was seen on;
+    // bare (project-wide) only for pre-source clients.
+    let group_key = match input
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(source) => scoped_group(&group_id, source),
+        None => group_id,
+    };
+
     match state
         .store
-        .put_triage(&input.project_id, &group_id, &triage)
+        .put_triage(&input.project_id, &group_key, &triage)
     {
         Ok(()) => HttpResponse::NoContent().finish(),
         Err(err) => internal_error(err),

@@ -18,7 +18,7 @@ use crate::components::status::{status_class, status_label};
 use crate::components::{
     ApiErrorAlert, FilterBar, PageHeader, ProjectsContext, Sparkline, SuggestOption,
 };
-use crate::filters::{Dim, use_filters, use_navigate_with_filters};
+use crate::filters::{Dim, use_filters, use_navigate_with_query};
 use crate::format::{ago, group_thousands};
 
 thread_local! {
@@ -232,8 +232,17 @@ fn exception_row(e: &GlobalException) -> Html {
                 <div class="exc-row__meta">
                     <span class={status_class(e.group.status)}>{ status_label(e.group.status) }</span>
                     {
+                        // Groups are per source, so the row names the application
+                        // it failed on alongside its owning project.
                         match &e.project_name {
-                            Some(name) => html! { <span class="exc-row__project">{ name.clone() }</span> },
+                            Some(name) => html! {
+                                <>
+                                    <span class="exc-row__project">{ name.clone() }</span>
+                                    <code class="exc-row__source" title={e.source.clone()}>
+                                        { analytics_api::source_label(&e.source) }
+                                    </code>
+                                </>
+                            },
                             None => html! {
                                 <span class="badge badge--muted"
                                     title="This source is not assigned to a project — assign it to enable triage and detail.">
@@ -257,7 +266,11 @@ fn exception_row(e: &GlobalException) -> Html {
     // by project); unassigned rows render inert with an explanatory badge.
     match &e.project_id {
         Some(project) => html! {
-            <ExceptionLink project={project.clone()} group={e.group.group_id.clone()}>
+            <ExceptionLink
+                project={project.clone()}
+                group={e.group.group_id.clone()}
+                source={e.source.clone()}
+            >
                 { row_body }
             </ExceptionLink>
         },
@@ -269,26 +282,34 @@ fn exception_row(e: &GlobalException) -> Html {
 struct ExceptionLinkProps {
     project: String,
     group: String,
+    source: String,
     children: Html,
 }
 
 /// A row that navigates to the exception detail page, carrying the current
-/// filter state so returning to the inbox restores it. Rendered as a
-/// role="button" div (not a `<button>`) because the row contains flow content
-/// and badges, which the button content model forbids.
+/// filter state (so returning to the inbox restores it) plus the row's source
+/// (a group's identity is fingerprint + the application it was seen on).
+/// Rendered as a role="button" div (not a `<button>`) because the row contains
+/// flow content and badges, which the button content model forbids.
 #[function_component(ExceptionLink)]
 fn exception_link(props: &ExceptionLinkProps) -> Html {
     let filters = use_filters();
-    let navigate = use_navigate_with_filters();
+    let navigate = use_navigate_with_query();
     let go = {
-        let (project, group) = (props.project.clone(), props.group.clone());
+        let (project, group, source) = (
+            props.project.clone(),
+            props.group.clone(),
+            props.source.clone(),
+        );
         move || {
+            let mut pairs = filters.to_pairs();
+            pairs.push(("source".into(), source.clone()));
             navigate.emit((
                 Route::Exception {
                     project: project.clone(),
                     group: group.clone(),
                 },
-                filters.clone(),
+                pairs,
             ));
         }
     };

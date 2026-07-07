@@ -23,6 +23,11 @@ pub enum Route {
     Project { id: String },
     #[at("/projects/:project/exceptions/:group")]
     Exception { project: String, group: String },
+    /// One custom/pixel event in detail. The event name rides in the query
+    /// string (`?name=…`) — names are reporter-chosen free text, so encoding
+    /// them into the path would break routing on slashes and spaces.
+    #[at("/events")]
+    Event,
     /// One session's event timeline, keyed by the tracker's session id.
     #[at("/traces/:id")]
     Trace { id: String },
@@ -150,6 +155,7 @@ fn switch(route: Route) -> Html {
         Route::Exception { project, group } => {
             html! { <pages::ExceptionDetail {project} {group} /> }
         }
+        Route::Event => html! { <pages::EventDetail /> },
         Route::Trace { id } => html! { <pages::Trace {id} /> },
         Route::Pixels => html! { <pages::Pixels /> },
         Route::Settings => html! { <pages::Settings /> },

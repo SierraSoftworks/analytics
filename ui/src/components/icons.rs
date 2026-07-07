@@ -132,6 +132,37 @@ pub fn chevron_right() -> Html {
     })
 }
 
+/// A checkmark (the resolve action).
+pub fn check() -> Html {
+    icon(html! {
+        <polyline points="20 6 9 17 4 12" />
+    })
+}
+
+/// A muted bell (the ignore action).
+pub fn mute() -> Html {
+    icon(html! {
+        <>
+            <path d="M8.7 3a6 6 0 0 1 9.3 5c0 3.2.6 5.3 1.3 6.7" />
+            <path d="M17 17H3s3-2 3-9a6 6 0 0 1 .3-1.9" />
+            <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+            <line x1="2" y1="2" x2="22" y2="22" />
+        </>
+    })
+}
+
+/// A checkmark struck through (the reopen action: un-resolve). The strike
+/// carries its own class so the button can colour it independently of the
+/// checkmark.
+pub fn check_struck() -> Html {
+    icon(html! {
+        <>
+            <polyline points="20 6 9 17 4 12" />
+            <line class="icon-strike" x1="4" y1="5" x2="20" y2="21" />
+        </>
+    })
+}
+
 pub fn chevron_left() -> Html {
     icon(html! {
         <polyline points="15 18 9 12 15 6" />

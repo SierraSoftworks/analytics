@@ -104,6 +104,12 @@
     font-weight: 500;
   }
 
+  // The application the group failed on (groups are per source).
+  &__source {
+    font-size: 0.74rem;
+    color: var(--text-4);
+  }
+
   &__trend {
     width: 110px;
     flex-shrink: 0;
@@ -128,27 +134,41 @@
   }
 }
 
-// Detail header: status, message, actions, and the trend sparkline.
+// Detail header (exceptions and events alike): the identity line — status,
+// type, exemplar message — with the triage actions floated to its end, the
+// meta line beneath, and the trend sparkline across the card's full width.
 .exc-head {
   display: flex;
-  align-items: stretch;
-  gap: 1.5rem;
+  flex-direction: column;
+  gap: 0.55rem;
   margin-top: 0;
 
-  &__status {
-    flex: 1;
-    min-width: 0;
+  &__top {
     display: flex;
-    flex-direction: column;
-    align-items: flex-start;
+    align-items: center;
+    gap: 0.6rem;
+    min-width: 0;
+  }
+
+  &__title {
+    display: flex;
+    align-items: baseline;
     gap: 0.55rem;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  &__type {
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--brand-2);
   }
 
   &__message {
-    margin: 0;
     font-family: var(--font-mono);
-    font-size: 0.92rem;
-    color: var(--text);
+    font-size: 0.88rem;
+    color: var(--text-2);
     word-break: break-word;
   }
 
@@ -157,23 +177,96 @@
   }
 
   &__actions {
+    margin-left: auto;
+    align-self: flex-start;
     display: flex;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-    margin-top: 0.25rem;
+    gap: 0.45rem;
+    flex-shrink: 0;
   }
 
   &__trend {
-    width: 220px;
-    flex-shrink: 0;
+    width: 100%;
     display: flex;
     flex-direction: column;
-    justify-content: center;
     gap: 0.45rem;
+    margin-top: 0.2rem;
   }
 
   &__spark {
-    height: 48px;
+    width: 100%;
+    height: 56px;
+
+    // Event trends are traffic, not trouble — brand teal, not amber.
+    &--brand .sparkline__line {
+      stroke: var(--brand);
+    }
+    &--brand .sparkline__area {
+      fill: var(--brand-soft);
+    }
+  }
+}
+
+// The triage actions: square icon chips whose colour + glyph carry the verb
+// (green check = resolve, violet muted bell = ignore, struck check = reopen).
+// The current state's action renders disabled.
+.exc-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  cursor: pointer;
+  transition:
+    background var(--transition),
+    border-color var(--transition);
+
+  svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  &:focus-visible {
+    @include focus-ring;
+  }
+
+  &--resolve {
+    color: var(--ok);
+    background: var(--ok-soft);
+
+    &:hover:not(:disabled) {
+      border-color: var(--ok);
+    }
+  }
+
+  &--ignore {
+    color: var(--mute);
+    background: var(--mute-soft);
+
+    &:hover:not(:disabled) {
+      border-color: var(--mute);
+    }
+  }
+
+  // A white checkmark struck through in red: "this is no longer resolved".
+  &--reopen {
+    color: var(--text);
+    background: var(--surface-3);
+
+    .icon-strike {
+      stroke: var(--danger);
+    }
+
+    &:hover:not(:disabled) {
+      border-color: var(--danger);
+    }
   }
 }
 
@@ -183,6 +276,11 @@
   grid-template-columns: repeat(3, 1fr);
   gap: 1rem;
   margin: 0.5rem 0 1.5rem;
+
+  // Event detail pages: volume reads in brand teal, not incident red.
+  &--brand .dist__bar {
+    background: var(--brand-soft);
+  }
 }
 
 .dist {
@@ -339,13 +437,8 @@
   .exc-row__trend {
     display: none;
   }
-  .exc-head {
-    flex-direction: column;
-    gap: 0.75rem;
-
-    &__trend {
-      width: 100%;
-    }
+  .exc-head__top {
+    flex-wrap: wrap;
   }
   .dist-grid {
     grid-template-columns: 1fr;

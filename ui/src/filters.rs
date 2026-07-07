@@ -47,10 +47,13 @@ pub enum Dim {
     UtmMedium,
     UtmCampaign,
     AppVersion,
+    /// The name of a custom/pixel event (page views carry none, so an event
+    /// filter scopes the view to those events).
+    EventName,
 }
 
 impl Dim {
-    pub const ALL: [Dim; 14] = [
+    pub const ALL: [Dim; 15] = [
         Dim::Project,
         Dim::Source,
         Dim::Path,
@@ -65,6 +68,7 @@ impl Dim {
         Dim::UtmMedium,
         Dim::UtmCampaign,
         Dim::AppVersion,
+        Dim::EventName,
     ];
 
     /// The field name used in filter expressions.
@@ -84,6 +88,7 @@ impl Dim {
             Dim::UtmMedium => "utm_medium",
             Dim::UtmCampaign => "utm_campaign",
             Dim::AppVersion => "app_version",
+            Dim::EventName => "event",
         }
     }
 
@@ -111,6 +116,7 @@ impl Dim {
             Dim::UtmMedium => "UTM medium",
             Dim::UtmCampaign => "UTM campaign",
             Dim::AppVersion => "App version",
+            Dim::EventName => "Event",
         }
     }
 
@@ -119,6 +125,7 @@ impl Dim {
         match self {
             Dim::Referrer => "Direct / none",
             Dim::UtmSource | Dim::UtmMedium | Dim::UtmCampaign => "None",
+            Dim::EventName => "Unnamed",
             _ => "Unknown",
         }
     }
@@ -174,6 +181,7 @@ const DASHBOARD_FIELDS: &[&str] = &[
     "utm_source",
     "utm_medium",
     "utm_campaign",
+    "event",
 ];
 
 /// A relative lookback preset. Presets stay relative in the URL (`range=7d`), so
@@ -861,6 +869,15 @@ fn decode(value: &str) -> String {
         .unwrap_or_else(|_| value.to_string())
 }
 
+/// The decoded value of a single query-string parameter, for the page-identity
+/// keys (`name`, `source`) that ride alongside the filter state.
+pub fn query_param(query_str: &str, key: &str) -> Option<String> {
+    pairs_of(query_str)
+        .into_iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v)
+}
+
 fn encode_pairs(pairs: &[(String, String)]) -> String {
     pairs
         .iter()
@@ -906,5 +923,16 @@ pub fn use_navigate_with_filters() -> Callback<(Route, FilterSet)> {
     Callback::from(move |(route, filters): (Route, FilterSet)| {
         let Some(navigator) = &navigator else { return };
         let _ = navigator.push_with_query(&route, &filters.to_pairs());
+    })
+}
+
+/// Navigate to `route` with explicit query pairs — the filter state plus a
+/// page-identity key like an event `name` or exception `source`.
+#[hook]
+pub fn use_navigate_with_query() -> Callback<(Route, Vec<(String, String)>)> {
+    let navigator = use_navigator();
+    Callback::from(move |(route, pairs): (Route, Vec<(String, String)>)| {
+        let Some(navigator) = &navigator else { return };
+        let _ = navigator.push_with_query(&route, &pairs);
     })
 }

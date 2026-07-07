@@ -39,6 +39,24 @@ impl PanelRow {
     }
 }
 
+/// The glyph rendered on a tab's per-row action.
+#[derive(Clone, Copy, PartialEq)]
+pub enum ActionIcon {
+    /// Configure the row's entity (e.g. "manage project").
+    Gear,
+    /// Open the row's detail page.
+    Open,
+}
+
+impl ActionIcon {
+    fn render(self) -> Html {
+        match self {
+            ActionIcon::Gear => icons::gear(),
+            ActionIcon::Open => icons::chevron_right(),
+        }
+    }
+}
+
 /// One tab of a panel: a labelled set of rows filtering one dimension.
 #[derive(Clone, PartialEq)]
 pub struct PanelTab {
@@ -49,6 +67,8 @@ pub struct PanelTab {
     pub action: Option<Callback<String>>,
     /// The icon title for the per-row action.
     pub action_title: &'static str,
+    /// The glyph for the per-row action (a gear unless overridden).
+    pub action_icon: ActionIcon,
 }
 
 impl PanelTab {
@@ -59,12 +79,18 @@ impl PanelTab {
             rows,
             action: None,
             action_title: "",
+            action_icon: ActionIcon::Gear,
         }
     }
 
     pub fn with_action(mut self, title: &'static str, action: Callback<String>) -> Self {
         self.action = Some(action);
         self.action_title = title;
+        self
+    }
+
+    pub fn with_action_icon(mut self, icon: ActionIcon) -> Self {
+        self.action_icon = icon;
         self
     }
 }
@@ -79,6 +105,11 @@ pub struct BreakdownPanelProps {
     /// The active filter value per dimension (highlights the selected row).
     #[prop_or_default]
     pub active: Vec<(Dim, String)>,
+    /// When set, the panel adopts this tab index whenever the value *changes*
+    /// (e.g. the pages panel follows the dashboard metric to its Events tab).
+    /// Manual tab clicks still work in between changes.
+    #[prop_or_default]
+    pub select_tab: Option<usize>,
 }
 
 /// Rows shown per panel before the "Show all" affordance takes over — enough
@@ -88,8 +119,24 @@ const VISIBLE_ROWS: usize = 8;
 
 #[function_component(BreakdownPanel)]
 pub fn breakdown_panel(props: &BreakdownPanelProps) -> Html {
-    let tab_index = use_state(|| 0usize);
+    let tab_index = use_state(|| props.select_tab.unwrap_or(0));
     let expanded = use_state(|| false);
+
+    // Follow externally-driven tab selection (fires only when the value
+    // changes, so it never overrides a manual click in between).
+    {
+        let (tab_index, expanded) = (tab_index.clone(), expanded.clone());
+        use_effect_with(props.select_tab, move |select| {
+            if let Some(i) = *select
+                && *tab_index != i
+            {
+                tab_index.set(i);
+                expanded.set(false);
+            }
+            || ()
+        });
+    }
+
     let index = (*tab_index).min(props.tabs.len().saturating_sub(1));
     let Some(tab) = props.tabs.get(index) else {
         return html! {};
@@ -113,15 +160,17 @@ pub fn breakdown_panel(props: &BreakdownPanelProps) -> Html {
         }
     });
 
-    // Dimension tabs carry no events at all; when the Events metric is active
-    // there, fall back to page views for the *whole tab* (mixing real event
-    // counts with pageview fallbacks per-row would rank apples against
-    // oranges). Tabs with any real events display true event counts.
+    // Most dimension tabs carry no events at all; when the Events metric is
+    // active there, fall back to page views for the *whole tab* (mixing real
+    // event counts with pageview fallbacks per-row would rank apples against
+    // oranges). The Events tab is the mirror image — its rows carry nothing
+    // *but* events — so a view metric falls back to event counts there.
     let tab_has_events = tab.rows.iter().any(|r| r.events > 0);
-    let metric = if props.metric == Metric::Events && !tab_has_events {
-        Metric::Pageviews
-    } else {
-        props.metric
+    let tab_has_views = tab.rows.iter().any(|r| r.pageviews > 0 || r.visitors > 0);
+    let metric = match props.metric {
+        Metric::Events if !tab_has_events => Metric::Pageviews,
+        m if m != Metric::Events && !tab_has_views && tab_has_events => Metric::Events,
+        m => m,
     };
     // The API orders rows by pageviews; re-rank by whichever metric is displayed.
     let mut ranked: Vec<&PanelRow> = tab.rows.iter().collect();
@@ -168,13 +217,14 @@ pub fn breakdown_panel(props: &BreakdownPanelProps) -> Html {
         };
         // The action is a sibling of the row button (never a child — nested
         // interactive elements are invalid HTML and confuse assistive tech),
-        // absolutely positioned over the row's end on hover.
-        let action = tab.action.as_ref().map(|action| {
+        // absolutely positioned over the row's end on hover. Sentinel rows
+        // aggregate absent values, which no detail page can address.
+        let action = tab.action.as_ref().filter(|_| !row.value.is_empty()).map(|action| {
             let (action, value) = (action.clone(), row.value.clone());
             let onclick = Callback::from(move |_: MouseEvent| action.emit(value.clone()));
             html! {
                 <button class="brow__action" title={tab.action_title} onclick={onclick}>
-                    { icons::gear() }
+                    { tab.action_icon.render() }
                 </button>
             }
         });
