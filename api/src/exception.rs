@@ -23,8 +23,9 @@ pub struct ExceptionReport {
     #[serde(rename = "b", default, skip_serializing_if = "Option::is_none")]
     pub beacon: Option<String>,
     /// The per-visit session id (see [`crate::TrackEvent::session`]), linking
-    /// the report to the visit's page views. (`s` is taken by the stack.)
-    #[serde(rename = "sid", default, skip_serializing_if = "Option::is_none")]
+    /// the report to the visit's page views. Same `i` key as on hits (`s` is
+    /// taken by the stack here).
+    #[serde(rename = "i", default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
     /// The exception type/name (e.g. "TypeError").
     #[serde(rename = "ty")]

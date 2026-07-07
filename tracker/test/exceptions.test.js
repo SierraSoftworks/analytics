@@ -63,7 +63,7 @@ describe("buildExceptionPayload", () => {
       m: "boom",
       h: true,
       b: "b1",
-      sid: "s1",
+      i: "s1",
       s: "at x",
       v: "1.4.2",
       d: { k: "v" },
@@ -107,7 +107,7 @@ describe("createExceptionReporter", () => {
     expect(sent[0]).toMatchObject({
       u: "https://a/x",
       b: "b1",
-      sid: "s1",
+      i: "s1",
       ty: "Error",
       m: "boom",
       h: true,

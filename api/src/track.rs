@@ -9,9 +9,10 @@ pub struct TrackEvent {
     #[serde(rename = "b")]
     pub beacon: String,
     /// Per-visit session id, linking the page views of one continuous visit.
-    /// Held only in the tracker's memory (never a cookie or storage), so it
-    /// spans SPA navigations and resets on a full reload.
-    #[serde(rename = "s", default, skip_serializing_if = "Option::is_none")]
+    /// Tab-scoped: the tracker keeps it in `sessionStorage`, so it survives
+    /// full page navigations on traditional sites but never outlives the tab
+    /// (and is never a cookie). The same key carries it on exception reports.
+    #[serde(rename = "i", default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
     #[serde(rename = "e", default)]
     pub kind: BeaconKind,

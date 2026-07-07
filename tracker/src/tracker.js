@@ -1,10 +1,11 @@
 // The privacy-preserving tracking beacon.
 //
 // Reports page views, time-on-page and (opt-in) client exceptions to an analytics
-// agent. No cookies, no persistent identifiers: a fresh per-page-view id links a
-// view's load/unload beacons, an in-memory per-visit session id links one visit's
-// events into a trace, and daily-unique counts are derived server-side from the
-// HTTP conditional-request cache trick rather than any stored id.
+// agent. No cookies, nothing outlives the tab: a fresh per-page-view id links a
+// view's load/unload beacons, a tab-scoped (sessionStorage) per-visit session id
+// links one visit's events into a trace, and daily-unique counts are derived
+// server-side from the HTTP conditional-request cache trick rather than any
+// stored id.
 //
 // Configured declaratively on the <script> tag:
 //   data-api="https://analytics.example.com"   collection host (default: same origin)
@@ -27,6 +28,28 @@ function attr(el, name) {
 // meant to be — it only needs to link related beacons within one browser.
 function newId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2);
+}
+
+// The sessionStorage key holding the per-visit session id.
+var SESSION_KEY = "analytics-session";
+
+// The per-visit session id linking one visit's page views, events and exceptions.
+// It is scoped to the tab via sessionStorage, so full page navigations on
+// traditional multi-page sites keep the session, while the browser clears it when
+// the tab closes — nothing outlives the tab, and nothing is shared across tabs.
+// Where storage is unavailable (disabled, private modes that throw), falls back to
+// an in-memory id: the session then lasts one JS context.
+function sessionId(win) {
+  try {
+    var store = win.sessionStorage;
+    var existing = store.getItem(SESSION_KEY);
+    if (existing) return existing;
+    var id = newId();
+    store.setItem(SESSION_KEY, id);
+    return id;
+  } catch (e) {
+    return newId();
+  }
 }
 
 // Initialise the tracker against the ambient browser (or the injected `overrides`,
@@ -67,11 +90,9 @@ export function init(overrides) {
   const loc = win.location;
   const transport = createTransport(api, { fetch: overrides.fetch, navigator: nav });
 
-  // A per-visit session id linking the page views, events and exceptions of one
-  // continuous visit. It lives only in this closure — never in a cookie or
-  // storage — so SPA navigations share it and a full reload (or a new tab)
-  // starts a fresh session, keeping the no-persistent-identifier promise.
-  const session = newId();
+  // Resolved after the privacy check on purpose: under DNT/GPC nothing is ever
+  // written, not even the tab-scoped session id.
+  const session = sessionId(win);
 
   let beacon = newId();
   let startedAt = now();
@@ -91,7 +112,7 @@ export function init(overrides) {
   // Send a hit. `url` defaults to the live location (correct for load/custom); the
   // unload path passes the captured view URL instead.
   function send(kind, extra, useBeacon, url) {
-    const payload = { b: beacon, s: session, e: kind, u: url || loc.href };
+    const payload = { b: beacon, i: session, e: kind, u: url || loc.href };
     if (timezone) payload.t = timezone;
     if (doc.referrer) payload.r = doc.referrer;
     if (extra) {

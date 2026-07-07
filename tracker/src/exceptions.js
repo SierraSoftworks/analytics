@@ -46,7 +46,7 @@ export function buildExceptionPayload(desc, opts) {
     h: !!opts.handled,
   };
   if (opts.beacon) payload.b = opts.beacon;
-  if (opts.session) payload.sid = opts.session;
+  if (opts.session) payload.i = opts.session;
   if (desc.stack) {
     payload.s =
       desc.stack.length > MAX_STACK ? desc.stack.slice(0, MAX_STACK) : desc.stack;
