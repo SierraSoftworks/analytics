@@ -150,7 +150,7 @@ impl Node {
                 .and(col(field.column).neq(lit("")))),
             Node::Column(field) => Ok(col(field.column).fill_null(lit(false))),
             Node::Bool(value) => Ok(lit(value)),
-            Node::Project => Err("`project` must be compared, e.g. project == \"<id>\"".into()),
+            Node::Project => Err("`project` must be compared, e.g. project == \"<name>\"".into()),
             Node::Str(_) | Node::List(_) | Node::Null => {
                 Err("this value cannot be used as a condition on its own".into())
             }
@@ -179,16 +179,18 @@ struct Compiler<'s> {
 }
 
 impl Compiler<'_> {
-    /// The source URIs belonging to a project (empty for unknown ids, which
-    /// then matches nothing — never everything).
-    fn project_sources(&self, project_id: &str) -> Vec<String> {
-        super::project_source_uris(self.store, project_id).unwrap_or_default()
+    /// The source URIs belonging to a project, looked up by its (unique) name —
+    /// case-insensitively, like every other string comparison in the language —
+    /// with an id fallback for pre-rename links. Empty for unknown values, which
+    /// then match nothing — never everything.
+    fn project_sources(&self, project: &str) -> Vec<String> {
+        super::project_source_uris_by_name(self.store, project).unwrap_or_default()
     }
 
-    fn source_membership(&self, project_ids: &[String]) -> Expr {
-        let uris: Vec<String> = project_ids
+    fn source_membership(&self, projects: &[String]) -> Expr {
+        let uris: Vec<String> = projects
             .iter()
-            .flat_map(|id| self.project_sources(id))
+            .flat_map(|name| self.project_sources(name))
             .collect();
         col("source").is_in(lit(Series::new("sources".into(), uris)), false)
     }
@@ -306,14 +308,14 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
 
         match (&subject, operator, &object) {
             // ---- project membership --------------------------------------
-            (Node::Project, Equals, Node::Str(id)) => Ok(Node::Predicate(
-                self.source_membership(std::slice::from_ref(id)),
+            (Node::Project, Equals, Node::Str(name)) => Ok(Node::Predicate(
+                self.source_membership(std::slice::from_ref(name)),
             )),
-            (Node::Project, NotEquals, Node::Str(id)) => Ok(Node::Predicate(
-                self.source_membership(std::slice::from_ref(id)).not(),
+            (Node::Project, NotEquals, Node::Str(name)) => Ok(Node::Predicate(
+                self.source_membership(std::slice::from_ref(name)).not(),
             )),
-            (Node::Project, In | InCs, Node::List(ids)) => {
-                Ok(Node::Predicate(self.source_membership(ids)))
+            (Node::Project, In | InCs, Node::List(names)) => {
+                Ok(Node::Predicate(self.source_membership(names)))
             }
 
             // ---- equality --------------------------------------------------
@@ -550,7 +552,7 @@ mod tests {
             r#"path like "/docs/*""#,
             r#"!(browser == "Safari")"#,
             r#"referrer == """#,
-            r#"project == "some-project-id""#,
+            r#"project == "Some Project""#,
             "browser", // truthy: browser is present
         ] {
             assert!(compiles(q), "expected `{q}` to compile");

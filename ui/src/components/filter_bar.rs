@@ -38,12 +38,19 @@ pub fn filter_bar(props: &FilterBarProps) -> Html {
     let projects = use_context::<ProjectsContext>();
 
     // ---------------------------------------------------------------- chips
-    let project_name = |id: &str| -> String {
+    // Project filter values are names (matched case-insensitively, like the
+    // server); ids are still resolved so pre-rename links display properly.
+    let project_name = |value: &str| -> String {
+        let needle = value.to_lowercase();
         projects
             .as_ref()
-            .and_then(|c| c.projects.iter().find(|p| p.id == id))
+            .and_then(|c| {
+                c.projects
+                    .iter()
+                    .find(|p| p.name.to_lowercase() == needle || p.id == value)
+            })
             .map(|p| p.name.clone())
-            .unwrap_or_else(|| id.to_string())
+            .unwrap_or_else(|| value.to_string())
     };
 
     let dim_applies = |dim: Dim| {

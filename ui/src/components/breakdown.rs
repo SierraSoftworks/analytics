@@ -124,19 +124,24 @@ pub fn breakdown_panel(props: &BreakdownPanelProps) -> Html {
         .max()
         .unwrap_or(1)
         .max(1);
+    // Case-insensitive, like the server's string comparisons, so a hand-typed
+    // `project == "apps"` still highlights the "Apps" row.
     let selected = props
         .active
         .iter()
         .find(|(d, _)| *d == tab.dim)
-        .map(|(_, v)| v.as_str());
+        .map(|(_, v)| v.to_lowercase());
 
     let rows = ranked.iter().enumerate().map(|(i, row)| {
         let value = row.value_for(metric);
         let share = if total > 0 { value as f64 / total as f64 * 100.0 } else { 0.0 };
         let bar = if max > 0 { value as f64 / max as f64 * 100.0 } else { 0.0 };
-        let is_selected = selected == Some(row.value.as_str())
+        let is_selected = selected.as_deref() == Some(row.value.to_lowercase().as_str())
             && row.extra.as_ref().is_none_or(|(dim, value)| {
-                props.active.iter().any(|(d, v)| d == dim && v == value)
+                props
+                    .active
+                    .iter()
+                    .any(|(d, v)| d == dim && v.to_lowercase() == value.to_lowercase())
             });
 
         let onclick = {
