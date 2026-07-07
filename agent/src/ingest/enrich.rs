@@ -57,6 +57,7 @@ pub fn build_event(
         created_ms: received_ms,
         received_ms,
         bid: truncate(&track.beacon, MAX_FIELD),
+        sid: clean_session(track.session.as_deref()),
         kind,
         source: website_source(&hostname),
         pathname: Some(truncate(&normalize_path(url.path()), MAX_PATH)),
@@ -98,6 +99,14 @@ fn extract_utm(url: &Url) -> (Option<String>, Option<String>, Option<String>) {
     (source, medium, campaign)
 }
 
+/// Trim and cap a client-supplied session id, dropping empty values.
+pub(super) fn clean_session(session: Option<&str>) -> Option<String> {
+    session
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| truncate(s, MAX_FIELD))
+}
+
 /// Normalize a path: keep case, drop a trailing slash, guarantee a leading one.
 fn normalize_path(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');
@@ -135,6 +144,7 @@ mod tests {
     fn base(url: &str) -> TrackEvent {
         TrackEvent {
             beacon: "b1".into(),
+            session: Some("s1".into()),
             kind: BeaconKind::Load,
             url: url.into(),
             referrer: None,
@@ -162,7 +172,16 @@ mod tests {
         assert_eq!(e.language.as_deref(), Some("en"));
         assert_eq!(e.utm_source.as_deref(), Some("news"));
         assert_eq!(e.ua_browser.as_deref(), Some("Chrome"));
+        assert_eq!(e.sid.as_deref(), Some("s1"));
         assert!(e.is_unique_user);
+    }
+
+    #[test]
+    fn blank_session_ids_are_dropped() {
+        let mut track = base("https://example.com/");
+        track.session = Some("   ".into());
+        let e = build_event(track, chrome(), None, 1).expect("event");
+        assert_eq!(e.sid, None);
     }
 
     #[test]

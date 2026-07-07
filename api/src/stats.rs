@@ -157,4 +157,9 @@ pub struct Dashboard {
     /// from events, so it also surfaces sources beyond the auto-registration
     /// cap.
     pub unassigned: Vec<BreakdownRow>,
+    /// A sample of the most recent session traces matching the same filter
+    /// (newest first). `serde(default)` tolerates payloads from agents
+    /// predating traces.
+    #[serde(default)]
+    pub traces: Vec<crate::TraceSummary>,
 }

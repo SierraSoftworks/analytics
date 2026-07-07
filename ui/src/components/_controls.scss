@@ -152,3 +152,71 @@ select.input {
     background: var(--brand-soft);
   }
 }
+
+// Reporter-supplied metadata, classified for display (see components/metadata.rs):
+// short entries render inline as `key: value` tag pills…
+.meta-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 18rem;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.74rem;
+  color: var(--text-3);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// …while longer entries render as a labelled definition list ("context"),
+// shown above any stack trace.
+.meta-context {
+  margin-top: 0.6rem;
+
+  &__title {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-4);
+    margin-bottom: 0.3rem;
+  }
+
+  &__list {
+    margin: 0;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.55rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  &__row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    min-width: 0;
+    font-size: 0.8rem;
+
+    dt {
+      font-family: var(--font-mono);
+      color: var(--text-3);
+      flex-shrink: 0;
+      min-width: 9rem;
+    }
+
+    dd {
+      margin: 0;
+      font-family: var(--font-mono);
+      color: var(--text);
+      min-width: 0;
+      word-break: break-word;
+    }
+  }
+}

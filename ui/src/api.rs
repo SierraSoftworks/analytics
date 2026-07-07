@@ -11,7 +11,7 @@ use std::cell::RefCell;
 
 use analytics_api::{
     AdminUser, CsrfToken, Dashboard, ExceptionGroupDetail, GlobalException, Instance, Pixel,
-    PixelInput, Project, ProjectInput, Source, SourceInput, TriageInput,
+    PixelInput, Project, ProjectInput, SessionTrace, Source, SourceInput, TriageInput,
 };
 use gloo_net::http::Request;
 use serde::Serialize;
@@ -270,4 +270,10 @@ pub async fn exception_detail(
 
 pub async fn set_triage(group: &str, input: &TriageInput) -> Result<(), ApiError> {
     patch_empty(&format!("/exceptions/{}", enc(group)), input).await
+}
+
+/// One session's full event timeline. No range is passed: a trace linked from
+/// the dashboard sample or an exception exemplar must always open whole.
+pub async fn session_trace(id: &str) -> Result<SessionTrace, ApiError> {
+    get_json(&format!("/traces/{}", enc(id))).await
 }

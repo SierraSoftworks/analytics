@@ -74,6 +74,8 @@ beforeEach(() => {
   window.history.replaceState = origReplace;
   window.history.replaceState({}, "", "/");
   delete window.analytics;
+  // Each test starts a fresh "tab": no session id carried over.
+  window.sessionStorage.clear();
 
   fetchMock = makeFetch(true);
   navMock = { doNotTrack: null, sendBeacon: vi.fn(() => true) };
@@ -85,6 +87,8 @@ describe("init — privacy", () => {
     await tick();
 
     expect(fetchMock).not.toHaveBeenCalled();
+    // Not even the tab-scoped session id is written under DNT.
+    expect(window.sessionStorage.getItem("analytics-session")).toBeNull();
     expect(typeof api.event).toBe("function");
     expect(() => api.event("x")).not.toThrow();
     expect(() => api.captureException(new Error("x"))).not.toThrow();
@@ -106,6 +110,7 @@ describe("init — page load", () => {
     expect(loads[0]).toMatchObject({ e: "load", q: true, p: true });
     expect(loads[0].u).toContain("example.test");
     expect(typeof loads[0].b).toBe("string");
+    expect(typeof loads[0].i).toBe("string");
   });
 
   it("reports a non-unique visit when the oracle says so", async () => {
@@ -162,6 +167,53 @@ describe("init — SPA navigation", () => {
     expect(loads[0].u).toContain("/next");
   });
 
+  it("keeps the session id across navigations but rotates the beacon id", async () => {
+    init({ fetch: fetchMock, navigator: navMock });
+    await tick();
+    const first = postBodies(fetchMock, "/track/hit")[0];
+    fetchMock.mockClear();
+
+    window.history.pushState({}, "", "/next");
+    await tick();
+
+    const second = postBodies(fetchMock, "/track/hit")[0];
+    expect(second.i).toBe(first.i);
+    expect(second.b).not.toBe(first.b);
+  });
+
+  it("keeps the session id across full page loads within a tab", async () => {
+    // Two inits simulate a traditional multi-page navigation: the JS context is
+    // rebuilt, but sessionStorage carries the tab's session id across.
+    init({ fetch: fetchMock, navigator: navMock });
+    await tick();
+    const first = postBodies(fetchMock, "/track/hit")[0];
+
+    const fetch2 = makeFetch(false);
+    init({ fetch: fetch2, navigator: navMock });
+    await tick();
+
+    const second = postBodies(fetch2, "/track/hit")[0];
+    expect(second.i).toBe(first.i);
+  });
+
+  it("falls back to an in-memory session id when storage is unavailable", async () => {
+    const denied = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new Error("storage disabled");
+      });
+    try {
+      init({ fetch: fetchMock, navigator: navMock });
+      await tick();
+
+      const load = postBodies(fetchMock, "/track/hit")[0];
+      expect(typeof load.i).toBe("string");
+      expect(load.i.length).toBeGreaterThan(0);
+    } finally {
+      denied.mockRestore();
+    }
+  });
+
   it("ignores a same-path replaceState", async () => {
     init({ fetch: fetchMock, navigator: navMock });
     await tick();
@@ -187,6 +239,8 @@ describe("init — exceptions", () => {
     expect(bodies).toHaveLength(1);
     expect(bodies[0]).toMatchObject({ ty: "TypeError", m: "kaboom", h: false });
     expect(bodies[0].u).toContain("example.test");
+    // The report is linked to the same session as the page views.
+    expect(bodies[0].i).toBe(postBodies(fetchMock, "/track/hit")[0].i);
   });
 
   it("auto-captures unhandled promise rejections", async () => {

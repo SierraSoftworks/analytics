@@ -15,6 +15,11 @@ beacon) and adds opt-in, Sentry-style client exception reporting.
 
 - **Page views** — a per-page-view beacon id links the `load` and `unload` events;
   there is no cookie or persistent identifier.
+- **Session traces** — a per-visit session id links one visit's page views, events,
+  and exceptions into a timeline. It is tab-scoped, kept in `sessionStorage` (never
+  a cookie): navigations and reloads within a tab share it, and the browser clears
+  it when the tab closes — nothing outlives the visit, and separate tabs stay
+  uncorrelated. Where storage is unavailable it falls back to an in-memory id.
 - **Daily uniques** — derived server-side from two cache-trick pings (one per site for
   `q`, one per page for `p`); no client-side storage.
 - **Time on page** — sent on `unload` via `navigator.sendBeacon`.

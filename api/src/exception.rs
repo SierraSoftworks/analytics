@@ -22,6 +22,11 @@ pub struct ExceptionReport {
     pub url: String,
     #[serde(rename = "b", default, skip_serializing_if = "Option::is_none")]
     pub beacon: Option<String>,
+    /// The per-visit session id (see [`crate::TrackEvent::session`]), linking
+    /// the report to the visit's page views. Same `i` key as on hits (`s` is
+    /// taken by the stack here).
+    #[serde(rename = "i", default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     /// The exception type/name (e.g. "TypeError").
     #[serde(rename = "ty")]
     pub exc_type: String,
@@ -93,6 +98,10 @@ pub struct ExceptionVariant {
     /// recent occurrence of this variant that carried any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<String>,
+    /// The session the most recent session-linked occurrence belonged to,
+    /// linking the exemplar to its session trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// How a group's occurrences distribute across key dimensions (empty keys mean
@@ -117,6 +126,11 @@ pub struct ExceptionGroupDetail {
     #[serde(default)]
     pub breakdowns: ExceptionBreakdowns,
     pub variants: Vec<ExceptionVariant>,
+    /// The most recent sessions the group's occurrences belonged to (newest
+    /// first), so an operator can pick which trace to open. `serde(default)`
+    /// tolerates payloads from agents predating traces.
+    #[serde(default)]
+    pub traces: Vec<crate::TraceSummary>,
 }
 
 /// An exception group annotated with the project it belongs to, for the global

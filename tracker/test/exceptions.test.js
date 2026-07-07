@@ -51,6 +51,7 @@ describe("buildExceptionPayload", () => {
       {
         url: "https://a/x",
         beacon: "b1",
+        session: "s1",
         handled: true,
         appVersion: "1.4.2",
         meta: { k: "v" },
@@ -62,6 +63,7 @@ describe("buildExceptionPayload", () => {
       m: "boom",
       h: true,
       b: "b1",
+      i: "s1",
       s: "at x",
       v: "1.4.2",
       d: { k: "v" },
@@ -92,6 +94,7 @@ describe("createExceptionReporter", () => {
       send: (p) => sent.push(p),
       url: () => "https://a/x",
       beacon: () => "b1",
+      session: "s1",
       max,
     });
     return { sent, reporter };
@@ -104,6 +107,7 @@ describe("createExceptionReporter", () => {
     expect(sent[0]).toMatchObject({
       u: "https://a/x",
       b: "b1",
+      i: "s1",
       ty: "Error",
       m: "boom",
       h: true,

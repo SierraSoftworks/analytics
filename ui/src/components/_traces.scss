@@ -1,0 +1,344 @@
+// Session traces: the dashboard's recent-trace sample and the trace detail
+// view's context card + event timeline (see pages/dashboard.rs, pages/trace.rs).
+@use '../styles/variables' as *;
+
+// ---------------------------------------------------- dashboard sample list
+
+.trace-sample {
+  &__empty {
+    margin: 0.25rem 0 0;
+    font-size: 0.84rem;
+    color: var(--text-3);
+  }
+
+  &__list {
+    list-style: none;
+    margin: 0.25rem 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+// One sampled session on the vertical timeline: a marker dot on a rail, the
+// short id + timestamp + activity counts, and the visit's context line.
+.trace-row {
+  position: relative;
+  display: flex;
+  gap: 0.9rem;
+  padding: 0.55rem 0.5rem 0.55rem 0.25rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition);
+
+  &:hover {
+    background: var(--surface-2);
+  }
+
+  &:focus-visible {
+    @include focus-ring;
+  }
+
+  // The timeline rail, threaded through every marker; trimmed at the ends.
+  &::before {
+    content: '';
+    position: absolute;
+    left: calc(0.25rem + 4px);
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--border-strong);
+  }
+
+  &:first-child::before {
+    top: 1rem;
+  }
+
+  &:last-child::before {
+    bottom: calc(100% - 1rem);
+  }
+
+  &__marker {
+    position: relative;
+    flex-shrink: 0;
+    width: 9px;
+    height: 9px;
+    margin-top: 0.45rem;
+    border-radius: 50%;
+    background: var(--brand);
+    box-shadow: 0 0 0 3px var(--surface);
+
+    &--exceptions {
+      background: var(--danger);
+    }
+  }
+
+  &__body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  &__head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    min-width: 0;
+  }
+
+  &__id {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--brand-2);
+    flex-shrink: 0;
+  }
+
+  &__time {
+    font-size: 0.76rem;
+    color: var(--text-3);
+    flex-shrink: 0;
+  }
+
+  &__counts {
+    font-size: 0.76rem;
+    margin-left: auto;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  &__meta {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    font-size: 0.78rem;
+    color: var(--text-3);
+    flex-wrap: wrap;
+  }
+
+  // The visit as one location: source followed by its entry page.
+  &__location {
+    font-size: 0.78rem;
+    color: var(--text-2);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 26rem;
+  }
+
+  // The client pill (browser or application + version), with a kind icon.
+  &__client {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+
+  &__client-icon {
+    display: inline-flex;
+    color: var(--text-4);
+
+    svg {
+      width: 14px;
+      height: 14px;
+    }
+  }
+
+  // The application's reported release, riding inside the client pill.
+  &__release {
+    color: var(--brand-2);
+    font-weight: 600;
+  }
+}
+
+// ------------------------------------------------------- trace detail page
+
+// The visit's context card: label-over-value facts in a wrapping grid.
+.trace-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: 0.9rem 1.25rem;
+  margin-bottom: 1.4rem;
+}
+
+.trace-fact {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+
+  &__label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-4);
+  }
+
+  &__value {
+    font-size: 0.88rem;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.trace-timeline__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+
+  h2 {
+    margin-bottom: 0;
+  }
+
+  span {
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+// The session's event timeline: one card, markers on a shared rail.
+.trace-timeline {
+  @include card;
+  list-style: none;
+  margin: 0.9rem 0 0;
+  padding: 0.6rem 1rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.trace-entry {
+  position: relative;
+  display: flex;
+  gap: 0.9rem;
+  padding: 0.55rem 0;
+
+  &::before {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--border-strong);
+  }
+
+  &:first-child::before {
+    top: 1.1rem;
+  }
+
+  &:last-child::before {
+    bottom: calc(100% - 1.1rem);
+  }
+
+  &__marker {
+    position: relative;
+    flex-shrink: 0;
+    width: 9px;
+    height: 9px;
+    margin-top: 0.5rem;
+    border-radius: 50%;
+    box-shadow: 0 0 0 3px var(--surface);
+  }
+
+  &--page &__marker {
+    background: var(--brand);
+  }
+
+  &--event &__marker {
+    background: var(--ok);
+  }
+
+  &--exception &__marker {
+    background: var(--danger);
+  }
+
+  &__body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  &__head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+
+  &__kind {
+    font-size: 0.74rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--text-4);
+  }
+
+  &--exception &__kind {
+    color: var(--danger);
+  }
+
+  &__time {
+    font-size: 0.76rem;
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  &__offset {
+    font-size: 0.74rem;
+    color: var(--text-4);
+    font-variant-numeric: tabular-nums;
+  }
+
+  &__line {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    min-width: 0;
+
+    &--wrap {
+      flex-wrap: wrap;
+    }
+  }
+
+  &__path {
+    font-size: 0.84rem;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__name {
+    font-size: 0.86rem;
+    color: var(--text);
+  }
+
+  &__exc-type {
+    font-size: 0.84rem;
+    font-weight: 600;
+    color: var(--brand-2);
+  }
+
+  &__exc-message {
+    font-size: 0.84rem;
+    color: var(--text-2);
+    word-break: break-word;
+  }
+}
+
+@media (max-width: $bp-sm) {
+  .trace-row__counts {
+    display: none;
+  }
+
+  .trace-facts {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
