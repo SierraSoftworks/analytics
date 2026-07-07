@@ -469,7 +469,7 @@ fn traces_of_occurrences(
         return Ok(Vec::new());
     }
     let sessions = combined(store, parquet_dir, from_ms, to_ms)?
-        .filter(col("sid").is_in(lit(Series::new("sids".into(), sids)), false));
+        .filter(col("sid").is_in(lit(Series::new("sids".into(), sids)).implode(false), false));
     recent_traces(sessions, TRACE_SAMPLE)
 }
 
