@@ -10,8 +10,9 @@ use std::path::Path;
 
 use analytics_api::{
     BreakdownRow, Breakdowns, CountRow, Dashboard, ExceptionBreakdowns, ExceptionGroup,
-    ExceptionGroupDetail, ExceptionStatus, ExceptionVariant, MetricSummary, TREND_BUCKETS,
-    TimeSeriesPoint, VersionRow, pixel_source, source_label,
+    ExceptionGroupDetail, ExceptionStatus, ExceptionVariant, MetricSummary, SessionTrace,
+    TREND_BUCKETS, TimeSeriesPoint, TraceEvent, TraceEventKind, TraceSummary, VersionRow,
+    pixel_source, source_label,
 };
 use chrono::{Datelike, TimeZone, Utc};
 use polars::prelude::*;
@@ -25,6 +26,8 @@ use filter::CompiledFilter;
 const ADVICE: &[&str] = &["This is an internal analytics error; please report it with the logs."];
 
 const BREAKDOWN_LIMIT: u32 = 25;
+/// How many recent session traces the dashboard payload samples.
+const TRACE_SAMPLE: u32 = 10;
 /// `[100ms, 5s]` is treated as a bounce (per the medama methodology).
 const BOUNCE_MIN_MS: i64 = 100;
 const BOUNCE_MAX_MS: i64 = 5_000;
@@ -87,6 +90,7 @@ pub fn dashboard(
     let pageloads = current.clone().filter(col("kind").eq(lit("page_load")));
     let per_source = source_rollup(current.clone(), unique_flag)?;
     let (projects, sources, unassigned) = project_rollup(store, per_source)?;
+    let traces = recent_traces(current.clone(), TRACE_SAMPLE)?;
 
     Ok(Dashboard {
         summary: summary(current.clone(), unique_flag)?,
@@ -109,6 +113,7 @@ pub fn dashboard(
             sources,
         },
         unassigned,
+        traces,
     })
 }
 
@@ -289,6 +294,7 @@ pub fn exception_detail(
             col("app_version"),
             col("source"),
             col("metadata_json"),
+            col("sid"),
         ])
         .sort(
             ["received_ms"],
@@ -341,10 +347,40 @@ pub fn exception_detail(
     };
     let variants = variants_of(&df, limit)?;
 
+    // The sessions the group's occurrences belonged to, newest first, so the
+    // operator can pick which trace to open. The occurrence frame is already
+    // newest-first; a second scan summarizes those sessions in full (their
+    // page views and events, not just the exceptions).
+    let sid = df
+        .column("sid")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let mut sids: Vec<String> = Vec::new();
+    for i in 0..height {
+        if let Some(sid) = sid.get(i)
+            && !sid.is_empty()
+            && !sids.iter().any(|seen| seen == sid)
+        {
+            sids.push(sid.to_string());
+            if sids.len() >= TRACE_SAMPLE as usize {
+                break;
+            }
+        }
+    }
+    let traces = if sids.is_empty() {
+        Vec::new()
+    } else {
+        let sessions = combined(store, parquet_dir, from_ms, to_ms)?
+            .filter(col("sid").is_in(lit(Series::new("sids".into(), sids)), false));
+        recent_traces(sessions, TRACE_SAMPLE)?
+    };
+
     Ok(Some(ExceptionGroupDetail {
         group,
         breakdowns,
         variants,
+        traces,
     }))
 }
 
@@ -465,6 +501,8 @@ fn variants_of(occurrences: &DataFrame, limit: usize) -> Result<Vec<ExceptionVar
                 .drop_nulls()
                 .first()
                 .alias("metadata_json"),
+            // Likewise the session link: the latest occurrence that has one.
+            col("sid").drop_nulls().first().alias("sid"),
         ])
         .sort(
             ["count"],
@@ -529,6 +567,11 @@ fn variants_of(occurrences: &DataFrame, limit: usize) -> Result<Vec<ExceptionVar
         .or_system_err(ADVICE)?
         .str()
         .or_system_err(ADVICE)?;
+    let sid = df
+        .column("sid")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
 
     Ok((0..df.height())
         .map(|i| ExceptionVariant {
@@ -543,8 +586,314 @@ fn variants_of(occurrences: &DataFrame, limit: usize) -> Result<Vec<ExceptionVar
             source: source.get(i).map(str::to_string),
             app_version: version.get(i).map(str::to_string),
             metadata: metadata.get(i).map(str::to_string),
+            session_id: sid.get(i).map(str::to_string),
         })
         .collect())
+}
+
+/// The most recent sessions in the (already filtered) event frame, one summary
+/// row each, newest first. Events are grouped by the tracker's per-visit
+/// session id; events without one (pixel hits, pre-session trackers) never
+/// form a trace. The summary spans the *matching* events only, so a dimension
+/// filter scopes this list exactly the way it scopes every other panel.
+fn recent_traces(base: LazyFrame, limit: u32) -> Result<Vec<TraceSummary>> {
+    let df = base
+        .filter(col("sid").is_not_null().and(col("sid").neq(lit(""))))
+        // Frame order feeds the `first()` aggregations below: oldest first
+        // makes them "the session's earliest value".
+        .sort(["received_ms"], SortMultipleOptions::default())
+        .group_by([col("sid")])
+        .agg([
+            col("received_ms")
+                .min()
+                .cast(DataType::Int64)
+                .alias("started"),
+            col("received_ms").max().cast(DataType::Int64).alias("last"),
+            col("source").first().alias("source"),
+            // The first page viewed in the session.
+            col("pathname")
+                .filter(col("kind").eq(lit("page_load")))
+                .drop_nulls()
+                .first()
+                .alias("entry_path"),
+            col("country").drop_nulls().first().alias("country"),
+            col("ua_browser").drop_nulls().first().alias("ua_browser"),
+            col("ua_version").drop_nulls().first().alias("ua_version"),
+            col("ua_device").drop_nulls().first().alias("ua_device"),
+            // Exception reports carry the app's claimed release.
+            col("app_version").drop_nulls().first().alias("app_version"),
+            col("kind")
+                .eq(lit("page_load"))
+                .sum()
+                .cast(DataType::Int64)
+                .alias("pageviews"),
+            is_event().sum().cast(DataType::Int64).alias("events"),
+            col("kind")
+                .eq(lit("exception"))
+                .sum()
+                .cast(DataType::Int64)
+                .alias("exceptions"),
+        ])
+        .sort(
+            ["started"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
+        .limit(limit)
+        .collect()
+        .or_system_err(ADVICE)?;
+
+    let sid = df
+        .column("sid")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let started = df
+        .column("started")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let last = df
+        .column("last")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let source = df
+        .column("source")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let entry_path = df
+        .column("entry_path")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let country = df
+        .column("country")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let ua_browser = df
+        .column("ua_browser")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let ua_version = df
+        .column("ua_version")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let ua_device = df
+        .column("ua_device")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let app_version = df
+        .column("app_version")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let pageviews = df
+        .column("pageviews")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let events = df
+        .column("events")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let exceptions = df
+        .column("exceptions")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+
+    Ok((0..df.height())
+        .filter_map(|i| {
+            sid.get(i).map(|session_id| TraceSummary {
+                session_id: session_id.to_string(),
+                started_ms: started.get(i).unwrap_or(0),
+                last_ms: last.get(i).unwrap_or(0),
+                source: source.get(i).unwrap_or("").to_string(),
+                entry_path: entry_path.get(i).map(str::to_string),
+                country: country.get(i).map(str::to_string),
+                ua_browser: ua_browser.get(i).map(str::to_string),
+                ua_version: ua_version.get(i).map(str::to_string),
+                ua_device: ua_device.get(i).map(str::to_string),
+                app_version: app_version.get(i).map(str::to_string),
+                pageviews: pageviews.get(i).unwrap_or(0),
+                events: events.get(i).unwrap_or(0),
+                exceptions: exceptions.get(i).unwrap_or(0),
+            })
+        })
+        .collect())
+}
+
+/// One session's full timeline: every event carrying the session id, oldest
+/// first, plus the visit's context (source, locale, client, claimed release)
+/// drawn from the earliest event that reports each. Looked up by id directly —
+/// no recency cap — so a trace linked from an exception exemplar or a bookmark
+/// always opens; `limit` bounds the returned timeline. Returns `None` when the
+/// session has no events in `[from_ms, to_ms)`.
+pub fn session_trace(
+    store: &Store,
+    parquet_dir: &str,
+    session_id: &str,
+    from_ms: i64,
+    to_ms: i64,
+    limit: usize,
+) -> Result<Option<SessionTrace>> {
+    let df = combined(store, parquet_dir, from_ms, to_ms)?
+        .filter(col("sid").eq(lit(session_id.to_string())))
+        .select([
+            col("received_ms")
+                .cast(DataType::Int64)
+                .alias("received_ms"),
+            col("seq"),
+            col("kind"),
+            col("bid"),
+            col("source"),
+            col("pathname"),
+            col("country"),
+            col("language"),
+            col("ua_browser"),
+            col("ua_version"),
+            col("ua_os"),
+            col("app_version"),
+            col("duration_ms"),
+            col("event_name"),
+            col("metadata_json"),
+            col("exc_type"),
+            col("exc_message"),
+            col("exc_stack"),
+            col("exc_group"),
+            col("exc_handled"),
+        ])
+        // `seq` breaks same-millisecond ties in arrival order.
+        .sort(["received_ms", "seq"], SortMultipleOptions::default())
+        .limit(limit as u32)
+        .collect()
+        .or_system_err(ADVICE)?;
+
+    let height = df.height();
+    if height == 0 {
+        return Ok(None);
+    }
+
+    let received = df
+        .column("received_ms")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let kind = df
+        .column("kind")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let bid = df
+        .column("bid")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let pathname = df
+        .column("pathname")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let duration = df
+        .column("duration_ms")
+        .or_system_err(ADVICE)?
+        .i64()
+        .or_system_err(ADVICE)?;
+    let event_name = df
+        .column("event_name")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let metadata = df
+        .column("metadata_json")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let exc_type = df
+        .column("exc_type")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let exc_message = df
+        .column("exc_message")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let exc_stack = df
+        .column("exc_stack")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let exc_group = df
+        .column("exc_group")
+        .or_system_err(ADVICE)?
+        .str()
+        .or_system_err(ADVICE)?;
+    let exc_handled = df
+        .column("exc_handled")
+        .or_system_err(ADVICE)?
+        .bool()
+        .or_system_err(ADVICE)?;
+
+    let events: Vec<TraceEvent> = (0..height)
+        .filter_map(|i| {
+            let kind = match kind.get(i) {
+                Some("page_load") => TraceEventKind::PageLoad,
+                Some("page_unload") => TraceEventKind::PageUnload,
+                Some("custom") => TraceEventKind::Custom,
+                Some("exception") => TraceEventKind::Exception,
+                // Pixels carry no session; anything else has no place on a trace.
+                _ => return None,
+            };
+            Some(TraceEvent {
+                received_ms: received.get(i).unwrap_or(0),
+                kind,
+                bid: bid.get(i).unwrap_or("").to_string(),
+                pathname: pathname.get(i).map(str::to_string),
+                duration_ms: duration.get(i),
+                event_name: event_name.get(i).map(str::to_string),
+                metadata: metadata.get(i).map(str::to_string),
+                exc_type: exc_type.get(i).map(str::to_string),
+                exc_message: exc_message.get(i).map(str::to_string),
+                exc_stack: exc_stack.get(i).map(str::to_string),
+                exc_group: exc_group.get(i).map(str::to_string),
+                exc_handled: exc_handled.get(i),
+            })
+        })
+        .collect();
+
+    // The visit's context: the earliest non-null value of each dimension (a
+    // session is one client on one source, so any row would do — but events
+    // differ in which columns they carry).
+    let first_str = |name: &str| -> Result<Option<String>> {
+        let column = df
+            .column(name)
+            .or_system_err(ADVICE)?
+            .str()
+            .or_system_err(ADVICE)?
+            .clone();
+        Ok((0..height).find_map(|i| column.get(i).map(str::to_string)))
+    };
+
+    Ok(Some(SessionTrace {
+        session_id: session_id.to_string(),
+        started_ms: received.get(0).unwrap_or(0),
+        ended_ms: received.get(height - 1).unwrap_or(0),
+        source: first_str("source")?.unwrap_or_default(),
+        country: first_str("country")?,
+        language: first_str("language")?,
+        ua_browser: first_str("ua_browser")?,
+        ua_version: first_str("ua_version")?,
+        ua_os: first_str("ua_os")?,
+        app_version: first_str("app_version")?,
+        events,
+    }))
 }
 
 /// Sum two trend vectors element-wise (for folding per-source rows into
@@ -1656,6 +2005,7 @@ mod tests {
         a2.exc_stack = Some("at start (app.js)".into());
         a2.app_version = Some("1.1.0".into());
         a2.metadata_json = Some(r#"{"feature_flag":"checkout-v2"}"#.into());
+        a2.sid = Some("sess-1".into());
         let mut b = exc("g1", 3_000);
         b.exc_message = Some("boom at shutdown".into());
         b.exc_stack = Some("at shutdown (app.js)".into());
@@ -1682,6 +2032,14 @@ mod tests {
             repeated.metadata.as_deref(),
             Some(r#"{"feature_flag":"checkout-v2"}"#)
         );
+        // The exemplar links to the session of its latest session-linked
+        // occurrence.
+        assert_eq!(repeated.session_id.as_deref(), Some("sess-1"));
+
+        // The group's sessions surface as trace summaries for the picker.
+        assert_eq!(detail.traces.len(), 1);
+        assert_eq!(detail.traces[0].session_id, "sess-1");
+        assert_eq!(detail.traces[0].exceptions, 1);
 
         // Distributions cover app releases (1.1.0 twice, 1.0.0 once), keyed as
         // `app @ version` since a release is only meaningful within its app;
@@ -1703,6 +2061,132 @@ mod tests {
                 .first()
                 .map(|r| (r.key.as_str(), r.count)),
             Some(("https://a.com", 3))
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    /// A custom event belonging to a session.
+    fn custom_in(source: &str, sid: &str, received_ms: i64, name: &str) -> StoredEvent {
+        StoredEvent {
+            created_ms: received_ms,
+            received_ms,
+            bid: "b".into(),
+            sid: Some(sid.into()),
+            kind: EventKind::Custom,
+            source: source.into(),
+            event_name: Some(name.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn dashboard_samples_recent_session_traces() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        // Session s1: lands on /home, fires a custom event, then crashes.
+        let mut s1_load = load("https://a.com", 1_000, true, None);
+        s1_load.sid = Some("s1".into());
+        let mut s1_exc = exc("g1", 3_000);
+        s1_exc.sid = Some("s1".into());
+        s1_exc.app_version = Some("1.2.0".into());
+        // Session s2 starts later, on a different page.
+        let mut s2_load = load("https://a.com", 5_000, false, None);
+        s2_load.sid = Some("s2".into());
+        s2_load.pathname = Some("/pricing".into());
+        s2_load.ua_device = Some("Desktop".into());
+        // A sessionless page view (pre-session tracker) forms no trace.
+        let plain = load("https://a.com", 6_000, false, None);
+        store
+            .append_events(&[
+                s1_load,
+                custom_in("https://a.com", "s1", 2_000, "signup"),
+                s1_exc,
+                s2_load,
+                plain,
+            ])
+            .unwrap();
+
+        let dash = dashboard(&store, "/none", None, 0, 10_000, 86_400_000).unwrap();
+        assert_eq!(dash.traces.len(), 2);
+
+        // Newest session first.
+        assert_eq!(dash.traces[0].session_id, "s2");
+        assert_eq!(dash.traces[0].entry_path.as_deref(), Some("/pricing"));
+        assert_eq!(dash.traces[0].ua_device.as_deref(), Some("Desktop"));
+
+        let s1 = &dash.traces[1];
+        assert_eq!(s1.session_id, "s1");
+        assert_eq!(s1.started_ms, 1_000);
+        assert_eq!(s1.last_ms, 3_000);
+        assert_eq!(s1.source, "https://a.com");
+        assert_eq!(s1.entry_path.as_deref(), Some("/home"));
+        assert_eq!(s1.ua_browser.as_deref(), Some("Chrome"));
+        assert_eq!(s1.ua_version.as_deref(), Some("120.0"));
+        assert_eq!(s1.app_version.as_deref(), Some("1.2.0"));
+        assert_eq!(s1.pageviews, 1);
+        assert_eq!(s1.events, 1);
+        assert_eq!(s1.exceptions, 1);
+
+        // The dashboard filter scopes traces like every other panel.
+        let filter = dash_filter(&store, r#"path == "/pricing""#);
+        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        assert_eq!(dash.traces.len(), 1);
+        assert_eq!(dash.traces[0].session_id, "s2");
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    #[test]
+    fn session_trace_returns_the_ordered_timeline() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        let mut s1_load = load("https://a.com", 1_000, true, None);
+        s1_load.sid = Some("s1".into());
+        let mut s1_exc = exc("g1", 3_000);
+        s1_exc.sid = Some("s1".into());
+        let mut other = load("https://a.com", 1_500, false, None);
+        other.sid = Some("other".into());
+        // Appended out of order: the timeline must come back sorted by time.
+        store
+            .append_events(&[
+                s1_exc,
+                s1_load,
+                custom_in("https://a.com", "s1", 2_000, "signup"),
+                other,
+            ])
+            .unwrap();
+
+        let trace = session_trace(&store, "/none", "s1", 0, 10_000, 1_000)
+            .unwrap()
+            .expect("s1 resolves");
+        assert_eq!(trace.session_id, "s1");
+        assert_eq!(trace.source, "https://a.com");
+        assert_eq!(trace.started_ms, 1_000);
+        assert_eq!(trace.ended_ms, 3_000);
+        assert_eq!(trace.ua_browser.as_deref(), Some("Chrome"));
+
+        let kinds: Vec<TraceEventKind> = trace.events.iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                TraceEventKind::PageLoad,
+                TraceEventKind::Custom,
+                TraceEventKind::Exception,
+            ]
+        );
+        assert_eq!(trace.events[0].pathname.as_deref(), Some("/home"));
+        assert_eq!(trace.events[1].event_name.as_deref(), Some("signup"));
+        assert_eq!(trace.events[2].exc_type.as_deref(), Some("TypeError"));
+        assert_eq!(trace.events[2].exc_group.as_deref(), Some("g1"));
+
+        // An unknown session resolves to None.
+        assert!(
+            session_trace(&store, "/none", "nope", 0, 10_000, 1_000)
+                .unwrap()
+                .is_none()
         );
 
         drop(store);

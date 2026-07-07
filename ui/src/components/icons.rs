@@ -94,6 +94,28 @@ pub fn gear() -> Html {
     })
 }
 
+/// A browser client (globe), for session traces reported from a website.
+pub fn globe() -> Html {
+    icon(html! {
+        <>
+            <circle cx="12" cy="12" r="10" />
+            <line x1="2" y1="12" x2="22" y2="12" />
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+        </>
+    })
+}
+
+/// An application client (terminal window), for session traces reported by an app.
+pub fn terminal() -> Html {
+    icon(html! {
+        <>
+            <rect x="2" y="4" width="20" height="16" rx="2" />
+            <polyline points="6 9 9 12 6 15" />
+            <line x1="12" y1="15" x2="17" y2="15" />
+        </>
+    })
+}
+
 pub fn chevron_right() -> Html {
     icon(html! {
         <polyline points="9 18 15 12 9 6" />

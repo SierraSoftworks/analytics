@@ -35,6 +35,11 @@ deliberately collects only broad, non-identifying signals:
 - **Metrics** — visitors, page views, bounce rate, median time on page, time
   series, and breakdowns by page, referrer, application (browser or client
   app) and its version, OS, device, country, language, and source.
+- **Session traces** — the dashboard samples the most recent visits matching the
+  active filters, and each opens a timeline of the pages, custom events, and
+  exceptions that visit reported. The linking id is tab-scoped (`sessionStorage`,
+  never a cookie): navigations within a tab share it, the browser clears it when
+  the tab closes, and separate tabs and return visits stay uncorrelatable.
 - **Tracking pixels** — admin-created, project-bound tracking GIFs (e.g. for email
   opens) with attached metadata. Unknown pixel ids are rejected — there is no open
   pixel endpoint.

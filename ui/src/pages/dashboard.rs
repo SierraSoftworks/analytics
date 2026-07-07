@@ -13,7 +13,7 @@ use crate::api::{self, ApiError};
 use crate::components::charts::Metric;
 use crate::components::{
     ApiErrorAlert, BreakdownPanel, Dropdown, DropdownItem, FilterBar, MetricCards, PageHeader,
-    PanelRow, PanelTab, ProjectDrawer, ProjectsContext, SuggestOption, TimeSeriesChart,
+    PanelRow, PanelTab, ProjectDrawer, ProjectsContext, SuggestOption, TimeSeriesChart, TraceList,
 };
 use crate::filters::{Dim, TimeRange, use_apply_filters, use_filters};
 use crate::format::{country_flag, country_name, group_thousands, language_name};
@@ -368,6 +368,11 @@ pub fn dashboard() -> Html {
                         <BreakdownPanel tabs={platform_tabs} metric={*metric} on_filter={on_filter.clone()} active={active.clone()} />
                         <BreakdownPanel tabs={project_tabs} metric={*metric} on_filter={on_filter.clone()} active={active.clone()} />
                     </div>
+                    <TraceList
+                        traces={dash.traces.clone()}
+                        hint="The most recent sessions matching the filters above"
+                        empty="No session traces in this period — traces appear once visits report a session id."
+                    />
                 </div>
             }
         }

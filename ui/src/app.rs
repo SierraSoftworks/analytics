@@ -23,6 +23,9 @@ pub enum Route {
     Project { id: String },
     #[at("/projects/:project/exceptions/:group")]
     Exception { project: String, group: String },
+    /// One session's event timeline, keyed by the tracker's session id.
+    #[at("/traces/:id")]
+    Trace { id: String },
     #[at("/pixels")]
     Pixels,
     #[at("/settings")]
@@ -147,6 +150,7 @@ fn switch(route: Route) -> Html {
         Route::Exception { project, group } => {
             html! { <pages::ExceptionDetail {project} {group} /> }
         }
+        Route::Trace { id } => html! { <pages::Trace {id} /> },
         Route::Pixels => html! { <pages::Pixels /> },
         Route::Settings => html! { <pages::Settings /> },
         Route::NotFound => html! { <pages::NotFound /> },

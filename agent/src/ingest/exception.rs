@@ -41,6 +41,7 @@ pub fn build_exception(
         created_ms: received_ms,
         received_ms,
         bid: report.beacon.unwrap_or_default(),
+        sid: super::enrich::clean_session(report.session.as_deref()),
         kind: EventKind::Exception,
         source: website_source(&hostname),
         is_unique_user: false,

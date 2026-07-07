@@ -284,53 +284,6 @@
   color: var(--text-2);
 }
 
-// Reporter-supplied metadata of the shown example.
-.exc-meta {
-  margin-top: 0.6rem;
-
-  &__title {
-    display: block;
-    font-size: 0.72rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--text-4);
-    margin-bottom: 0.3rem;
-  }
-
-  &__rows {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
-    gap: 0.25rem 1.25rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 0.55rem 0.75rem;
-  }
-
-  &__row {
-    display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
-    min-width: 0;
-    font-size: 0.8rem;
-  }
-
-  &__key {
-    font-family: var(--font-mono);
-    color: var(--text-3);
-    flex-shrink: 0;
-  }
-
-  &__value {
-    font-family: var(--font-mono);
-    color: var(--text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-}
-
 .occurrence {
   @include card;
   padding: 0.85rem 1rem;
@@ -346,7 +299,17 @@
     flex-wrap: wrap;
   }
 
+  // Row-end slot for actions (e.g. the session-trace link), visually
+  // separated from the descriptive metadata before it.
+  &__actions {
+    margin-left: auto;
+  }
+
   &__message {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    flex-wrap: wrap;
     font-size: 0.88rem;
     word-break: break-word;
   }
