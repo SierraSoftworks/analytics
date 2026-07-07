@@ -93,20 +93,33 @@ pub fn dashboard() -> Html {
         .as_ref()
         .map(|c| c.projects.clone())
         .unwrap_or_default();
+    // Filter values address projects by their (unique) name; breakdown rows
+    // arrive keyed by id. Resolve either to the canonical display name.
     let project_name = {
         let projects = projects.clone();
-        move |id: &str| -> String {
+        move |value: &str| -> String {
+            let needle = value.to_lowercase();
             projects
                 .iter()
-                .find(|p| p.id == id)
+                .find(|p| p.name.to_lowercase() == needle || p.id == value)
                 .map(|p| p.name.clone())
-                .unwrap_or_else(|| id.to_string())
+                .unwrap_or_else(|| value.to_string())
         }
     };
 
     let on_manage = {
         let manage_project = manage_project.clone();
-        Callback::from(move |id: String| manage_project.set(Some(id)))
+        let projects = projects.clone();
+        // Rows carry the project *name* (the filter value); the drawer's API
+        // calls need the id.
+        Callback::from(move |value: String| {
+            let id = projects
+                .iter()
+                .find(|p| p.name == value || p.id == value)
+                .map(|p| p.id.clone())
+                .unwrap_or(value);
+            manage_project.set(Some(id));
+        })
     };
     let close_manage = {
         let manage_project = manage_project.clone();
@@ -126,7 +139,7 @@ pub fn dashboard() -> Html {
             projects
                 .iter()
                 .map(|p| SuggestOption {
-                    value: p.id.clone(),
+                    value: p.name.clone(),
                     label: p.name.clone(),
                 })
                 .collect(),
@@ -193,12 +206,14 @@ pub fn dashboard() -> Html {
                     title: (!r.key.is_empty()).then(|| r.key.clone()),
                 })
                 .collect::<Vec<_>>();
+            // Project rows filter (and highlight) by name — the filter value —
+            // not by the id the API keys them with.
             let project_rows = dash
                 .breakdowns
                 .projects
                 .iter()
                 .map(|r| PanelRow {
-                    value: r.key.clone(),
+                    value: project_name(&r.key),
                     label: project_name(&r.key),
                     icon: None,
                     visitors: r.visitors,
@@ -391,7 +406,7 @@ fn build_suggestions(
             projects
                 .iter()
                 .map(|p| SuggestOption {
-                    value: p.id.clone(),
+                    value: p.name.clone(),
                     label: p.name.clone(),
                 })
                 .collect(),

@@ -112,6 +112,24 @@ pub fn dashboard(
     })
 }
 
+/// The source URIs belonging to the project whose **name** matches `name`
+/// (case-insensitively, matching the filter language's string semantics; names
+/// are unique). Values that name no project fall back to an id lookup, so
+/// pre-rename links that filtered by project id keep working. An unknown value
+/// resolves to no sources, so the filter matches nothing — never everything.
+pub fn project_source_uris_by_name(store: &Store, name: &str) -> Result<Vec<String>> {
+    let projects = store.list_projects()?;
+    let needle = name.to_lowercase();
+    let project = projects
+        .iter()
+        .find(|p| p.name.to_lowercase() == needle)
+        .or_else(|| projects.iter().find(|p| p.id == name));
+    match project {
+        Some(project) => project_source_uris(store, &project.id),
+        None => Ok(Vec::new()),
+    }
+}
+
 /// The source URIs belonging to a project: its assigned sources plus its pixels
 /// (as `pixel://<id>` URIs).
 pub fn project_source_uris(store: &Store, project_id: &str) -> Result<Vec<String>> {
@@ -1295,6 +1313,64 @@ mod tests {
         assert_eq!(dash.summary.pageviews, 0);
         assert_eq!(dash.summary.visitors, 0);
         assert!(dash.breakdowns.sources.is_empty());
+
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
+    }
+
+    #[test]
+    fn project_filter_resolves_names_case_insensitively_with_id_fallback() {
+        let redb = temp_redb();
+        let store = Store::open(&redb).unwrap();
+        store
+            .put_project(&analytics_api::Project {
+                id: "01ARZAPPS".into(),
+                name: "Apps".into(),
+                slug: "apps".into(),
+                created_at: Utc::now(),
+            })
+            .unwrap();
+        store
+            .put_source(&analytics_api::Source {
+                uri: "https://a.com".into(),
+                project_id: Some("01ARZAPPS".into()),
+                kind: analytics_api::default_kind("https://a.com"),
+                display_name: None,
+                created_at: Utc::now(),
+                first_seen: None,
+                last_seen: None,
+            })
+            .unwrap();
+        store
+            .append_events(&[
+                load("https://a.com", 1_000, true, None),
+                load("https://b.com", 2_000, true, None), // unassigned, excluded
+            ])
+            .unwrap();
+
+        // The (unique) name selects the project in any case; the id still
+        // resolves so pre-rename links keep working.
+        for q in [
+            r#"project == "Apps""#,
+            r#"project == "APPS""#,
+            r#"project in ["Apps"]"#,
+            r#"project == "01ARZAPPS""#,
+        ] {
+            let filter = dash_filter(&store, q);
+            let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+            assert_eq!(dash.summary.pageviews, 1, "query `{q}`");
+        }
+
+        // Negation excludes the project's traffic but keeps everything else.
+        let filter = dash_filter(&store, r#"project != "Apps""#);
+        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        assert_eq!(dash.summary.pageviews, 1);
+        assert!(
+            dash.breakdowns
+                .sources
+                .iter()
+                .all(|r| r.key != "https://a.com")
+        );
 
         drop(store);
         let _ = std::fs::remove_file(&redb);

@@ -52,11 +52,16 @@ pub fn sidebar() -> Html {
     let project_items = projects
         .iter()
         .map(|p| {
-            let active = is_dashboard && active_project.as_deref() == Some(p.id.as_str());
+            // Filters address projects by name (matched case-insensitively,
+            // like the server); ids still match for pre-rename links.
+            let active = is_dashboard
+                && active_project
+                    .as_deref()
+                    .is_some_and(|v| v.to_lowercase() == p.name.to_lowercase() || v == p.id);
             let onclick = {
-                let (navigate, filters, id) = (navigate.clone(), filters.clone(), p.id.clone());
+                let (navigate, filters, name) = (navigate.clone(), filters.clone(), p.name.clone());
                 Callback::from(move |_: MouseEvent| {
-                    navigate.emit((Route::Overview, filters.with(Dim::Project, id.clone())));
+                    navigate.emit((Route::Overview, filters.with(Dim::Project, name.clone())));
                 })
             };
             let class = classes!("menu__subitem", active.then_some("menu__subitem--active"));

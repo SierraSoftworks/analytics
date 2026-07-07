@@ -163,6 +163,7 @@ pub fn project_drawer(props: &ProjectDrawerProps) -> Html {
             props.on_close.clone(),
         );
         let (filters, apply_filters) = (filters.clone(), apply_filters.clone());
+        let project = project.clone();
         Callback::from(move |_: MouseEvent| {
             let confirmed = web_sys::window()
                 .and_then(|w| {
@@ -183,6 +184,9 @@ pub fn project_drawer(props: &ProjectDrawerProps) -> Html {
                 on_close.clone(),
             );
             let (filters, apply_filters) = (filters.clone(), apply_filters.clone());
+            // Filters address projects by name (case-insensitively; old links
+            // by id) — capture the name so deletion can clear a matching chip.
+            let name = project.as_ref().map(|p| p.name.to_lowercase());
             busy.set(true);
             spawn_local(async move {
                 match api::delete_project(&id).await {
@@ -191,7 +195,10 @@ pub fn project_drawer(props: &ProjectDrawerProps) -> Html {
                         on_close.emit(());
                         // Don't strand the dashboard filtered to a project that
                         // no longer exists.
-                        if filters.get(Dim::Project) == Some(id.as_str()) {
+                        let filtered = filters
+                            .get(Dim::Project)
+                            .is_some_and(|v| v == id.as_str() || Some(v.to_lowercase()) == name);
+                        if filtered {
                             apply_filters.emit(filters.without(Dim::Project));
                         }
                     }

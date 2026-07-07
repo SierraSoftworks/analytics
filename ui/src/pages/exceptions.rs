@@ -108,8 +108,8 @@ pub fn exceptions() -> Html {
     };
 
     // Suggestions for the (restricted) filter chips on this page: the full
-    // project list (values are ids — free-typed names would match nothing) and
-    // the sources seen in the current listing.
+    // project list (filters address projects by name) and the sources seen in
+    // the current listing.
     let suggestions: Vec<(Dim, Vec<SuggestOption>)> = {
         let sources: Vec<SuggestOption> = match &*data {
             Some(Ok(list)) => {
@@ -131,7 +131,7 @@ pub fn exceptions() -> Html {
         let project_options: Vec<SuggestOption> = projects
             .iter()
             .map(|p| SuggestOption {
-                value: p.id.clone(),
+                value: p.name.clone(),
                 label: p.name.clone(),
             })
             .collect();
