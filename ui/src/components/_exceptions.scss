@@ -134,9 +134,10 @@
   }
 }
 
-// Detail header (exceptions and events alike): the identity line — status,
-// type, exemplar message — with the triage actions floated to its end, the
-// meta line beneath, and the trend sparkline across the card's full width.
+// Detail header card (exceptions and events): the meta line and the full-width
+// trend sparkline. Event detail additionally leads with an identity line
+// (`&__top`: a badge and the event name); on exceptions that identity — and the
+// triage actions — now live in the page header instead.
 .exc-head {
   display: flex;
   flex-direction: column;
@@ -176,10 +177,9 @@
     font-size: 0.8rem;
   }
 
-  // The triage controls: a segmented button group, joined edge to edge.
+  // The triage controls: a segmented button group, joined edge to edge. Lives
+  // in the page header's action slot (see pages/exception_detail.rs).
   &__actions {
-    margin-left: auto;
-    align-self: flex-start;
     display: inline-flex;
     flex-shrink: 0;
     border: 1px solid var(--border-strong);
@@ -393,6 +393,18 @@
   // separated from the descriptive metadata before it.
   &__actions {
     margin-left: auto;
+  }
+
+  // The exemplar's full message, with the reporter's line breaks and
+  // indentation preserved: the first line is the summary (what the group is
+  // fingerprinted and listed by), the lines below it diagnostic context.
+  &__body {
+    margin: 0 0 0.5rem;
+    font-size: 0.88rem;
+    color: var(--text-2);
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.55;
   }
 
   &__message {
