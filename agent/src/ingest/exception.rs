@@ -1,6 +1,6 @@
 //! Build anonymized `Exception` events from reports, with Sentry-style grouping.
 
-use analytics_api::{ExceptionReport, website_source};
+use analytics_api::{ExceptionReport, summary_line, website_source};
 use sha2::{Digest, Sha256};
 use url::Url;
 
@@ -97,7 +97,10 @@ pub fn fingerprint(
                 hasher.update(b"\n");
             }
         }
-        None => hasher.update(normalize_noise(message).as_bytes()),
+        // Without a stack, group on the message's summary line only: the lines
+        // of context that follow it vary between otherwise-identical failures
+        // and would needlessly fragment the group.
+        None => hasher.update(normalize_noise(summary_line(message)).as_bytes()),
     }
 
     short_hash(&hasher.finalize())
@@ -186,6 +189,25 @@ mod tests {
     fn message_only_fallback_ignores_numbers() {
         let a = fingerprint("Error", "HTTP 404 from /api", None, None);
         let b = fingerprint("Error", "HTTP 500 from /api", None, None);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn multiline_messages_group_on_summary_line() {
+        // Same summary line, different trailing context (line/column numbers,
+        // varying diagnostic detail) must land in the same group.
+        let a = fingerprint(
+            "ConfigError",
+            "Failed to parse configuration file.\n\nCaused by:\n - filter at line 1, column 19",
+            None,
+            None,
+        );
+        let b = fingerprint(
+            "ConfigError",
+            "Failed to parse configuration file.\n\nCaused by:\n - filter at line 8, column 42\n - make sure brackets are closed",
+            None,
+            None,
+        );
         assert_eq!(a, b);
     }
 }
