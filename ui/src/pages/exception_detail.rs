@@ -97,9 +97,6 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
         }
     };
 
-    // The triage controls and current status sit in the page header, floated to
-    // its right. They render once the group has loaded (and its source is
-    // known, since triage is source-scoped).
     let header_actions = match (&source, &*detail) {
         (Some(_), Some(Ok(detail))) => {
             let status = detail.group.status;
@@ -169,24 +166,18 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
         _ => html! {},
     };
 
-    // The header title carries the failure's identity: its type plus the
-    // summary line of its message (the full, multi-line message lives in the
-    // exemplars below). The breadcrumb keeps just the type so the trail is short.
-    let (title, crumb_title) = match &*detail {
-        Some(Ok(d)) => {
-            let summary = d.group.sample_message.trim();
-            let title = if summary.is_empty() {
-                d.group.exc_type.clone()
-            } else {
-                format!("{}: {}", d.group.exc_type, summary)
-            };
-            (title, d.group.exc_type.clone())
-        }
-        _ => ("Exception".to_string(), "Exception".to_string()),
+    
+    let title = match &*detail {
+        Some(Ok(d)) => d.group.exc_type.clone(),
+        _ => "Exception".to_string(),
+    };
+    let subtitle = match &*detail {
+        Some(Ok(d)) => Some(d.group.sample_message.clone()),
+        _ => None,
     };
     let crumbs = vec![
         Crumb::link_with_query("Exceptions", Route::Exceptions, filters.to_pairs()),
-        Crumb::current(crumb_title),
+        Crumb::current(title.clone()),
     ];
 
     let body = match (&source, &*detail) {
@@ -196,7 +187,7 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
             )} />
         },
         (Some(_), None) => html! { <div class="page-loading">{ "Loading…" }</div> },
-        (Some(_), Some(Err(err))) => html! { <ApiErrorAlert error={err.clone()} /> },
+        (Some(_), Some(Err(err))) => html! {  <ApiErrorAlert error={err.clone()} /> },
         (Some(source), Some(Ok(detail))) => {
             let meta = format!(
                 "{} · {} occurrences · first seen {} · last seen {}",
@@ -208,13 +199,22 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
             html! {
                 <>
                     <div class="exc-head panel">
-                        <div class="exc-head__meta muted">{ meta }</div>
                         if !detail.group.trend.is_empty() {
                             <div class="exc-head__trend">
                                 <span class="stat__label">{ range_label.clone() }</span>
                                 <Sparkline points={detail.group.trend.clone()} class={classes!("exc-head__spark")} />
                             </div>
                         }
+                        <div class="exc-head__meta muted">{ meta }</div>
+
+                        /*
+                        <div class="exc-head__top">
+                            <span class="exc-head__title">
+                                <b class="exc-head__type">{ &detail.group.exc_type }</b>
+                                <code class="exc-head__message">{ &detail.group.sample_message }</code>
+                            </span>
+                        </div>
+                         */
                     </div>
 
                     <h2 class="section__title">{ "Distribution" }</h2>
@@ -241,7 +241,7 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
 
     html! {
         <div class="page">
-            <PageHeader crumbs={crumbs} title={title}>
+            <PageHeader crumbs={crumbs} title={title} subtitle={subtitle}>
                 { header_actions }
             </PageHeader>
             { body }
