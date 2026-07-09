@@ -52,6 +52,21 @@ pub struct ExceptionReport {
 /// The number of buckets in an exception group's occurrence [`ExceptionGroup::trend`].
 pub const TREND_BUCKETS: usize = 20;
 
+/// The first non-empty line of an exception message, trimmed.
+///
+/// Exception messages frequently lead with a short one-line summary followed by
+/// several lines of diagnostic context. That summary is what groups are
+/// fingerprinted on and what list rows and detail headings surface; the full
+/// message (context and all) is preserved on the stored occurrence and shown in
+/// the distinct-example exemplars.
+pub fn summary_line(message: &str) -> &str {
+    message
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+}
+
 /// An aggregated group of exception occurrences sharing a fingerprint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExceptionGroup {
@@ -158,4 +173,30 @@ pub struct TriageInput {
     pub note: Option<String>,
     /// The source URI the triaged group was seen on.
     pub source: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::summary_line;
+
+    #[test]
+    fn single_line_message_is_returned_trimmed() {
+        assert_eq!(summary_line("  x is undefined  "), "x is undefined");
+    }
+
+    #[test]
+    fn multiline_message_keeps_only_the_first_line() {
+        let message = "Failed to parse configuration file.\n\nCaused by:\n - filter at line 1";
+        assert_eq!(summary_line(message), "Failed to parse configuration file.");
+    }
+
+    #[test]
+    fn leading_blank_lines_are_skipped() {
+        assert_eq!(summary_line("\n\n   \nfirst real line\nsecond"), "first real line");
+    }
+
+    #[test]
+    fn empty_message_yields_empty_summary() {
+        assert_eq!(summary_line("   \n  \n"), "");
+    }
 }

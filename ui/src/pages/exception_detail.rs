@@ -97,24 +97,8 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
         }
     };
 
-    let title = match &*detail {
-        Some(Ok(d)) => d.group.exc_type.clone(),
-        _ => "Exception".to_string(),
-    };
-    let crumbs = vec![
-        Crumb::link_with_query("Exceptions", Route::Exceptions, filters.to_pairs()),
-        Crumb::current(title.clone()),
-    ];
-
-    let body = match (&source, &*detail) {
-        (None, _) => html! {
-            <ApiErrorAlert error={ApiError::Server(
-                "This exception link is missing its source — open the group from the Exceptions inbox.".into()
-            )} />
-        },
-        (Some(_), None) => html! { <div class="page-loading">{ "Loading…" }</div> },
-        (Some(_), Some(Err(err))) => html! { <ApiErrorAlert error={err.clone()} /> },
-        (Some(source), Some(Ok(detail))) => {
+    let header_actions = match (&source, &*detail) {
+        (Some(_), Some(Ok(detail))) => {
             let status = detail.group.status;
             // Colour + glyph carry the verb. Only the transitions that apply
             // to the current state are offered: an open group can be resolved
@@ -170,6 +154,41 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
                 ExceptionStatus::Resolved => html! { <>{ reopen() }{ mute() }</> },
                 ExceptionStatus::Ignored => html! { <>{ resolve() }{ unmute() }</> },
             };
+            html! {
+                <>
+                    <span class={status_class(status)}>{ status_label(status) }</span>
+                    <div class="exc-head__actions" role="group" aria-label="Triage">
+                        { actions }
+                    </div>
+                </>
+            }
+        }
+        _ => html! {},
+    };
+
+    
+    let title = match &*detail {
+        Some(Ok(d)) => d.group.exc_type.clone(),
+        _ => "Exception".to_string(),
+    };
+    let subtitle = match &*detail {
+        Some(Ok(d)) => Some(d.group.sample_message.clone()),
+        _ => None,
+    };
+    let crumbs = vec![
+        Crumb::link_with_query("Exceptions", Route::Exceptions, filters.to_pairs()),
+        Crumb::current(title.clone()),
+    ];
+
+    let body = match (&source, &*detail) {
+        (None, _) => html! {
+            <ApiErrorAlert error={ApiError::Server(
+                "This exception link is missing its source — open the group from the Exceptions inbox.".into()
+            )} />
+        },
+        (Some(_), None) => html! { <div class="page-loading">{ "Loading…" }</div> },
+        (Some(_), Some(Err(err))) => html! {  <ApiErrorAlert error={err.clone()} /> },
+        (Some(source), Some(Ok(detail))) => {
             let meta = format!(
                 "{} · {} occurrences · first seen {} · last seen {}",
                 source_label(source),
@@ -180,23 +199,22 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
             html! {
                 <>
                     <div class="exc-head panel">
-                        <div class="exc-head__top">
-                            <span class={status_class(status)}>{ status_label(status) }</span>
-                            <span class="exc-head__title">
-                                <b class="exc-head__type">{ &detail.group.exc_type }</b>
-                                <code class="exc-head__message">{ &detail.group.sample_message }</code>
-                            </span>
-                            <div class="exc-head__actions" role="group" aria-label="Triage">
-                                { actions }
-                            </div>
-                        </div>
-                        <div class="exc-head__meta muted">{ meta }</div>
                         if !detail.group.trend.is_empty() {
                             <div class="exc-head__trend">
                                 <span class="stat__label">{ range_label.clone() }</span>
                                 <Sparkline points={detail.group.trend.clone()} class={classes!("exc-head__spark")} />
                             </div>
                         }
+                        <div class="exc-head__meta muted">{ meta }</div>
+
+                        /*
+                        <div class="exc-head__top">
+                            <span class="exc-head__title">
+                                <b class="exc-head__type">{ &detail.group.exc_type }</b>
+                                <code class="exc-head__message">{ &detail.group.sample_message }</code>
+                            </span>
+                        </div>
+                         */
                     </div>
 
                     <h2 class="section__title">{ "Distribution" }</h2>
@@ -223,7 +241,9 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
 
     html! {
         <div class="page">
-            <PageHeader crumbs={crumbs} title={title} />
+            <PageHeader crumbs={crumbs} title={title} subtitle={subtitle}>
+                { header_actions }
+            </PageHeader>
             { body }
         </div>
     }
@@ -318,10 +338,10 @@ fn variant_scrubber(props: &VariantScrubberProps) -> Html {
                     // Set apart from the descriptive metadata, at the row's end.
                     <span class="occurrence__actions">{ trace_link }</span>
                 </div>
-                <div class="occurrence__message">
-                    { &variant.message }
-                    { metadata.tag_pills() }
-                </div>
+                <div class="occurrence__body">{ &variant.message }</div>
+                if !metadata.tags.is_empty() {
+                    <div class="occurrence__message">{ metadata.tag_pills() }</div>
+                }
                 { metadata.context_list() }
                 if let Some(stack) = &variant.stack {
                     <pre class="stack">{ stack }</pre>

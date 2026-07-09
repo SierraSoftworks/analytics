@@ -20,7 +20,7 @@ pub use auth::{AdminUser, CsrfToken};
 pub use event::{EventBreakdowns, EventDetail, EventVariant};
 pub use exception::{
     ExceptionBreakdowns, ExceptionGroup, ExceptionGroupDetail, ExceptionReport, ExceptionStatus,
-    ExceptionVariant, GlobalException, TREND_BUCKETS, TriageInput,
+    ExceptionVariant, GlobalException, TREND_BUCKETS, TriageInput, summary_line,
 };
 pub use health::Health;
 pub use instance::Instance;

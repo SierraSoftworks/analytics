@@ -12,7 +12,7 @@ use analytics_api::{
     BreakdownRow, Breakdowns, CountRow, Dashboard, EventBreakdowns, EventDetail, EventVariant,
     ExceptionBreakdowns, ExceptionGroup, ExceptionGroupDetail, ExceptionStatus, ExceptionVariant,
     MetricSummary, SessionTrace, TREND_BUCKETS, TimeSeriesPoint, TraceEvent, TraceEventKind,
-    TraceSummary, VersionRow, pixel_source, source_label,
+    TraceSummary, VersionRow, pixel_source, source_label, summary_line,
 };
 use chrono::{Datelike, TimeZone, Utc};
 use polars::prelude::*;
@@ -246,7 +246,7 @@ pub fn exception_groups_by_source(
                     ExceptionGroup {
                         group_id: gid.to_string(),
                         exc_type: exc_type.get(i).unwrap_or("").to_string(),
-                        sample_message: message.get(i).unwrap_or("").to_string(),
+                        sample_message: summary_line(message.get(i).unwrap_or("")).to_string(),
                         count: count.get(i).unwrap_or(0),
                         first_seen_ms: first.get(i).unwrap_or(0),
                         last_seen_ms: last.get(i).unwrap_or(0),
@@ -331,7 +331,7 @@ pub fn exception_detail(
     let group = ExceptionGroup {
         group_id: group_id.to_string(),
         exc_type: exc_type.get(0).unwrap_or("").to_string(),
-        sample_message: message.get(0).unwrap_or("").to_string(),
+        sample_message: summary_line(message.get(0).unwrap_or("")).to_string(),
         count: height as i64,
         first_seen_ms: received.get(height - 1).unwrap_or(0),
         last_seen_ms: received.get(0).unwrap_or(0),
