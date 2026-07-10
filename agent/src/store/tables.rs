@@ -15,6 +15,10 @@ pub(super) const META: JsonTable = TableDefinition::new("meta");
 
 pub(super) const META_NEXT_SEQ: &str = "next_seq";
 pub(super) const META_SCHEMA_VERSION: &str = "schema_version";
+/// The exception grouping-rules version last applied to the stored data. Bumping
+/// the code's version (see `ingest::exception::FINGERPRINT_VERSION`) triggers a
+/// one-time re-grouping pass on next start.
+pub(super) const META_FINGERPRINT_VERSION: &str = "fingerprint_version";
 
 pub(super) const STORAGE_ADVICE: &[&str] = &[
     "This is an internal storage error.",

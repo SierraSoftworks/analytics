@@ -14,6 +14,7 @@ mod event;
 mod events;
 mod json;
 mod parquet;
+mod regroup;
 mod schema;
 mod tables;
 mod triage;

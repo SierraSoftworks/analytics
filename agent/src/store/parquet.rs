@@ -4,7 +4,7 @@ use std::path::Path;
 
 use polars::prelude::*;
 
-use super::event::StoredEvent;
+use super::event::{EventKind, StoredEvent};
 use super::tables::STORAGE_ADVICE;
 use crate::errors::{Result, ResultExt};
 
@@ -65,11 +65,16 @@ pub fn build_dataframe(events: &[StoredEvent]) -> PolarsResult<DataFrame> {
 /// concurrent reader never sees a half-written partition (and the `.tmp` extension
 /// keeps any crash-orphaned temp out of the `*.parquet` scan).
 pub fn write_partition(events: &[StoredEvent], path: &Path) -> Result<()> {
+    let mut df = build_dataframe(events).or_system_err(STORAGE_ADVICE)?;
+    write_dataframe(&mut df, path)
+}
+
+/// Atomically write `df` to `path` (`.tmp` sibling then rename), creating parent
+/// directories as needed.
+pub(super) fn write_dataframe(df: &mut DataFrame, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).or_system_err(STORAGE_ADVICE)?;
     }
-    let mut df = build_dataframe(events).or_system_err(STORAGE_ADVICE)?;
-
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -78,7 +83,7 @@ pub fn write_partition(events: &[StoredEvent], path: &Path) -> Result<()> {
     {
         let file = std::fs::File::create(&tmp).or_system_err(STORAGE_ADVICE)?;
         ParquetWriter::new(file)
-            .finish(&mut df)
+            .finish(df)
             .or_system_err(STORAGE_ADVICE)?;
     }
     std::fs::rename(&tmp, path).or_system_err(STORAGE_ADVICE)?;
@@ -92,4 +97,63 @@ pub fn read_partition(path: &Path) -> Result<DataFrame> {
     ParquetReader::new(file)
         .finish()
         .or_system_err(STORAGE_ADVICE)
+}
+
+/// Recompute `exc_group` for the exception rows of the partition at `path`, using
+/// `remap(exc_type, exc_message, exc_stack)`. The file is rewritten (atomically)
+/// only when at least one group actually changes; returns the number of changed
+/// occurrences.
+pub(super) fn regroup_partition(
+    path: &Path,
+    remap: &dyn Fn(&str, Option<&str>, Option<&str>) -> String,
+) -> Result<usize> {
+    let mut df = read_partition(path)?;
+    let height = df.height();
+    if height == 0 {
+        return Ok(0);
+    }
+
+    // Cast the columns we touch to String up front: an all-null column can come
+    // back from Parquet as a Null dtype, which the typed `.str()` accessor rejects.
+    let as_str = |df: &DataFrame, name: &str| -> Result<Column> {
+        df.column(name)
+            .and_then(|c| c.cast(&DataType::String))
+            .or_system_err(STORAGE_ADVICE)
+    };
+    let kind = as_str(&df, "kind")?;
+    let exc_type = as_str(&df, "exc_type")?;
+    let exc_message = as_str(&df, "exc_message")?;
+    let exc_stack = as_str(&df, "exc_stack")?;
+    let exc_group = as_str(&df, "exc_group")?;
+
+    let (kind, exc_type, exc_message, exc_stack, exc_group) = (
+        kind.str().or_system_err(STORAGE_ADVICE)?,
+        exc_type.str().or_system_err(STORAGE_ADVICE)?,
+        exc_message.str().or_system_err(STORAGE_ADVICE)?,
+        exc_stack.str().or_system_err(STORAGE_ADVICE)?,
+        exc_group.str().or_system_err(STORAGE_ADVICE)?,
+    );
+
+    let mut new_groups: Vec<Option<String>> = Vec::with_capacity(height);
+    let mut changed = 0usize;
+    for i in 0..height {
+        if kind.get(i) == Some(EventKind::Exception.as_str()) {
+            let group = remap(exc_type.get(i).unwrap_or(""), exc_message.get(i), exc_stack.get(i));
+            if exc_group.get(i) != Some(group.as_str()) {
+                changed += 1;
+            }
+            new_groups.push(Some(group));
+        } else {
+            new_groups.push(exc_group.get(i).map(str::to_string));
+        }
+    }
+
+    if changed == 0 {
+        return Ok(0);
+    }
+
+    df.with_column(Series::new("exc_group".into(), new_groups).into_column())
+        .or_system_err(STORAGE_ADVICE)?;
+    write_dataframe(&mut df, path)?;
+    Ok(changed)
 }
