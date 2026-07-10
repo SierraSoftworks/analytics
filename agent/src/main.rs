@@ -48,7 +48,7 @@ async fn main() -> ExitCode {
     let config = match Config::load(&args.config) {
         Ok(config) => config,
         Err(err) => {
-            eprintln!("{err}");
+            eprintln!("{}", human_errors::pretty(&err));
             return ExitCode::FAILURE;
         }
     };
@@ -60,7 +60,7 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             error!("The server exited unexpectedly: {err}");
-            eprintln!("{err}");
+            eprintln!("{}", human_errors::pretty(&err));
             ExitCode::FAILURE
         }
     };
