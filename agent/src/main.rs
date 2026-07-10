@@ -3,6 +3,9 @@ mod macros;
 
 mod analytics;
 mod config;
+// Debug-only: generates representative data for local UI testing.
+#[cfg(debug_assertions)]
+mod demo;
 mod errors;
 mod ingest;
 mod ratelimit;
@@ -38,6 +41,12 @@ struct Args {
     /// Path to an environment file to load (if it exists).
     #[arg(short, long, default_value = ".env")]
     env: String,
+
+    /// Seed the store with randomly-generated, representative demo data for local
+    /// UI testing before serving. Debug builds only.
+    #[cfg(debug_assertions)]
+    #[arg(long)]
+    demo: bool,
 }
 
 #[actix_web::main]
@@ -55,7 +64,13 @@ async fn main() -> ExitCode {
 
     let session = build_telemetry(&config);
 
-    let outcome = serve(config).await;
+    // The demo seeder is compiled only in debug builds; release always serves normally.
+    #[cfg(debug_assertions)]
+    let demo = args.demo;
+    #[cfg(not(debug_assertions))]
+    let demo = false;
+
+    let outcome = serve(config, demo).await;
     let code = match &outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
@@ -70,8 +85,18 @@ async fn main() -> ExitCode {
 }
 
 /// Open storage, start the ingest pipeline, and run the web server.
-async fn serve(config: Config) -> errors::Result<()> {
+async fn serve(config: Config, demo: bool) -> errors::Result<()> {
     let store = Arc::new(Store::open(&config.storage.redb_path)?);
+
+    #[cfg(debug_assertions)]
+    if demo {
+        info!("demo mode: generating representative data...");
+        let count = demo::seed(&store)?;
+        info!("demo mode: injected {count} events into {}", config.storage.redb_path);
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = demo;
+
     let ingest = ingest::spawn(store.clone(), config.storage.clone());
 
     // Parse the ACL once at startup (config load already validated its syntax).
