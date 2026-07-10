@@ -6,6 +6,7 @@ mod enrich;
 mod exception;
 mod geo;
 mod language;
+mod normalize;
 mod pipeline;
 mod referrer;
 mod ua;
