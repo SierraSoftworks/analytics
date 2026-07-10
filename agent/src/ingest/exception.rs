@@ -12,6 +12,14 @@ const MAX_MESSAGE: usize = 1_000;
 const MAX_STACK: usize = 16_000;
 const MAX_APP_FIELD: usize = 120;
 
+/// The version of the exception grouping rules — the fingerprint logic in this
+/// module together with the `normalize` pipeline. Bump this whenever a change would
+/// assign existing exceptions to different groups; on next start the store detects
+/// the mismatch and re-groups its stored occurrences (see
+/// `ingest::regroup_if_needed`). A store predating this marker reports `0`, so the
+/// initial value of `1` re-groups it once under the current aggressive rules.
+pub const FINGERPRINT_VERSION: u32 = 1;
+
 /// Build an `Exception` event from a report. Returns `None` for bots or an
 /// unparseable URL (we attribute exceptions to a source by hostname).
 pub fn build_exception(

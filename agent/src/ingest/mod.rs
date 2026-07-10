@@ -9,11 +9,13 @@ mod language;
 mod normalize;
 mod pipeline;
 mod referrer;
+mod regroup;
 mod ua;
 
 pub use enrich::build_event;
 pub use exception::build_exception;
 pub use pipeline::{Ingest, spawn};
+pub use regroup::regroup_if_needed;
 
 /// Truncate `value` to at most `max` bytes on a char boundary, appending an ellipsis
 /// when shortened. Shared by the hit and exception ingest paths so every stored text

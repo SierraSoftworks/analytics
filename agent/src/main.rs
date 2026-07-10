@@ -88,6 +88,17 @@ async fn main() -> ExitCode {
 async fn serve(config: Config, demo: bool) -> errors::Result<()> {
     let store = Arc::new(Store::open(&config.storage.redb_path)?);
 
+    // Re-group archived exceptions if the fingerprinting rules changed since the
+    // data was last processed. Runs to completion before serving; a no-op when the
+    // stored rules version already matches this build.
+    {
+        let store = store.clone();
+        let storage = config.storage.clone();
+        tokio::task::spawn_blocking(move || ingest::regroup_if_needed(&store, &storage))
+            .await
+            .or_system_err(&["The exception re-grouping task panicked; check the logs."])??;
+    }
+
     #[cfg(debug_assertions)]
     if demo {
         info!("demo mode: generating representative data...");
