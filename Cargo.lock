@@ -2696,12 +2696,9 @@ dependencies = [
 
 [[package]]
 name = "parse-zoneinfo"
-version = "0.3.1"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f2a05b18d44e2957b88f96ba460715e295bc1d7510468a2f3d3b44535d26c24"
-dependencies = [
- "regex",
-]
+checksum = "052ff849639942444955d93311f17caa86c9d77164a3dfc3b477b066246a5a79"
 
 [[package]]
 name = "pem-rfc7468"
