@@ -151,21 +151,68 @@ mod tests {
 
     #[test]
     fn triage_roundtrip() {
-        use analytics_api::ExceptionStatus;
         let store = temp_store();
+        let resolved_at = Utc::now();
         let triage = ExceptionTriage {
-            status: ExceptionStatus::Resolved,
+            resolved_at: Some(resolved_at),
+            muted_at: None,
             note: Some("fixed in v2".to_string()),
-            updated_at: Utc::now(),
+            updated_at: resolved_at,
             updated_by: Some("admin".to_string()),
         };
         store.put_triage("p1", "g1", &triage).unwrap();
         let got = store.get_triage("p1", "g1").unwrap().unwrap();
-        assert_eq!(got.status, ExceptionStatus::Resolved);
+        assert_eq!(got.resolved_at, Some(resolved_at));
         assert_eq!(got.note.as_deref(), Some("fixed in v2"));
         // A different group, or different project, has no triage.
         assert!(store.get_triage("p1", "other").unwrap().is_none());
         assert!(store.get_triage("p2", "g1").unwrap().is_none());
+    }
+
+    #[test]
+    fn update_triage_upserts_and_keeps_axes_independent() {
+        let store = temp_store();
+        // The first update creates the record and resolves it.
+        store
+            .update_triage("p1", "g1", |t| {
+                t.resolved_at = Some(Utc::now());
+                t.note = Some("first".to_string());
+            })
+            .unwrap();
+        // Muting must not disturb the resolution axis or the note.
+        let muted = store
+            .update_triage("p1", "g1", |t| t.muted_at = Some(Utc::now()))
+            .unwrap();
+        assert!(muted.resolved_at.is_some(), "resolution preserved");
+        assert!(muted.muted_at.is_some(), "now muted");
+        assert_eq!(muted.note.as_deref(), Some("first"), "note preserved");
+    }
+
+    #[test]
+    fn resolution_regresses_on_a_later_occurrence() {
+        let resolved_at = Utc::now();
+        let triage = ExceptionTriage {
+            resolved_at: Some(resolved_at),
+            muted_at: None,
+            note: None,
+            updated_at: resolved_at,
+            updated_by: None,
+        };
+        let anchor = resolved_at.timestamp_millis();
+        // Occurrences up to the anchor keep it resolved…
+        assert!(triage.is_resolved(anchor));
+        assert!(triage.is_resolved(anchor - 1));
+        // …a later one is a regression, surfacing as unresolved again.
+        assert!(!triage.is_resolved(anchor + 1));
+        assert!(!triage.is_muted());
+        // Muting is independent of resolution and of recurrence.
+        let muted = ExceptionTriage {
+            muted_at: Some(resolved_at),
+            resolved_at: None,
+            ..triage
+        };
+        assert!(muted.is_muted());
+        assert!(!muted.is_resolved(anchor + 1));
     }
 
     #[test]
