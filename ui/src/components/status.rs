@@ -7,7 +7,7 @@ pub fn status_label(status: ExceptionStatus) -> &'static str {
     match status {
         ExceptionStatus::Unresolved => "Unresolved",
         ExceptionStatus::Resolved => "Resolved",
-        ExceptionStatus::Ignored => "Ignored",
+        ExceptionStatus::Ignored => "Muted",
     }
 }
 

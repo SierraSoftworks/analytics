@@ -50,7 +50,7 @@ impl StatusTab {
         match self {
             StatusTab::Unresolved => "Unresolved",
             StatusTab::Resolved => "Resolved",
-            StatusTab::Ignored => "Ignored",
+            StatusTab::Ignored => "Muted",
             StatusTab::All => "All",
         }
     }
