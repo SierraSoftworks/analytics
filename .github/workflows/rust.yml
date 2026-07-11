@@ -39,6 +39,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
@@ -99,6 +101,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
@@ -182,6 +186,8 @@ jobs:
 
       - name: Check out code
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Fetch Versioned Cargo.toml
         uses: actions/download-artifact@v8
