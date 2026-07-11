@@ -251,6 +251,8 @@ pub fn exception_groups_by_source(
                         first_seen_ms: first.get(i).unwrap_or(0),
                         last_seen_ms: last.get(i).unwrap_or(0),
                         status: ExceptionStatus::Unresolved,
+                        resolved: false,
+                        muted: false,
                         note: None,
                         trend: trend_of(list_i64(times, i).into_iter(), from_ms, to_ms),
                     },
@@ -336,6 +338,8 @@ pub fn exception_detail(
         first_seen_ms: received.get(height - 1).unwrap_or(0),
         last_seen_ms: received.get(0).unwrap_or(0),
         status: ExceptionStatus::Unresolved,
+        resolved: false,
+        muted: false,
         note: None,
         trend: trend_of((0..height).filter_map(|i| received.get(i)), from_ms, to_ms),
     };

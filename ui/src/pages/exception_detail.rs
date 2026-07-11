@@ -9,7 +9,7 @@
 //! state.
 
 use analytics_api::{
-    ExceptionGroupDetail, ExceptionStatus, ExceptionVariant, TriageInput, source_label,
+    ExceptionGroupDetail, ExceptionVariant, TriageInput, source_label,
 };
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
@@ -71,17 +71,20 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
         );
     }
 
-    let set_status = {
+    let set_axis = {
         let (project, group, source, reload) = (
             project.clone(),
             group.clone(),
             source.clone(),
             reload.clone(),
         );
-        move |status: ExceptionStatus| {
+        // Build a click handler that flips a single triage axis, leaving the
+        // other one untouched (a `None` field is left unchanged server-side).
+        move |resolved: Option<bool>, muted: Option<bool>| {
             let input = TriageInput {
                 project_id: project.clone(),
-                status,
+                resolved,
+                muted,
                 note: None,
                 source: source.clone().unwrap_or_default(),
             };
@@ -100,65 +103,56 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
     let header_actions = match (&source, &*detail) {
         (Some(_), Some(Ok(detail))) => {
             let status = detail.group.status;
-            // Colour + glyph carry the verb. Only the transitions that apply
-            // to the current state are offered: an open group can be resolved
-            // or muted; a triaged one reopened (or re-routed to the other
-            // triaged state).
-            let action =
-                |target: ExceptionStatus, class: &'static str, label: &'static str, icon: Html| {
-                    html! {
-                        <button
-                            class={classes!("exc-action", class)}
-                            title={label}
-                            aria-label={label}
-                            onclick={set_status(target)}
-                        >
-                            { icon }
-                        </button>
-                    }
-                };
-            let resolve = || {
-                action(
-                    ExceptionStatus::Resolved,
-                    "exc-action--resolve",
-                    "Mark resolved",
-                    icons::check(),
-                )
+            let button = |class: &'static str, label: &'static str, icon: Html, onclick| {
+                html! {
+                    <button
+                        class={classes!("exc-action", class)}
+                        title={label}
+                        aria-label={label}
+                        onclick={onclick}
+                    >
+                        { icon }
+                    </button>
+                }
             };
-            let mute = || {
-                action(
-                    ExceptionStatus::Ignored,
-                    "exc-action--ignore",
-                    "Mute",
-                    icons::mute(),
-                )
-            };
-            let reopen = || {
-                action(
-                    ExceptionStatus::Unresolved,
+            // Two independent controls: resolution and suppression. Each reflects
+            // its own axis, so a group can be (e.g.) resolved *and* muted at once.
+            let resolution = if detail.group.resolved {
+                button(
                     "exc-action--reopen",
                     "Reopen",
                     icons::check_struck(),
+                    set_axis(Some(false), None),
+                )
+            } else {
+                button(
+                    "exc-action--resolve",
+                    "Mark resolved",
+                    icons::check(),
+                    set_axis(Some(true), None),
                 )
             };
-            let unmute = || {
-                action(
-                    ExceptionStatus::Unresolved,
+            let suppression = if detail.group.muted {
+                button(
                     "exc-action--ignore",
                     "Unmute",
                     icons::bell(),
+                    set_axis(None, Some(false)),
                 )
-            };
-            let actions = match status {
-                ExceptionStatus::Unresolved => html! { <>{ resolve() }{ mute() }</> },
-                ExceptionStatus::Resolved => html! { <>{ reopen() }{ mute() }</> },
-                ExceptionStatus::Ignored => html! { <>{ resolve() }{ unmute() }</> },
+            } else {
+                button(
+                    "exc-action--ignore",
+                    "Mute",
+                    icons::mute(),
+                    set_axis(None, Some(true)),
+                )
             };
             html! {
                 <>
                     <span class={status_class(status)}>{ status_label(status) }</span>
                     <div class="exc-head__actions" role="group" aria-label="Triage">
-                        { actions }
+                        { resolution }
+                        { suppression }
                     </div>
                 </>
             }

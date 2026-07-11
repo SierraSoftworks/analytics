@@ -5,7 +5,9 @@ use std::collections::HashMap;
 
 use actix_web::http::StatusCode;
 use actix_web::{HttpMessage, HttpRequest, HttpResponse, web};
-use analytics_api::{ExceptionGroupDetail, GlobalException, TriageInput, pixel_source};
+use analytics_api::{
+    ExceptionGroupDetail, ExceptionStatus, GlobalException, TriageInput, pixel_source,
+};
 use chrono::Utc;
 use serde::Deserialize;
 use tracing_batteries::prelude::*;
@@ -14,7 +16,6 @@ use super::query::resolve_range;
 use super::{Authenticated, internal_error, json_error};
 use crate::analytics::{self, filter::FieldSet};
 use crate::state::AppState;
-use crate::store::ExceptionTriage;
 
 const VARIANT_LIMIT: usize = 50;
 
@@ -94,7 +95,9 @@ pub async fn list_all(
                 if let Some(triage) =
                     store.get_triage(pid, &scoped_group(&group.group_id, &source))?
                 {
-                    group.status = triage.status;
+                    group.resolved = triage.is_resolved(group.last_seen_ms);
+                    group.muted = triage.is_muted();
+                    group.status = ExceptionStatus::from(&group);
                     group.note = triage.note;
                 }
                 project_name = project_names.get(pid).cloned();
@@ -178,7 +181,9 @@ pub async fn detail(
             if let Some(triage) =
                 store.get_triage(&project_id, &scoped_group(&group_id, &source))?
             {
-                detail.group.status = triage.status;
+                detail.group.resolved = triage.is_resolved(detail.group.last_seen_ms);
+                detail.group.muted = triage.is_muted();
+                detail.group.status = ExceptionStatus::from(&detail.group);
                 detail.group.note = triage.note;
             }
             Ok(Some(detail))
@@ -200,7 +205,12 @@ pub async fn detail(
     }
 }
 
-/// `PATCH /api/v1/exceptions/{group_id}` — set the triage status/note for a group.
+/// `PATCH /api/v1/exceptions/{group_id}` — update a group's triage axes.
+///
+/// Resolution and suppression are independent: a field left `None` on the input
+/// is left unchanged, so the inbox's separate Resolve/Reopen and Mute/Unmute
+/// controls each touch only their own axis. Resolving anchors `resolved_at` at
+/// now, which is what lets a later occurrence reopen the group automatically.
 pub async fn triage(
     req: HttpRequest,
     state: web::Data<AppState>,
@@ -214,23 +224,33 @@ pub async fn triage(
         .get::<Authenticated>()
         .and_then(|a| a.user.as_ref().map(|u| u.name.clone()));
 
-    let triage = ExceptionTriage {
-        status: input.status,
-        note: input.note.filter(|n| !n.trim().is_empty()),
-        updated_at: Utc::now(),
-        updated_by,
-    };
-
     let source = input.source.trim();
     if source.is_empty() {
         return json_error(StatusCode::BAD_REQUEST, "A source is required.");
     }
 
-    match state
-        .store
-        .put_triage(&input.project_id, &scoped_group(&group_id, source), &triage)
-    {
-        Ok(()) => HttpResponse::NoContent().finish(),
+    match state.store.update_triage(
+        &input.project_id,
+        &scoped_group(&group_id, source),
+        |triage| {
+            let now = Utc::now();
+            if let Some(resolved) = input.resolved {
+                // Anchor resolution at now; reopening clears the anchor.
+                triage.resolved_at = resolved.then_some(now);
+            }
+            if let Some(muted) = input.muted {
+                triage.muted_at = muted.then_some(now);
+            }
+            // A note is only touched when the caller sends one, so toggling an
+            // axis never wipes an existing note; an empty note clears it.
+            if let Some(note) = input.note {
+                triage.note = Some(note).filter(|n| !n.trim().is_empty());
+            }
+            triage.updated_at = now;
+            triage.updated_by = updated_by;
+        },
+    ) {
+        Ok(_) => HttpResponse::NoContent().finish(),
         Err(err) => internal_error(err),
     }
 }

@@ -2,8 +2,11 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// The triage status of an exception group, set by an administrator. Stored
-/// separately from the (append-only) occurrence stream.
+/// The collapsed, display-oriented triage status of an exception group, derived
+/// from the two independent triage axes (resolution and suppression). Muting takes
+/// precedence, so a muted group reads as `Ignored` regardless of whether it is also
+/// resolved; the raw axes travel alongside it on [`ExceptionGroup`] for controls
+/// that need to act on each independently (see [`ExceptionStatus::from`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ExceptionStatus {
@@ -76,13 +79,36 @@ pub struct ExceptionGroup {
     pub count: i64,
     pub first_seen_ms: i64,
     pub last_seen_ms: i64,
+    /// The collapsed display status ([`ExceptionStatus::derive`] of the two axes
+    /// below), for the inbox badge and status tabs.
     pub status: ExceptionStatus,
+    /// Whether the group is currently resolved. A group resolved in the past but
+    /// seen again since counts as unresolved here (a regression reopens it).
+    #[serde(default)]
+    pub resolved: bool,
+    /// Whether the group is suppressed. Orthogonal to `resolved`.
+    #[serde(default)]
+    pub muted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// Occurrence counts over the query range, split into [`TREND_BUCKETS`]
     /// equal buckets (oldest first), for the frequency sparkline.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trend: Vec<i64>,
+}
+
+/// Collapse a group's two orthogonal triage axes into its single display status.
+/// Suppression wins: a muted group is `Ignored` even when it is also resolved.
+impl From<&ExceptionGroup> for ExceptionStatus {
+    fn from(group: &ExceptionGroup) -> Self {
+        if group.muted {
+            Self::Ignored
+        } else if group.resolved {
+            Self::Resolved
+        } else {
+            Self::Unresolved
+        }
+    }
 }
 
 /// A distinct example within an exception group: occurrences sharing the same
@@ -165,10 +191,20 @@ pub struct GlobalException {
 /// Payload for updating an exception group's triage state. Triage is scoped to
 /// the group's source — the same fingerprint on two applications is two
 /// independent failures.
+///
+/// Resolution and suppression are independent axes; a field left `None` is left
+/// unchanged, so a control can toggle one axis without disturbing the other.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TriageInput {
     pub project_id: String,
-    pub status: ExceptionStatus,
+    /// Set the resolution axis: `Some(true)` resolves (anchored at now),
+    /// `Some(false)` reopens, `None` leaves it unchanged.
+    #[serde(default)]
+    pub resolved: Option<bool>,
+    /// Set the suppression axis: `Some(true)` mutes, `Some(false)` unmutes,
+    /// `None` leaves it unchanged.
+    #[serde(default)]
+    pub muted: Option<bool>,
     #[serde(default)]
     pub note: Option<String>,
     /// The source URI the triaged group was seen on.
@@ -198,5 +234,40 @@ mod tests {
     #[test]
     fn empty_message_yields_empty_summary() {
         assert_eq!(summary_line("   \n  \n"), "");
+    }
+
+    #[test]
+    fn status_derives_from_axes_with_mute_precedence() {
+        use super::{ExceptionGroup, ExceptionStatus};
+        let group = |resolved: bool, muted: bool| ExceptionGroup {
+            group_id: "g".into(),
+            exc_type: "T".into(),
+            sample_message: "m".into(),
+            count: 1,
+            first_seen_ms: 0,
+            last_seen_ms: 0,
+            status: ExceptionStatus::Unresolved,
+            resolved,
+            muted,
+            note: None,
+            trend: Vec::new(),
+        };
+        assert_eq!(
+            ExceptionStatus::from(&group(false, false)),
+            ExceptionStatus::Unresolved
+        );
+        assert_eq!(
+            ExceptionStatus::from(&group(true, false)),
+            ExceptionStatus::Resolved
+        );
+        assert_eq!(
+            ExceptionStatus::from(&group(false, true)),
+            ExceptionStatus::Ignored
+        );
+        // Suppression wins even when the group is also resolved.
+        assert_eq!(
+            ExceptionStatus::from(&group(true, true)),
+            ExceptionStatus::Ignored
+        );
     }
 }

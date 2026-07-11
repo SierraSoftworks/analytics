@@ -147,4 +147,44 @@ impl Store {
     pub fn get_triage(&self, project_id: &str, group_id: &str) -> Result<Option<ExceptionTriage>> {
         self.get_json(EXCEPTION_TRIAGE, &triage_key(project_id, group_id))
     }
+
+    /// Create-or-update a triage record in a single write transaction: `f` is
+    /// applied to the existing record, or to a fresh empty one when none exists,
+    /// then the result is persisted. Doing the read-modify-write under one
+    /// transaction keeps two concurrent edits (e.g. resolving and muting at once)
+    /// from clobbering each other's axis. Returns the stored record.
+    pub fn update_triage<F: FnOnce(&mut ExceptionTriage)>(
+        &self,
+        project_id: &str,
+        group_id: &str,
+        f: F,
+    ) -> Result<ExceptionTriage> {
+        let key = triage_key(project_id, group_id);
+        let txn = self.db.begin_write().or_system_err(STORAGE_ADVICE)?;
+        let updated = {
+            let mut table = txn
+                .open_table(EXCEPTION_TRIAGE)
+                .or_system_err(STORAGE_ADVICE)?;
+            let mut triage = match table.get(key.as_str()).or_system_err(STORAGE_ADVICE)? {
+                Some(value) => {
+                    serde_json::from_slice(value.value()).or_system_err(STORAGE_ADVICE)?
+                }
+                None => ExceptionTriage {
+                    resolved_at: None,
+                    muted_at: None,
+                    note: None,
+                    updated_at: Utc::now(),
+                    updated_by: None,
+                },
+            };
+            f(&mut triage);
+            let bytes = serde_json::to_vec(&triage).or_system_err(STORAGE_ADVICE)?;
+            table
+                .insert(key.as_str(), bytes.as_slice())
+                .or_system_err(STORAGE_ADVICE)?;
+            triage
+        };
+        txn.commit().or_system_err(STORAGE_ADVICE)?;
+        Ok(updated)
+    }
 }
