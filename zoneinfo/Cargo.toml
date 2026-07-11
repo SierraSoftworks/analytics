@@ -8,4 +8,4 @@ license.workspace = true
 repository.workspace = true
 
 [build-dependencies]
-parse-zoneinfo = "0.3"
+parse-zoneinfo = "0.5"

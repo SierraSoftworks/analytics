@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use parse_zoneinfo::line::{Line, LineParser};
+use parse_zoneinfo::line::Line;
 use parse_zoneinfo::table::TableBuilder;
 
 /// The tz database source files that define zones, rules, and link aliases.
@@ -64,7 +64,6 @@ fn main() {
     }
 
     // 1. Parse the zone definition files into a table of zones + link aliases.
-    let parser = LineParser::default();
     let mut builder = TableBuilder::new();
     for f in FILES {
         let path = tz.join(f);
@@ -72,17 +71,11 @@ fn main() {
             File::open(&path).unwrap_or_else(|e| panic!("cannot open {}: {e}", path.display()));
         for line in BufReader::new(file).lines() {
             let line = strip_comments(line.expect("read tz line"));
-            let parsed = parser
-                .parse_str(&line)
+            let parsed = Line::new(&line)
                 .unwrap_or_else(|e| panic!("cannot parse tz line in {f}: {line:?}: {e:?}"));
-            let result = match parsed {
-                Line::Zone(zone) => builder.add_zone_line(zone),
-                Line::Continuation(cont) => builder.add_continuation_line(cont),
-                Line::Rule(rule) => builder.add_rule_line(rule),
-                Line::Link(link) => builder.add_link_line(link),
-                Line::Space => continue,
-            };
-            result.unwrap_or_else(|e| panic!("invalid tz line in {f}: {line:?}: {e:?}"));
+            builder
+                .add_line(parsed)
+                .unwrap_or_else(|e| panic!("invalid tz line in {f}: {line:?}: {e:?}"));
         }
     }
     let table = builder.build();
