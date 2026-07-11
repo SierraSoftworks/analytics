@@ -155,10 +155,8 @@ pub fn country_flag(code: &str) -> Option<String> {
 /// A display name for an ISO 3166-1 alpha-2 country code (falls back to the code).
 pub fn country_name(code: &str) -> String {
     let upper = code.trim().to_ascii_uppercase();
-    COUNTRIES
-        .iter()
-        .find(|(c, _)| *c == upper)
-        .map(|(_, name)| (*name).to_string())
+    zoneinfo::country_name_from_code(&upper)
+        .map(str::to_string)
         .unwrap_or(upper)
 }
 
@@ -172,71 +170,6 @@ pub fn language_name(code: &str) -> String {
         .map(|(_, name)| (*name).to_string())
         .unwrap_or_else(|| code.to_string())
 }
-
-const COUNTRIES: &[(&str, &str)] = &[
-    ("AE", "United Arab Emirates"),
-    ("AR", "Argentina"),
-    ("AT", "Austria"),
-    ("AU", "Australia"),
-    ("BE", "Belgium"),
-    ("BG", "Bulgaria"),
-    ("BR", "Brazil"),
-    ("CA", "Canada"),
-    ("CH", "Switzerland"),
-    ("CL", "Chile"),
-    ("CN", "China"),
-    ("CO", "Colombia"),
-    ("CZ", "Czechia"),
-    ("DE", "Germany"),
-    ("DK", "Denmark"),
-    ("EE", "Estonia"),
-    ("EG", "Egypt"),
-    ("ES", "Spain"),
-    ("FI", "Finland"),
-    ("FR", "France"),
-    ("GB", "United Kingdom"),
-    ("GR", "Greece"),
-    ("HK", "Hong Kong"),
-    ("HR", "Croatia"),
-    ("HU", "Hungary"),
-    ("ID", "Indonesia"),
-    ("IE", "Ireland"),
-    ("IL", "Israel"),
-    ("IN", "India"),
-    ("IS", "Iceland"),
-    ("IT", "Italy"),
-    ("JP", "Japan"),
-    ("KE", "Kenya"),
-    ("KR", "South Korea"),
-    ("LT", "Lithuania"),
-    ("LU", "Luxembourg"),
-    ("LV", "Latvia"),
-    ("MX", "Mexico"),
-    ("MY", "Malaysia"),
-    ("NG", "Nigeria"),
-    ("NL", "Netherlands"),
-    ("NO", "Norway"),
-    ("NZ", "New Zealand"),
-    ("PH", "Philippines"),
-    ("PK", "Pakistan"),
-    ("PL", "Poland"),
-    ("PT", "Portugal"),
-    ("RO", "Romania"),
-    ("RS", "Serbia"),
-    ("RU", "Russia"),
-    ("SA", "Saudi Arabia"),
-    ("SE", "Sweden"),
-    ("SG", "Singapore"),
-    ("SI", "Slovenia"),
-    ("SK", "Slovakia"),
-    ("TH", "Thailand"),
-    ("TR", "Türkiye"),
-    ("TW", "Taiwan"),
-    ("UA", "Ukraine"),
-    ("US", "United States"),
-    ("VN", "Vietnam"),
-    ("ZA", "South Africa"),
-];
 
 const LANGUAGES: &[(&str, &str)] = &[
     ("ar", "Arabic"),

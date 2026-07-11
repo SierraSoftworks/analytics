@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 analytics-api.workspace = true
+zoneinfo.workspace = true
 
 actix-web.workspace = true
 actix-cors.workspace = true

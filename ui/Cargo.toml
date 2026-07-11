@@ -19,6 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 analytics-api = { path = "../api" }
+zoneinfo = { path = "../zoneinfo" }
 filt-rs = { version = "1.1.1", features = [
     "visitor",
     "regex",

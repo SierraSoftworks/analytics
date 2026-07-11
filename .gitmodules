@@ -1,0 +1,5 @@
+[submodule "zoneinfo/tz"]
+	path = zoneinfo/tz
+	url = https://github.com/eggert/tz
+	branch = main
+	shallow = true

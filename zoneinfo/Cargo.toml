@@ -1,0 +1,11 @@
+[package]
+name = "zoneinfo"
+description = "IANA timezone to ISO 3166 country lookups, generated at build time from the tz database."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[build-dependencies]
+parse-zoneinfo = "0.3"
