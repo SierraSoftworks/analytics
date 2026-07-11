@@ -8,7 +8,8 @@
 // stored id.
 //
 // Configured declaratively on the <script> tag:
-//   data-api="https://analytics.example.com"   collection host (default: same origin)
+//   data-api="https://analytics.example.com"   collection host (default: the origin
+//                                                the script's own src was served from)
 //   data-auto-capture-exceptions="true"          hook window errors + rejections
 //   data-hash                                    treat #hash changes as navigations
 //   data-app-version="1.4.2"                     attribute exceptions to a release
@@ -22,6 +23,20 @@ import { createExceptionReporter } from "./exceptions.js";
 
 function attr(el, name) {
   return el && el.getAttribute ? el.getAttribute(name) : null;
+}
+
+// Derive the collection host from the script's own src: a tracker served from
+// https://analytics.example.com/tracker.js defaults to posting beacons back to
+// that same origin. Returns "" (a same-origin relative base) when there is no
+// usable src, e.g. an inline script.
+function scriptOrigin(el) {
+  var src = el && el.src ? el.src : null;
+  if (!src) return "";
+  try {
+    return new URL(src).origin;
+  } catch (e) {
+    return "";
+  }
 }
 
 // A short random id: base36 timestamp + random suffix. Not collision-proof and not
@@ -66,7 +81,10 @@ export function init(overrides) {
   if (!doc || !win) return undefined;
 
   const script = overrides.script || doc.currentScript;
-  const api = overrides.api != null ? overrides.api : attr(script, "data-api") || "";
+  const api =
+    overrides.api != null
+      ? overrides.api
+      : attr(script, "data-api") || scriptOrigin(script);
   const captureExceptions =
     overrides.captureExceptions != null
       ? overrides.captureExceptions

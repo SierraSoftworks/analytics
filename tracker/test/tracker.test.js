@@ -311,4 +311,17 @@ describe("init — public API", () => {
       "https://collect.example/track/ping",
     );
   });
+
+  it("derives the collection host from its own src when data-api is absent", async () => {
+    const script = document.createElement("script");
+    script.src = "https://collect.example/tracker.js";
+    document.body.appendChild(script);
+
+    init({ fetch: fetchMock, navigator: navMock, script });
+    await tick();
+
+    expect(getUrls(fetchMock, "/track/ping")[0]).toContain(
+      "https://collect.example/track/ping",
+    );
+  });
 });
