@@ -24,6 +24,3 @@ local.settings.json
 # Runtime data stores
 *.redb
 /parquet-store/
-
-# Nix build result symlink
-/result
