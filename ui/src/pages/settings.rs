@@ -285,7 +285,7 @@ fn tracker_card() -> Html {
         .unwrap_or_else(|| "https://analytics.example.com".to_string());
 
     let snippet = format!(
-        "<script\n  async\n  src=\"{origin}/tracker.js\"\n  data-api=\"{origin}\"\n  data-auto-capture-exceptions=\"true\"\n></script>"
+        "<script\n  async\n  src=\"{origin}/tracker.js\"\n  data-auto-capture-exceptions=\"true\"\n></script>"
     );
 
     // navigator.clipboard only exists in secure contexts; on a plain-HTTP LAN

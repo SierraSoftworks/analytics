@@ -39,7 +39,7 @@ request because the page reads its JSON response.
 
 | Attribute                          | Effect                                                       |
 | ---------------------------------- | ------------------------------------------------------------ |
-| `data-api`                         | Collection host (defaults to the script's own origin).       |
+| `data-api`                         | Collection host (defaults to the origin the script's own `src` was served from). |
 | `data-auto-capture-exceptions`     | `"true"` to hook `window` errors and promise rejections.     |
 | `data-hash`                        | Treat URL-hash changes as navigations (hash-routed SPAs).    |
 

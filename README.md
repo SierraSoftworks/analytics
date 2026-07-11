@@ -92,13 +92,14 @@ The dashboard is served at the configured address (default `http://127.0.0.1:808
 
 ### Tracking a website
 
-Add the tracker script to your pages, pointing `data-api` at your server:
+Add the tracker script to your pages. It defaults to reporting back to the origin
+it was served from, so pointing `src` at your server is enough — set `data-api`
+explicitly only to override that host:
 
 ```html
 <script
   async
   src="https://analytics.example.com/tracker.js"
-  data-api="https://analytics.example.com"
   data-auto-capture-exceptions="true"
   data-app-version="1.4.2"
 ></script>
