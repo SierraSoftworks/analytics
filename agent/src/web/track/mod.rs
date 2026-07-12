@@ -4,6 +4,7 @@ mod exception;
 mod gif;
 mod hit;
 mod ping;
+mod robots;
 mod tracker;
 
 use actix_cors::Cors;
@@ -18,9 +19,10 @@ use crate::state::AppState;
 /// 2 MB default to limit the work an unauthenticated flood can force.
 const MAX_TRACK_BODY: usize = 16 * 1024;
 
-/// Register `/tracker.js` and the CORS-enabled `/track/*` endpoints.
+/// Register `/tracker.js`, `/robots.txt`, and the CORS-enabled `/track/*` endpoints.
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.route("/tracker.js", web::get().to(tracker::tracker_js))
+        .route("/robots.txt", web::get().to(robots::robots_txt))
         .service(
             // Beacons are sent cross-origin from tracked sites. Hits and exceptions are
             // posted as `text/plain` so they are CORS "simple requests" (no preflight) and
