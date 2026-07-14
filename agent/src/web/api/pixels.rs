@@ -54,7 +54,7 @@ pub async fn create(
         return json_error(StatusCode::BAD_REQUEST, "A pixel name is required.");
     }
     let pixel = Pixel {
-        id: ulid::Ulid::new().to_string(),
+        id: ulid::Ulid::r#gen().to_string(),
         project_id,
         name,
         event_name: input

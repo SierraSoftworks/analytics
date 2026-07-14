@@ -543,7 +543,7 @@ fn simulate_visit(rng: &mut Rng, site: &Site, start_ms: i64, batch: &mut Vec<Sto
     let app_version = site.is_app.then(|| version.to_string());
     let country = country_of(rng);
     let language = Some((*rng.weighted(LANGUAGES)).to_string());
-    let sid = Ulid::new().to_string();
+    let sid = Ulid::r#gen().to_string();
 
     // Pageview count skews toward short visits (bounces).
     let pageviews = *rng.weighted(&[(1u32, 42), (2, 24), (3, 15), (4, 10), (5, 6), (6, 3)]);
@@ -579,7 +579,7 @@ fn simulate_visit(rng: &mut Rng, site: &Site, start_ms: i64, batch: &mut Vec<Sto
         let load = StoredEvent {
             created_ms: t,
             received_ms: t,
-            bid: Ulid::new().to_string(),
+            bid: Ulid::r#gen().to_string(),
             sid: Some(sid.clone()),
             kind: EventKind::PageLoad,
             source: site.uri.to_string(),
@@ -661,7 +661,7 @@ fn simulate_visit(rng: &mut Rng, site: &Site, start_ms: i64, batch: &mut Vec<Sto
         batch.push(StoredEvent {
             created_ms: et,
             received_ms: et,
-            bid: Ulid::new().to_string(),
+            bid: Ulid::r#gen().to_string(),
             sid: Some(sid.clone()),
             kind: EventKind::Exception,
             source: site.uri.to_string(),
@@ -694,7 +694,7 @@ fn pixel_hit(rng: &mut Rng, t: i64) -> StoredEvent {
     StoredEvent {
         created_ms: t,
         received_ms: t,
-        bid: Ulid::new().to_string(),
+        bid: Ulid::r#gen().to_string(),
         kind: EventKind::Pixel,
         source: analytics_api::pixel_source(PIXEL_ID),
         country: country_of(rng),
