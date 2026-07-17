@@ -57,7 +57,7 @@ uuid = { version = "1", features = ["v4"] }
 
 # Storage / OLAP
 redb = "4.1"
-ulid = "1"
+ulid = "3"
 polars = { version = "0.54", default-features = false, features = [
   "lazy",
   "parquet",

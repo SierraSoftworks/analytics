@@ -32,7 +32,7 @@ pub async fn create(state: web::Data<AppState>, body: web::Json<ProjectInput>) -
         Err(err) => return internal_error(err),
     }
     let project = Project {
-        id: ulid::Ulid::new().to_string(),
+        id: ulid::Ulid::generate().to_string(),
         slug: input
             .slug
             .filter(|s| !s.trim().is_empty())
