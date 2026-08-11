@@ -103,7 +103,10 @@ async fn serve(config: Config, demo: bool) -> errors::Result<()> {
     if demo {
         info!("demo mode: generating representative data...");
         let count = demo::seed(&store)?;
-        info!("demo mode: injected {count} events into {}", config.storage.redb_path);
+        info!(
+            "demo mode: injected {count} events into {}",
+            config.storage.redb_path
+        );
     }
     #[cfg(not(debug_assertions))]
     let _ = demo;
@@ -164,13 +167,11 @@ fn build_telemetry(config: &Config) -> Session {
         .with_battery(OpenTelemetry::new(otlp_endpoint))
         .with_battery(Analytics::new("https://analytics.sierrasoftworks.com"));
     if let Some(dsn) = sentry_dsn {
-        session = session.with_battery(Sentry::new((
-            dsn,
-            sentry::ClientOptions {
-                environment: environment.map(Into::into),
-                ..Default::default()
-            },
-        )));
+        session = session.with_battery(Sentry::new(
+            sentry::ClientOptions::new()
+                .dsn(&dsn)
+                .environment(environment.unwrap_or_default()),
+        ));
     }
     session
 }
