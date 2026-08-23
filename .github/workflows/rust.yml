@@ -116,10 +116,16 @@ jobs:
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
 
+      # Tests link DuckDB from the prebuilt library that libduckdb-sys
+      # downloads for its exact crate version (cached under target/, so the
+      # rust cache persists it), instead of compiling DuckDB from source via
+      # the default `bundled-duckdb` feature — cutting many minutes off cold
+      # builds. Cargo puts the library on the test binaries' load path itself.
       - name: Run tests
-        run: cargo test --no-fail-fast
+        run: cargo test --no-fail-fast --no-default-features
         env:
             RUSTFLAGS: -Cinstrument-coverage
+            DUCKDB_DOWNLOAD_LIB: "1"
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: grcov
@@ -221,8 +227,22 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # Per-push builds link DuckDB from the prebuilt library that libduckdb-sys
+      # downloads for its exact crate version (DUCKDB_DOWNLOAD_LIB=1; passed
+      # into the cross container via Cross.toml), skipping the multi-minute
+      # bundled C++ build. These binaries need libduckdb on the library path at
+      # runtime and exist only to validate the build. Release builds keep the
+      # default `bundled-duckdb` feature so the published artifacts and Docker
+      # image stay fully self-contained.
+      - name: Select DuckDB linkage
+        if: github.event_name != 'release'
+        shell: bash
+        run: |
+          echo "CARGO_FLAGS=--no-default-features" >> "$GITHUB_ENV"
+          echo "DUCKDB_DOWNLOAD_LIB=1" >> "$GITHUB_ENV"
+
       - name: cargo build
-        run: ${{ matrix.builder }} build --release --target ${{ matrix.target }}
+        run: ${{ matrix.builder }} build --release --target ${{ matrix.target }} ${{ env.CARGO_FLAGS }}
 
       # cross runs the compiler inside a Docker container as root, so the
       # registry downloads and build artifacts it writes into the cached

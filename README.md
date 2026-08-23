@@ -92,6 +92,16 @@ cp config.example.yaml config.yaml   # then edit to taste
 
 The dashboard is served at the configured address (default `http://127.0.0.1:8080`).
 
+> [!TIP]
+> The default build compiles DuckDB from source (several minutes, once) for a
+> fully self-contained binary. For a faster first build you can link against a
+> downloaded prebuilt library instead — the binary then needs `libduckdb` on
+> its library path at runtime:
+>
+> ```bash
+> DUCKDB_DOWNLOAD_LIB=1 cargo build --release -p analytics --no-default-features
+> ```
+
 ### Tracking a website
 
 Add the tracker script to your pages. It defaults to reporting back to the origin

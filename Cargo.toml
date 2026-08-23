@@ -57,9 +57,10 @@ uuid = { version = "1", features = ["v4"] }
 
 # Storage / OLAP
 # DuckDB is the store: WAL'd ingest, columnar storage, and the query engine in
-# one embedded database. `bundled` compiles libduckdb from source so the binary
-# stays self-contained.
-duckdb = { version = "1.10505", features = ["bundled"] }
+# one embedded database. Whether libduckdb is compiled from source (`bundled`,
+# for self-contained binaries) or linked from a downloaded prebuilt library
+# (fast CI builds) is chosen by the agent's `bundled-duckdb` feature.
+duckdb = { version = "1.10505" }
 # Legacy stores, retained only to migrate pre-DuckDB deployments at startup
 # (redb hot log; the Parquet archive is imported by DuckDB itself).
 redb = "4.1"

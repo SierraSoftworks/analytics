@@ -1,0 +1,8 @@
+# Configuration for `cross` (the containerized cross-compiler used for the
+# linux/arm64 release target in CI).
+
+[build.env]
+# CI's per-push builds link DuckDB from the prebuilt library that libduckdb-sys
+# downloads (see .github/workflows/rust.yml); the variable must reach the build
+# script inside the cross container for that to happen.
+passthrough = ["DUCKDB_DOWNLOAD_LIB"]
