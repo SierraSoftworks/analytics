@@ -117,10 +117,35 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       # Tests link DuckDB from the prebuilt library that libduckdb-sys
-      # downloads for its exact crate version (cached under target/, so the
-      # rust cache persists it), instead of compiling DuckDB from source via
-      # the default `bundled-duckdb` feature — cutting many minutes off cold
-      # builds. Cargo puts the library on the test binaries' load path itself.
+      # downloads for its exact crate version, instead of compiling DuckDB from
+      # source via the default `bundled-duckdb` feature — cutting many minutes
+      # off cold builds. Cargo puts the library on the test binaries' load path
+      # itself.
+      #
+      # The download must be cached separately: rust-cache prunes directories
+      # it doesn't recognise inside target/ when saving, which would strand a
+      # warm build — the cached build-script fingerprint still points at
+      # target/duckdb-download, but the library would be gone.
+      - name: Cache downloaded libduckdb
+        uses: actions/cache@v4
+        with:
+          path: target/duckdb-download
+          key: libduckdb-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      # Self-heal: if the library is nonetheless missing (evicted cache, first
+      # run) while rust-cache holds a fresh libduckdb-sys fingerprint, cargo
+      # would skip the build script and the link would fail — drop the
+      # fingerprint so the script (and its download) runs again.
+      - name: Ensure libduckdb download can rerun
+        shell: bash
+        run: |
+          if [ ! -d target/duckdb-download ]; then
+            rm -rf target/*/.fingerprint/libduckdb-sys-* \
+                   target/*/*/.fingerprint/libduckdb-sys-* \
+                   target/*/build/libduckdb-sys-* \
+                   target/*/*/build/libduckdb-sys-*
+          fi
+
       - name: Run tests
         run: cargo test --no-fail-fast --no-default-features
         env:
@@ -234,6 +259,32 @@ jobs:
         run: |
           echo "CARGO_FLAGS=--no-default-features" >> "$GITHUB_ENV"
           echo "DUCKDB_DOWNLOAD_LIB=1" >> "$GITHUB_ENV"
+
+      # The download must be cached separately: rust-cache prunes directories
+      # it doesn't recognise inside target/ when saving, which would strand a
+      # warm build — the cached build-script fingerprint still points at
+      # target/duckdb-download, but the library would be gone.
+      - name: Cache downloaded libduckdb
+        if: github.event_name != 'release'
+        uses: actions/cache@v4
+        with:
+          path: target/duckdb-download
+          key: libduckdb-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      # Self-heal: if the library is nonetheless missing (evicted cache, first
+      # run) while rust-cache holds a fresh libduckdb-sys fingerprint, cargo
+      # would skip the build script and the link would fail — drop the
+      # fingerprint so the script (and its download) runs again.
+      - name: Ensure libduckdb download can rerun
+        if: github.event_name != 'release'
+        shell: bash
+        run: |
+          if [ ! -d target/duckdb-download ]; then
+            rm -rf target/*/.fingerprint/libduckdb-sys-* \
+                   target/*/*/.fingerprint/libduckdb-sys-* \
+                   target/*/build/libduckdb-sys-* \
+                   target/*/*/build/libduckdb-sys-*
+          fi
 
       - name: cargo build
         run: ${{ matrix.builder }} build --release --target ${{ matrix.target }} ${{ env.CARGO_FLAGS }}
