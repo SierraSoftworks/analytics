@@ -132,14 +132,19 @@ jobs:
           path: target/duckdb-download
           key: libduckdb-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
-      # Self-heal: if the library is nonetheless missing (evicted cache, first
-      # run) while rust-cache holds a fresh libduckdb-sys fingerprint, cargo
-      # would skip the build script and the link would fail — drop the
-      # fingerprint so the script (and its download) runs again.
+      # Self-heal: if the library itself is missing (a pruned or evicted cache
+      # can leave the directory behind without it) while rust-cache holds a
+      # fresh libduckdb-sys fingerprint, cargo would skip the build script and
+      # the link would fail — drop the fingerprint so the script (and its
+      # download) runs again.
       - name: Ensure libduckdb download can rerun
         shell: bash
         run: |
-          if [ ! -d target/duckdb-download ]; then
+          if find target/duckdb-download \( -name 'libduckdb.so' -o -name 'libduckdb.dylib' -o -name 'duckdb.dll' \) 2>/dev/null | grep -q .; then
+            echo "prebuilt libduckdb present:"
+            find target/duckdb-download -type f | sed 's/^/  /'
+          else
+            echo "prebuilt libduckdb missing; forcing the libduckdb-sys build script to rerun"
             rm -rf target/*/.fingerprint/libduckdb-sys-* \
                    target/*/*/.fingerprint/libduckdb-sys-* \
                    target/*/build/libduckdb-sys-* \
@@ -271,15 +276,20 @@ jobs:
           path: target/duckdb-download
           key: libduckdb-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
 
-      # Self-heal: if the library is nonetheless missing (evicted cache, first
-      # run) while rust-cache holds a fresh libduckdb-sys fingerprint, cargo
-      # would skip the build script and the link would fail — drop the
-      # fingerprint so the script (and its download) runs again.
+      # Self-heal: if the library itself is missing (a pruned or evicted cache
+      # can leave the directory behind without it) while rust-cache holds a
+      # fresh libduckdb-sys fingerprint, cargo would skip the build script and
+      # the link would fail — drop the fingerprint so the script (and its
+      # download) runs again.
       - name: Ensure libduckdb download can rerun
         if: github.event_name != 'release'
         shell: bash
         run: |
-          if [ ! -d target/duckdb-download ]; then
+          if find target/duckdb-download \( -name 'libduckdb.so' -o -name 'libduckdb.dylib' -o -name 'duckdb.dll' \) 2>/dev/null | grep -q .; then
+            echo "prebuilt libduckdb present:"
+            find target/duckdb-download -type f | sed 's/^/  /'
+          else
+            echo "prebuilt libduckdb missing; forcing the libduckdb-sys build script to rerun"
             rm -rf target/*/.fingerprint/libduckdb-sys-* \
                    target/*/*/.fingerprint/libduckdb-sys-* \
                    target/*/build/libduckdb-sys-* \
