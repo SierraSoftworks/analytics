@@ -58,6 +58,10 @@ uuid = { version = "1", features = ["v4"] }
 # Storage / OLAP
 redb = "4.1"
 ulid = "3"
+# glibc allocator introspection: returning freed decode buffers to the OS after
+# partition-cache fills, so container RSS tracks live data rather than the
+# allocator's high-water mark.
+libc = "0.2"
 polars = { version = "0.55", default-features = false, features = [
   "lazy",
   "parquet",

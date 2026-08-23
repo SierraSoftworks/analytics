@@ -255,6 +255,7 @@ dependencies = [
  "humantime-serde",
  "include_dir",
  "jsonwebtoken",
+ "libc",
  "polars",
  "redb",
  "reqwest 0.12.28",

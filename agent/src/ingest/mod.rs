@@ -12,6 +12,8 @@ mod referrer;
 mod regroup;
 mod ua;
 
+#[cfg(test)]
+pub(crate) use compactor::{consolidate, seal_months};
 pub use enrich::build_event;
 pub use exception::build_exception;
 pub use pipeline::{Ingest, spawn};

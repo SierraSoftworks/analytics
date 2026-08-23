@@ -35,6 +35,10 @@ storage:
   # register automatically, but this bounds how far a flood of rotated hostnames can
   # grow the source list. Events are stored regardless once the ceiling is reached.
   max_auto_sources: 10000
+  # Byte budget (MB) for the in-memory partition cache: decoded Parquet partitions
+  # stay resident and are shared across concurrent queries, with least-recently-used
+  # eviction beyond this budget. Size it to the memory limit minus ~100MB headroom.
+  query_cache_mb: 256
 
 privacy:
   salt_rotation: "24h"

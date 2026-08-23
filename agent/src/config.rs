@@ -112,6 +112,13 @@ pub struct StorageConfig {
     /// this many sources exist, new ones stop auto-registering (their events are still
     /// stored). Raise it if you legitimately track more distinct sources.
     pub max_auto_sources: usize,
+    /// Byte budget (in megabytes) for the in-memory partition cache: decoded
+    /// Parquet partitions are kept resident and shared across concurrent
+    /// queries, evicted least-recently-used beyond this budget. Steady-state
+    /// memory deliberately grows toward this ceiling in exchange for warm
+    /// queries touching no disk; size it to the container's memory limit minus
+    /// ~100MB of working headroom.
+    pub query_cache_mb: usize,
 }
 
 impl Default for StorageConfig {
@@ -123,6 +130,7 @@ impl Default for StorageConfig {
             rollup_interval: Duration::from_secs(60 * 60),
             retention: Duration::from_secs(365 * 24 * 60 * 60),
             max_auto_sources: 10_000,
+            query_cache_mb: 256,
         }
     }
 }

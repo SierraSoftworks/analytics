@@ -87,6 +87,7 @@ async fn main() -> ExitCode {
 /// Open storage, start the ingest pipeline, and run the web server.
 async fn serve(config: Config, demo: bool) -> errors::Result<()> {
     let store = Arc::new(Store::open(&config.storage.redb_path)?);
+    store::partition_cache().set_budget(config.storage.query_cache_mb.saturating_mul(1024 * 1024));
 
     // Re-group archived exceptions if the fingerprinting rules changed since the
     // data was last processed. Runs to completion before serving; a no-op when the

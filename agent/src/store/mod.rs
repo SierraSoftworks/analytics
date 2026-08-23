@@ -9,6 +9,7 @@
 //! - [`entities`] — project/source/pixel/triage CRUD
 //! - [`parquet`] — columnar Parquet bridge
 
+mod cache;
 mod entities;
 mod event;
 mod events;
@@ -19,8 +20,11 @@ mod schema;
 mod tables;
 mod triage;
 
+pub use cache::{partition_cache, trim_allocator};
 pub use event::{EventKind, StoredEvent};
-pub use parquet::{build_dataframe, read_partition, write_partition};
+pub use parquet::{
+    archive_read, archive_write, build_dataframe, merge_partitions, read_partition, write_partition,
+};
 pub use triage::ExceptionTriage;
 
 use std::path::Path;

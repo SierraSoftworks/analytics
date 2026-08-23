@@ -1,12 +1,31 @@
 //! Columnar bridge between [`StoredEvent`]s and Parquet partitions via polars.
 
 use std::path::Path;
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use polars::prelude::*;
 
 use super::event::{EventKind, StoredEvent};
 use super::tables::STORAGE_ADVICE;
 use crate::errors::{Result, ResultExt};
+
+/// Guards the *layout* of the Parquet archive (one archive per process). Queries
+/// hold the read side across list-files -> scan -> collect so a partition can
+/// never be deleted out from under an in-flight scan; the compactor's
+/// consolidation (and retention) hold the write side while replacing or removing
+/// partition files. Plain additive writes need no lock — a query that listed the
+/// directory a moment earlier simply doesn't see the new file yet.
+static ARCHIVE_LOCK: RwLock<()> = RwLock::new(());
+
+/// Take the archive layout lock for reading (see [`ARCHIVE_LOCK`]).
+pub fn archive_read() -> RwLockReadGuard<'static, ()> {
+    ARCHIVE_LOCK.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Take the archive layout lock for writing (see [`ARCHIVE_LOCK`]).
+pub fn archive_write() -> RwLockWriteGuard<'static, ()> {
+    ARCHIVE_LOCK.write().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Build a columnar [`DataFrame`] from a batch of events. Timestamps are kept as
 /// `i64` epoch-millis columns; time bucketing is done with integer arithmetic at
@@ -90,6 +109,53 @@ pub(super) fn write_dataframe(df: &mut DataFrame, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Merge several Parquet partition files into one at `out`: the union of their
+/// rows (diagonal, so files written before a column existed still combine),
+/// de-duplicated by the globally unique per-event `seq` (a crash between a
+/// merge's write and its delete leaves the same events in two files) and sorted
+/// by time. Returns the merged row count. The caller deletes the inputs once
+/// this returns — never before, since a read failure here must leave the day
+/// untouched.
+pub fn merge_partitions(files: &[std::path::PathBuf], out: &Path) -> Result<usize> {
+    let mut frames = Vec::with_capacity(files.len());
+    for file in files {
+        frames.push(read_partition(file)?.lazy());
+    }
+    let merged = concat(
+        frames,
+        UnionArgs {
+            to_supertypes: true,
+            diagonal: true,
+            ..Default::default()
+        },
+    )
+    .or_system_err(STORAGE_ADVICE)?;
+
+    let mut df = merged.collect().or_system_err(STORAGE_ADVICE)?;
+    // De-duplicating by `seq` is only sound where `seq` is actually present; a
+    // partition predating the column reads back as nulls, which a subset-unique
+    // would collapse into a single row. Such files never contain crash
+    // duplicates anyway (the stamp predates the dedup design), so skip.
+    let has_null_seq = df.column("seq").map(|c| c.null_count() > 0).unwrap_or(true);
+    if !has_null_seq {
+        df = df
+            .lazy()
+            .unique(
+                Some(Selector::ByName {
+                    names: [PlSmallStr::from("seq")].into(),
+                    strict: true,
+                }),
+                UniqueKeepStrategy::Any,
+            )
+            .sort(["received_ms", "seq"], SortMultipleOptions::default())
+            .collect()
+            .or_system_err(STORAGE_ADVICE)?;
+    }
+    let rows = df.height();
+    write_dataframe(&mut df, out)?;
+    Ok(rows)
+}
+
 /// Read a Parquet partition back into a [`DataFrame`] (used by tests and ad-hoc
 /// queries).
 pub fn read_partition(path: &Path) -> Result<DataFrame> {
@@ -138,7 +204,11 @@ pub(super) fn regroup_partition(
     let mut changed = 0usize;
     for i in 0..height {
         if kind.get(i) == Some(EventKind::Exception.as_str()) {
-            let group = remap(exc_type.get(i).unwrap_or(""), exc_message.get(i), exc_stack.get(i));
+            let group = remap(
+                exc_type.get(i).unwrap_or(""),
+                exc_message.get(i),
+                exc_stack.get(i),
+            );
             if exc_group.get(i) != Some(group.as_str()) {
                 changed += 1;
             }
