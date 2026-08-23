@@ -164,11 +164,16 @@ jobs:
             target: x86_64-unknown-linux-gnu
             test: true
             builder: cargo
+          # Built natively on GitHub's ARM runners rather than cross-compiled:
+          # the cross containers' old sysroot can neither link the prebuilt
+          # libduckdb (needs GLIBC_2.25/GLIBCXX_3.4.22) nor compile bundled
+          # DuckDB's C++17. 22.04's glibc (2.35) predates Debian bookworm's
+          # (2.36), so the binary is guaranteed to run in the Docker image.
           - arch: "arm64"
             os: linux
-            run_on: ubuntu-latest
+            run_on: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-            builder: cross
+            builder: cargo
 
           # Apple MacOS builds
           - arch: amd64
@@ -212,28 +217,17 @@ jobs:
           name: tracker-dist
           path: tracker/dist
 
-      - name: Install Cross
-        if: matrix.builder == 'cross'
-        shell: bash
-        run: |
-          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-          cargo binstall --no-confirm cross
-
-      # Set up the cache only after all tooling (e.g. cross) is installed, and
-      # after checkout so it can key on Cargo.lock. Restoring it before the
-      # tools were installed left cross off the PATH for the build.
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
       # Per-push builds link DuckDB from the prebuilt library that libduckdb-sys
-      # downloads for its exact crate version (DUCKDB_DOWNLOAD_LIB=1; passed
-      # into the cross container via Cross.toml), skipping the multi-minute
-      # bundled C++ build. These binaries need libduckdb on the library path at
-      # runtime and exist only to validate the build. Release builds keep the
-      # default `bundled-duckdb` feature so the published artifacts and Docker
-      # image stay fully self-contained.
+      # downloads for its exact crate version (DUCKDB_DOWNLOAD_LIB=1), skipping
+      # the multi-minute bundled C++ build. These binaries need libduckdb on
+      # the library path at runtime and exist only to validate the build.
+      # Release builds keep the default `bundled-duckdb` feature so the
+      # published artifacts and Docker image stay fully self-contained.
       - name: Select DuckDB linkage
         if: github.event_name != 'release'
         shell: bash
@@ -243,16 +237,6 @@ jobs:
 
       - name: cargo build
         run: ${{ matrix.builder }} build --release --target ${{ matrix.target }} ${{ env.CARGO_FLAGS }}
-
-      # cross runs the compiler inside a Docker container as root, so the
-      # registry downloads and build artifacts it writes into the cached
-      # directories end up owned by root. Swatinem/rust-cache's save step runs
-      # as the unprivileged runner user and cannot prune root-owned files,
-      # which causes the cache save to fail and the cross build to never be
-      # cached. Reclaim ownership so the cache can be persisted.
-      - name: Reclaim cache ownership from cross
-        if: matrix.builder == 'cross'
-        run: sudo chown -R "$(id -u):$(id -g)" "$HOME/.cargo" target
 
       - name: Upload GitHub Release Artifacts
         uses: SierraSoftworks/gh-releases@v1.0.10
