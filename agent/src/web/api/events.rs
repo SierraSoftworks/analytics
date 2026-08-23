@@ -37,7 +37,6 @@ pub async fn detail(
 ) -> HttpResponse {
     let query = query.into_inner();
     let store = state.store.clone();
-    let parquet_dir = state.config.storage.parquet_dir.clone();
 
     let filter = match query.q.as_deref() {
         Some(q) => match analytics::filter::compile_query(q, FieldSet::Dashboard, &store) {
@@ -49,13 +48,12 @@ pub async fn detail(
 
     let result = web::block(move || -> crate::errors::Result<Option<EventDetail>> {
         let from = match query.from {
-            Some(f) if f <= 0 => analytics::earliest_event_ms(&store, &parquet_dir)?,
+            Some(f) if f <= 0 => analytics::earliest_event_ms(&store)?,
             other => other,
         };
         let (from, to, _) = resolve_range(from, query.to, None);
         analytics::event_detail(
             &store,
-            &parquet_dir,
             &query.name,
             from,
             to,

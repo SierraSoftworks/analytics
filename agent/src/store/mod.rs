@@ -1,91 +1,139 @@
-//! The durable store: a redb database holding metadata tables plus an append-only,
-//! hot event log. Old events are drained to Parquet by the compactor.
+//! The durable store: a single embedded DuckDB database holding the append-only
+//! event log, the metadata entities, and serving every analytical query.
+//!
+//! DuckDB collapses what used to be three systems into one: its WAL makes
+//! ingest crash-safe (no separate hot log to drain), its columnar storage with
+//! zone maps replaces the hand-partitioned Parquet archive (retention is a
+//! `DELETE`, not directory surgery), and its vectorized engine with a bounded
+//! buffer manager replaces the fold-based query layer and partition cache.
 //!
 //! The implementation is split across focused modules:
-//! - [`tables`] — table definitions, key encoding, shared advice
-//! - [`schema`] — on-disk version + forward migrations
-//! - [`json`] — generic JSON CRUD helpers
-//! - [`events`] — append-only event log
+//! - [`schema`] — DDL + instance configuration
+//! - [`json`] — generic key→JSON CRUD helpers for the entity tables
+//! - [`events`] — append-only event log (appender-based ingest, row mapping)
 //! - [`entities`] — project/source/pixel/triage CRUD
-//! - [`parquet`] — columnar Parquet bridge
+//! - [`regroup`] — exception re-fingerprinting
+//! - [`legacy`] — one-time migration from the pre-DuckDB redb + Parquet stores
+//!
+//! Concurrency: a [`Store`] hands out pooled connections ([`Store::with_conn`])
+//! cloned from one root connection — they share the database instance (and its
+//! buffer manager), so concurrent queries serve from the same cached blocks
+//! while DuckDB's MVCC keeps writers isolated.
 
-mod cache;
 mod entities;
 mod event;
 mod events;
 mod json;
-mod parquet;
+mod legacy;
 mod regroup;
 mod schema;
-mod tables;
 mod triage;
 
-pub use cache::{partition_cache, trim_allocator};
 pub use event::{EventKind, StoredEvent};
-pub use parquet::{
-    archive_read, archive_write, build_dataframe, merge_partitions, read_partition, write_partition,
-};
 pub use triage::ExceptionTriage;
 
 use std::path::Path;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 
-use redb::{Database, ReadableDatabase};
+use duckdb::Connection;
 
+use crate::config::StorageConfig;
 use crate::errors::{Result, ResultExt};
+
+pub(crate) const STORAGE_ADVICE: &[&str] = &[
+    "This is an internal storage error.",
+    "Retry the operation, and if it persists report it with the server logs.",
+];
+pub(crate) const OPEN_ADVICE: &[&str] = &[
+    "Ensure the data directory exists and is writable.",
+    "Make sure no other analytics process has the database open.",
+];
+
+/// Idle connections retained for reuse; enough for the web workers' concurrent
+/// queries, and a burst beyond it just clones (and later drops) extras.
+const POOL_LIMIT: usize = 8;
 
 /// The shared store. Held behind an `Arc`/`web::Data` and never cloned, so the
 /// sequence counter stays globally monotonic.
 pub struct Store {
-    db: Database,
+    pool: Mutex<Pool>,
     next_seq: AtomicU64,
 }
 
+struct Pool {
+    root: Connection,
+    idle: Vec<Connection>,
+}
+
 impl Store {
-    /// Open (or create) the store at `path`, ensuring tables exist and the schema is
-    /// migrated to the current version.
+    /// Open (or create) the store at `path`, ensuring the schema exists.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let db = Database::create(path).or_system_err(tables::OPEN_ADVICE)?;
-        ensure_tables(&db)?;
-        schema::migrate(&db)?;
-        let next_seq = read_next_seq(&db)?;
-        Ok(Self {
-            db,
-            next_seq: AtomicU64::new(next_seq),
-        })
+        let root = Connection::open(path.as_ref()).or_system_err(OPEN_ADVICE)?;
+        schema::init(&root)?;
+        let store = Self {
+            pool: Mutex::new(Pool {
+                root,
+                idle: Vec::new(),
+            }),
+            next_seq: AtomicU64::new(0),
+        };
+        store.refresh_next_seq()?;
+        Ok(store)
     }
-}
 
-/// Touch every table so it exists for later read transactions.
-fn ensure_tables(db: &Database) -> Result<()> {
-    let txn = db.begin_write().or_system_err(tables::OPEN_ADVICE)?;
-    txn.open_table(tables::EVENTS)
-        .or_system_err(tables::OPEN_ADVICE)?;
-    txn.open_table(tables::PROJECTS)
-        .or_system_err(tables::OPEN_ADVICE)?;
-    txn.open_table(tables::SOURCES)
-        .or_system_err(tables::OPEN_ADVICE)?;
-    txn.open_table(tables::PIXELS)
-        .or_system_err(tables::OPEN_ADVICE)?;
-    txn.open_table(tables::EXCEPTION_TRIAGE)
-        .or_system_err(tables::OPEN_ADVICE)?;
-    txn.open_table(tables::META)
-        .or_system_err(tables::OPEN_ADVICE)?;
-    txn.commit().or_system_err(tables::OPEN_ADVICE)?;
-    Ok(())
-}
+    /// Open the store for serving: apply instance configuration and, on first
+    /// run after an upgrade, import the legacy redb hot log and Parquet archive
+    /// into the database.
+    pub fn open_with_migration(storage: &StorageConfig) -> Result<Self> {
+        let store = Self::open(&storage.database_path)?;
+        // Migrate first: it applies its own tighter resource settings, and the
+        // instance configuration afterwards leaves the configured limits in
+        // force for serving.
+        legacy::migrate_if_needed(&store, storage)?;
+        store.with_conn(|conn| schema::configure(conn, storage))?;
+        store.refresh_next_seq()?;
+        Ok(store)
+    }
 
-fn read_next_seq(db: &Database) -> Result<u64> {
-    let txn = db.begin_read().or_system_err(tables::OPEN_ADVICE)?;
-    let table = txn
-        .open_table(tables::META)
-        .or_system_err(tables::OPEN_ADVICE)?;
-    match table
-        .get(tables::META_NEXT_SEQ)
-        .or_system_err(tables::STORAGE_ADVICE)?
-    {
-        Some(value) => Ok(tables::u64_from_be(value.value())),
-        None => Ok(0),
+    /// Run `f` with a pooled connection. Connections are cloned from the root
+    /// (sharing one database instance) and returned to the pool afterwards; a
+    /// connection whose closure failed is dropped instead, since it may hold a
+    /// broken transaction.
+    pub(crate) fn with_conn<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
+        let mut conn = {
+            let mut pool = self.lock_pool();
+            match pool.idle.pop() {
+                Some(conn) => conn,
+                None => pool.root.try_clone().or_system_err(OPEN_ADVICE)?,
+            }
+        };
+        let out = f(&mut conn);
+        if out.is_ok() {
+            let mut pool = self.lock_pool();
+            if pool.idle.len() < POOL_LIMIT {
+                pool.idle.push(conn);
+            }
+        }
+        out
+    }
+
+    fn lock_pool(&self) -> std::sync::MutexGuard<'_, Pool> {
+        self.pool.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Re-derive the next sequence number from the stored maximum. Retention
+    /// only ever deletes the *oldest* (lowest-seq) events, so `max(seq)` never
+    /// regresses and `max + 1` stays globally monotonic across restarts.
+    pub(crate) fn refresh_next_seq(&self) -> Result<()> {
+        let next: u64 = self.with_conn(|conn| {
+            conn.query_row("SELECT coalesce(max(seq) + 1, 0) FROM events", [], |row| {
+                row.get(0)
+            })
+            .or_system_err(STORAGE_ADVICE)
+        })?;
+        self.next_seq.store(next, Ordering::SeqCst);
+        Ok(())
     }
 }
 
@@ -117,8 +165,11 @@ mod tests {
     fn temp_store() -> TempStore {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path =
-            std::env::temp_dir().join(format!("analytics-test-{}-{}.redb", std::process::id(), n));
+        let path = std::env::temp_dir().join(format!(
+            "analytics-test-{}-{}.duckdb",
+            std::process::id(),
+            n
+        ));
         let _ = std::fs::remove_file(&path);
         let store = Store::open(&path).expect("open store");
         TempStore { store, path }
@@ -233,12 +284,19 @@ mod tests {
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].received_ms, 1000);
         assert_eq!(all[2].received_ms, 3000);
+        // Round-trip preserves the full event, with seqs stamped in order.
+        assert_eq!(all[0].source, "https://a.com");
+        assert_eq!(all[0].pathname.as_deref(), Some("/"));
+        assert!(all[0].is_unique_user);
+        assert!(all.windows(2).all(|w| w[0].seq < w[1].seq));
     }
 
     #[test]
     fn sequence_is_monotonic_across_reopen() {
-        let path =
-            std::env::temp_dir().join(format!("analytics-test-{}-reopen.redb", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "analytics-test-{}-reopen.duckdb",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&path);
         {
             let store = Store::open(&path).unwrap();
@@ -250,24 +308,6 @@ mod tests {
         assert!(reopened.next_seq.load(Ordering::SeqCst) >= 1);
         drop(reopened);
         let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn events_before_with_keys_then_delete_keys() {
-        let store = temp_store();
-        store
-            .append_events(&[
-                event("https://a", 1000),
-                event("https://b", 2000),
-                event("https://c", 3000),
-            ])
-            .unwrap();
-        let pairs = store.events_before_with_keys(2500).unwrap();
-        assert_eq!(pairs.len(), 2);
-        let keys: Vec<Vec<u8>> = pairs.into_iter().map(|(key, _)| key).collect();
-        store.delete_keys(&keys).unwrap();
-        assert_eq!(store.event_count().unwrap(), 1);
-        assert_eq!(store.all_events().unwrap()[0].received_ms, 3000);
     }
 
     #[test]
@@ -350,21 +390,5 @@ mod tests {
         assert!(store.get_pixel("px1").unwrap().is_none());
         // A second source not on the project is left untouched; unknown id -> false.
         assert!(!store.delete_project_cascade("nope").unwrap());
-    }
-
-    #[test]
-    fn parquet_roundtrip() {
-        let store = temp_store();
-        let events = vec![event("https://a.com", 1000), event("pixel://01HX", 2000)];
-        store.append_events(&events).unwrap();
-        let path = std::env::temp_dir().join(format!(
-            "analytics-test-{}-part.parquet",
-            std::process::id()
-        ));
-        super::write_partition(&events, &path).unwrap();
-        let df = super::read_partition(&path).unwrap();
-        assert_eq!(df.height(), 2);
-        assert!(df.get_column_names().iter().any(|c| c.as_str() == "source"));
-        let _ = std::fs::remove_file(&path);
     }
 }

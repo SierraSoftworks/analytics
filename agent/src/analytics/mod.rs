@@ -1,22 +1,23 @@
-//! The fold-based query layer. Statistics are computed over the union of the
-//! redb hot store and the cold Parquet partitions, filtered by a compiled
-//! [`filter`] expression, and bounded to a half-open `[from, to)` time range.
+//! The SQL query layer. Statistics are computed by DuckDB over the events
+//! table, filtered by a compiled [`filter`] expression, and bounded to a
+//! half-open `[from, to)` time range.
 //!
-//! The union is never materialized: [`scan`] streams it one partition frame at
-//! a time and each query folds the rows into small aggregate state (count maps,
-//! time buckets, per-session accumulators), so a query's peak memory tracks its
-//! *results* — a few thousand aggregate entries — rather than the size of the
-//! window it spans. polars is used only to decode each partition and to apply
-//! the compiled `q` predicate per frame. Queries are CPU-bound and synchronous,
-//! so handlers run them via `web::block`.
+//! Each endpoint is a handful of aggregation queries sharing one pooled
+//! connection; DuckDB's buffer manager (bounded by `storage.memory_limit_mb`)
+//! serves concurrent requests from shared cached blocks, and zone maps prune
+//! the time range since events are appended in arrival order. Window bounds
+//! and limits are trusted integers interpolated into the SQL; everything
+//! user-influenced travels as a bound parameter.
+//!
+//! Queries are CPU-bound and synchronous, so handlers run them via
+//! `web::block`.
 
 pub mod filter;
-mod scan;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[cfg(test)]
-use chrono::{TimeZone, Utc};
+use chrono::Utc;
 
 use analytics_api::{
     BreakdownRow, Breakdowns, CountRow, Dashboard, EventBreakdowns, EventDetail, EventVariant,
@@ -24,12 +25,15 @@ use analytics_api::{
     MetricSummary, SessionTrace, TREND_BUCKETS, TimeSeriesPoint, TraceEvent, TraceEventKind,
     TraceSummary, VersionRow, pixel_source, source_label, summary_line,
 };
+use duckdb::types::Value;
+use duckdb::{Connection, Row, params_from_iter};
 
-use crate::errors::Result;
+use crate::errors::{Result, ResultExt};
 use crate::store::Store;
 
 use filter::CompiledFilter;
-use scan::{Rows, scan_events};
+
+const ADVICE: &[&str] = &["This is an internal analytics error; please report it with the logs."];
 
 const BREAKDOWN_LIMIT: usize = 25;
 /// How many recent session traces the dashboard payload samples.
@@ -41,26 +45,78 @@ const MIN_BOUNCE_SAMPLES: i64 = 5;
 /// Exception listings are capped to the most recently seen groups.
 const EXCEPTION_GROUP_LIMIT: usize = 500;
 
+/// A composable `WHERE` fragment: trusted integers (window bounds, limits) are
+/// interpolated, user-influenced values ride as bound parameters in text order.
+#[derive(Clone)]
+struct Where {
+    sql: String,
+    params: Vec<Value>,
+}
+
+impl Where {
+    /// The half-open `[from, to)` window plus the compiled `q`, if any.
+    fn window(from_ms: i64, to_ms: i64, filter: Option<&CompiledFilter>) -> Where {
+        let mut this = Where {
+            sql: format!("received_ms >= {from_ms} AND received_ms < {to_ms}"),
+            params: Vec::new(),
+        };
+        if let Some(filter) = filter {
+            this.sql = format!("{} AND ({})", this.sql, filter.sql);
+            this.params.extend(filter.params.iter().cloned());
+        }
+        this
+    }
+
+    /// Conjoin an extra condition (with its bound parameters).
+    fn and(mut self, sql: &str, params: Vec<Value>) -> Where {
+        self.sql = format!("{} AND ({sql})", self.sql);
+        self.params.extend(params);
+        self
+    }
+}
+
+/// Run a query, mapping every row.
+fn rows<T>(
+    conn: &Connection,
+    sql: &str,
+    where_: &Where,
+    map: impl FnMut(&Row<'_>) -> duckdb::Result<T>,
+) -> Result<Vec<T>> {
+    let mut stmt = conn.prepare(sql).or_system_err(ADVICE)?;
+    let mapped = stmt
+        .query_map(params_from_iter(where_.params.iter().cloned()), map)
+        .or_system_err(ADVICE)?;
+    let mut out = Vec::new();
+    for row in mapped {
+        out.push(row.or_system_err(ADVICE)?);
+    }
+    Ok(out)
+}
+
+/// Run an aggregate query that returns exactly one row.
+fn one<T>(
+    conn: &Connection,
+    sql: &str,
+    where_: &Where,
+    map: impl FnOnce(&Row<'_>) -> duckdb::Result<T>,
+) -> Result<T> {
+    conn.query_row(sql, params_from_iter(where_.params.iter().cloned()), map)
+        .or_system_err(ADVICE)
+}
+
 /// The full dashboard payload: headline metrics with a previous-window baseline,
 /// the (index-aligned) time series pair, every dimension breakdown, and the
-/// project/source rollups — all folded from one streamed pass over the event
-/// store.
+/// project/source rollups.
 ///
 /// `filter` is the compiled `q` expression (see [`filter::compile_query`]);
 /// `None` means unfiltered.
-///
-/// One pass spanning `[from - len, to)` feeds every panel: events before `from`
-/// land only in the previous-window baseline, events after it in every
-/// current-window aggregate.
 pub fn dashboard(
     store: &Store,
-    parquet_dir: &str,
     filter: Option<&CompiledFilter>,
     from_ms: i64,
     to_ms: i64,
     bucket_ms: i64,
 ) -> Result<Dashboard> {
-    let _archive = crate::store::archive_read();
     let len = (to_ms - from_ms).max(1);
     let prev_from = from_ms - len;
     let bucket_ms = bucket_ms.max(1);
@@ -68,201 +124,251 @@ pub fn dashboard(
     // With a path filter active, `is_unique_user` (which rides only on the first
     // page load of a visitor's day) would undercount non-landing pages to ~zero;
     // daily-unique *page* views are the honest visitor count there.
-    let unique_by_page = filter.is_some_and(|f| f.references("path"));
+    let flag = if filter.is_some_and(|f| f.references("path")) {
+        "is_unique_page"
+    } else {
+        "is_unique_user"
+    };
 
-    let mut current = SummaryFold::default();
-    let mut previous = SummaryFold::default();
-    let mut current_buckets: HashMap<i64, BucketCounts> = HashMap::new();
-    let mut previous_buckets: HashMap<i64, BucketCounts> = HashMap::new();
-    let mut pages = BreakdownFold::default();
-    let mut referrers = BreakdownFold::default();
-    let mut countries = BreakdownFold::default();
-    let mut languages = BreakdownFold::default();
-    let mut browsers = BreakdownFold::default();
-    let mut operating_systems = BreakdownFold::default();
-    let mut devices = BreakdownFold::default();
-    let mut utm_sources = BreakdownFold::default();
-    let mut utm_mediums = BreakdownFold::default();
-    let mut utm_campaigns = BreakdownFold::default();
-    let mut versions: HashMap<(String, String), (i64, i64)> = HashMap::new();
-    let mut event_names: HashMap<String, i64> = HashMap::new();
-    let mut per_source: HashMap<String, (i64, i64, i64)> = HashMap::new();
-    // Sessions are folded in a second, sid-scoped pass (see below); this pass
-    // only records when each one started, which is all the sampling needs.
-    let mut session_starts: HashMap<String, i64> = HashMap::new();
+    // One span covers both the current window and the comparison baseline.
+    let span = Where::window(prev_from, to_ms, filter);
+    let current = Where::window(from_ms, to_ms, filter);
 
-    scan_events(
-        store,
-        parquet_dir,
-        prev_from,
-        to_ms,
-        filter.map(|f| f.predicate.clone()),
-        &mut |rows| {
-            for i in 0..rows.height {
-                let t = rows.received_ms.get(i).unwrap_or(0);
-                let kind = rows.kind.get(i).unwrap_or("");
-                let is_load = kind == "page_load";
-                let is_event = kind == "pixel" || kind == "custom";
-                let is_exception = kind == "exception";
-                let unique = if unique_by_page {
-                    rows.is_unique_page.get(i)
-                } else {
-                    rows.is_unique_user.get(i)
-                }
-                .unwrap_or(false);
+    store.with_conn(|conn| {
+        // Headline metrics for both windows in one scan: each aggregate is
+        // computed twice, split on the window boundary.
+        let windows = [
+            format!("received_ms >= {from_ms}"),
+            format!("received_ms < {from_ms}"),
+        ];
+        let metrics: Vec<String> = windows
+            .iter()
+            .map(|in_window| {
+                format!(
+                    "count(*) FILTER (kind = 'page_load' AND {in_window}),
+                     count(*) FILTER (kind = 'page_load' AND {flag} AND {in_window}),
+                     count(*) FILTER (kind IN ('pixel', 'custom') AND {in_window}),
+                     count(duration_ms) FILTER ({in_window}),
+                     count(*) FILTER (duration_ms BETWEEN {BOUNCE_MIN_MS} AND {BOUNCE_MAX_MS} AND {in_window}),
+                     median(duration_ms) FILTER ({in_window})"
+                )
+            })
+            .collect();
+        let (summary, previous_summary) = one(
+            conn,
+            &format!(
+                "SELECT {} FROM events WHERE {}",
+                metrics.join(", "),
+                span.sql
+            ),
+            &span,
+            |row| Ok((metric_summary(row, 0)?, metric_summary(row, 6)?)),
+        )?;
 
-                // Events before `from` feed the baseline only. Its time series is
-                // bucketed on the *current* window's grid by shifting timestamps
-                // forward one window length, guaranteeing index alignment; the
-                // emitted points are shifted back below.
-                let in_current = t >= from_ms;
-                let (summary, buckets, bucket_t) = if in_current {
-                    (&mut current, &mut current_buckets, t)
-                } else {
-                    (&mut previous, &mut previous_buckets, t + len)
-                };
-                summary.observe(is_load, is_event, unique, rows.duration_ms.get(i));
-                if is_load || is_event || is_exception {
-                    let counts = buckets.entry(bucket_t - bucket_t % bucket_ms).or_default();
-                    counts.0 += is_load as i64;
-                    counts.1 += (is_load && unique) as i64;
-                    counts.2 += is_event as i64;
-                    counts.3 += is_exception as i64;
-                }
-                if !in_current {
-                    continue;
-                }
+        // Both time series in one scan. The previous series is computed on the
+        // *current* window's bucket grid by shifting events forward one window
+        // length, guaranteeing index alignment; timestamps are shifted back to
+        // the previous window's own instants after zero-filling.
+        let mut current_buckets: HashMap<i64, BucketCounts> = HashMap::new();
+        let mut previous_buckets: HashMap<i64, BucketCounts> = HashMap::new();
+        let series = rows(
+            conn,
+            &format!(
+                "SELECT received_ms >= {from_ms},
+                        CASE WHEN received_ms >= {from_ms}
+                             THEN received_ms - received_ms % {bucket_ms}
+                             ELSE (received_ms + {len}) - (received_ms + {len}) % {bucket_ms}
+                        END AS bucket,
+                        count(*) FILTER (kind = 'page_load'),
+                        count(*) FILTER (kind = 'page_load' AND {flag}),
+                        count(*) FILTER (kind IN ('pixel', 'custom')),
+                        count(*) FILTER (kind = 'exception')
+                 FROM events
+                 WHERE {} AND kind IN ('page_load', 'pixel', 'custom', 'exception')
+                 GROUP BY 1, 2",
+                span.sql
+            ),
+            &span,
+            |row| {
+                Ok((
+                    row.get::<_, bool>(0)?,
+                    row.get::<_, i64>(1)?,
+                    (row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?),
+                ))
+            },
+        )?;
+        for (in_current, bucket, counts) in series {
+            let target = if in_current {
+                &mut current_buckets
+            } else {
+                &mut previous_buckets
+            };
+            target.insert(bucket, counts);
+        }
+        let timeseries = fill_series(&current_buckets, from_ms, to_ms, bucket_ms);
+        let mut previous_timeseries = fill_series(&previous_buckets, from_ms, to_ms, bucket_ms);
+        for point in &mut previous_timeseries {
+            point.timestamp_ms -= len;
+        }
 
-                if is_load {
-                    pages.hit(
-                        rows.pathname.get(i),
-                        rows.is_unique_page.get(i).unwrap_or(false),
-                    );
-                    referrers.hit(rows.referrer_host.get(i), unique);
-                    countries.hit(rows.country.get(i), unique);
-                    languages.hit(rows.language.get(i), unique);
-                    browsers.hit(rows.ua_browser.get(i), unique);
-                    operating_systems.hit(rows.ua_os.get(i), unique);
-                    devices.hit(rows.ua_device.get(i), unique);
-                    utm_sources.hit(rows.utm_source.get(i), unique);
-                    utm_mediums.hit(rows.utm_medium.get(i), unique);
-                    utm_campaigns.hit(rows.utm_campaign.get(i), unique);
-                    let version = versions
-                        .entry((
-                            rows.ua_browser.get(i).unwrap_or("").to_string(),
-                            rows.ua_version.get(i).unwrap_or("").to_string(),
-                        ))
-                        .or_default();
-                    version.0 += 1;
-                    version.1 += unique as i64;
-                }
-                if is_event {
-                    *counter(&mut event_names, rows.event_name.get(i).unwrap_or("")) += 1;
-                }
-                if is_load || is_event {
-                    let source = counter(&mut per_source, rows.source.get(i).unwrap_or(""));
-                    source.0 += is_load as i64;
-                    source.1 += unique as i64;
-                    source.2 += is_event as i64;
-                }
-                if let Some(sid) = rows.sid.get(i)
-                    && !sid.is_empty()
-                {
-                    match session_starts.get_mut(sid) {
-                        Some(started) => *started = (*started).min(t),
-                        None => {
-                            session_starts.insert(sid.to_string(), t);
-                        }
-                    }
-                }
-            }
-            Ok(())
-        },
-    )?;
+        // Dimension breakdowns over the current window's page loads. The pages
+        // panel always counts daily-unique *page* views; the rest follow the
+        // headline's uniqueness flag.
+        let breakdown = |column: &str, flag: &str| -> Result<Vec<BreakdownRow>> {
+            rows(
+                conn,
+                &format!(
+                    "SELECT coalesce({column}, '') AS key,
+                            count(*),
+                            count(*) FILTER ({flag})
+                     FROM events WHERE {} AND kind = 'page_load'
+                     GROUP BY key ORDER BY 2 DESC, key LIMIT {BREAKDOWN_LIMIT}",
+                    current.sql
+                ),
+                &current,
+                |row| {
+                    Ok(BreakdownRow {
+                        key: row.get(0)?,
+                        pageviews: row.get(1)?,
+                        visitors: row.get(2)?,
+                        events: 0,
+                    })
+                },
+            )
+        };
 
-    // Sample the most recently started sessions, then summarize just those in
-    // a second sid-scoped pass — filtered like every other panel, so the list
-    // is scoped exactly the way the operator's `q` scopes the rest.
-    let traces = traces_of_sessions(store, parquet_dir, session_starts, filter, from_ms, to_ms)?;
+        // The client-versions breakdown, keyed by the (application, version)
+        // pair — a version number is only meaningful within its application.
+        let versions = rows(
+            conn,
+            &format!(
+                "SELECT coalesce(ua_browser, ''), coalesce(ua_version, ''),
+                        count(*), count(*) FILTER ({flag})
+                 FROM events WHERE {} AND kind = 'page_load'
+                 GROUP BY 1, 2 ORDER BY 3 DESC, 1, 2 LIMIT {BREAKDOWN_LIMIT}",
+                current.sql
+            ),
+            &current,
+            |row| {
+                Ok(VersionRow {
+                    app: row.get(0)?,
+                    version: row.get(1)?,
+                    pageviews: row.get(2)?,
+                    visitors: row.get(3)?,
+                    events: 0,
+                })
+            },
+        )?;
 
-    let timeseries = fill_series(&current_buckets, from_ms, to_ms, bucket_ms);
-    let mut previous_timeseries = fill_series(&previous_buckets, from_ms, to_ms, bucket_ms);
-    for point in &mut previous_timeseries {
-        point.timestamp_ms -= len;
-    }
+        // The custom/pixel events breakdown, keyed by event name (unnamed
+        // events aggregate under the empty sentinel). Only the `events` count
+        // is meaningful — these rows have no page views, and visitor
+        // uniqueness rides on page loads.
+        let event_names = rows(
+            conn,
+            &format!(
+                "SELECT coalesce(event_name, '') AS key, count(*)
+                 FROM events WHERE {} AND kind IN ('pixel', 'custom')
+                 GROUP BY key ORDER BY 2 DESC, key LIMIT {BREAKDOWN_LIMIT}",
+                current.sql
+            ),
+            &current,
+            |row| {
+                Ok(BreakdownRow {
+                    key: row.get(0)?,
+                    visitors: 0,
+                    pageviews: 0,
+                    events: row.get(1)?,
+                })
+            },
+        )?;
 
-    let mut version_rows: Vec<VersionRow> = versions
-        .into_iter()
-        .map(|((app, version), (pageviews, visitors))| VersionRow {
-            app,
-            version,
-            pageviews,
-            visitors,
-            events: 0,
+        // Per-source totals. Page loads count as `pageviews`; pixel hits and
+        // custom events count as `events` so pixel-only and application
+        // sources still surface; `visitors` uses the same daily-unique flag as
+        // every other aggregation in the response, so the panels agree with
+        // the headline.
+        let per_source = rows(
+            conn,
+            &format!(
+                "SELECT source,
+                        count(*) FILTER (kind = 'page_load'),
+                        count(*) FILTER ({flag}),
+                        count(*) FILTER (kind IN ('pixel', 'custom'))
+                 FROM events WHERE {} AND kind IN ('page_load', 'pixel', 'custom')
+                 GROUP BY source
+                 ORDER BY count(*) FILTER (kind = 'page_load')
+                          + count(*) FILTER (kind IN ('pixel', 'custom')) DESC, source",
+                current.sql
+            ),
+            &current,
+            |row| {
+                Ok(BreakdownRow {
+                    key: row.get(0)?,
+                    pageviews: row.get(1)?,
+                    visitors: row.get(2)?,
+                    events: row.get(3)?,
+                })
+            },
+        )?;
+        let (projects, sources, unassigned) = project_rollup(store, per_source)?;
+
+        // Sample the most recently started sessions in the filtered window,
+        // then summarize just those — scoped by `q` exactly the way every
+        // other panel is.
+        let sids: Vec<String> = rows(
+            conn,
+            &format!(
+                "SELECT sid FROM events WHERE {} AND sid IS NOT NULL AND sid <> ''
+                 GROUP BY sid ORDER BY min(received_ms) DESC, sid LIMIT {TRACE_SAMPLE}",
+                current.sql
+            ),
+            &current,
+            |row| row.get(0),
+        )?;
+        let traces = traces_of_sessions(conn, &sids, &current)?;
+
+        Ok(Dashboard {
+            summary,
+            previous_summary,
+            timeseries,
+            previous_timeseries,
+            breakdowns: Breakdowns {
+                pages: breakdown("pathname", "is_unique_page")?,
+                referrers: breakdown("referrer_host", flag)?,
+                countries: breakdown("country", flag)?,
+                languages: breakdown("language", flag)?,
+                browsers: breakdown("ua_browser", flag)?,
+                versions,
+                operating_systems: breakdown("ua_os", flag)?,
+                devices: breakdown("ua_device", flag)?,
+                utm_sources: breakdown("utm_source", flag)?,
+                utm_mediums: breakdown("utm_medium", flag)?,
+                utm_campaigns: breakdown("utm_campaign", flag)?,
+                event_names,
+                projects,
+                sources,
+            },
+            unassigned,
+            traces,
         })
-        .collect();
-    version_rows.sort_by(|a, b| {
-        b.pageviews
-            .cmp(&a.pageviews)
-            .then_with(|| (&a.app, &a.version).cmp(&(&b.app, &b.version)))
-    });
-    version_rows.truncate(BREAKDOWN_LIMIT);
+    })
+}
 
-    let mut event_name_rows: Vec<BreakdownRow> = event_names
-        .into_iter()
-        .map(|(key, events)| BreakdownRow {
-            key,
-            visitors: 0,
-            pageviews: 0,
-            events,
-        })
-        .collect();
-    event_name_rows.sort_by(|a, b| b.events.cmp(&a.events).then_with(|| a.key.cmp(&b.key)));
-    event_name_rows.truncate(BREAKDOWN_LIMIT);
-
-    // Per-source totals. Page loads count as `pageviews`; pixel hits and custom
-    // events count as `events` so pixel-only and application sources still
-    // surface; `visitors` uses the same daily-unique flag as every other
-    // aggregation in the response, so the panels agree with the headline.
-    let mut source_rows: Vec<BreakdownRow> = per_source
-        .into_iter()
-        .map(|(key, (pageviews, visitors, events))| BreakdownRow {
-            key,
-            pageviews,
-            visitors,
-            events,
-        })
-        .collect();
-    source_rows.sort_by(|a, b| {
-        (b.pageviews + b.events)
-            .cmp(&(a.pageviews + a.events))
-            .then_with(|| a.key.cmp(&b.key))
-    });
-    let (projects, sources, unassigned) = project_rollup(store, source_rows)?;
-
-    Ok(Dashboard {
-        summary: current.finish(),
-        previous_summary: previous.finish(),
-        timeseries,
-        previous_timeseries,
-        breakdowns: Breakdowns {
-            pages: pages.finish(),
-            referrers: referrers.finish(),
-            countries: countries.finish(),
-            languages: languages.finish(),
-            browsers: browsers.finish(),
-            versions: version_rows,
-            operating_systems: operating_systems.finish(),
-            devices: devices.finish(),
-            utm_sources: utm_sources.finish(),
-            utm_mediums: utm_mediums.finish(),
-            utm_campaigns: utm_campaigns.finish(),
-            event_names: event_name_rows,
-            projects,
-            sources,
-        },
-        unassigned,
-        traces,
+/// The six headline aggregates of one window, starting at column `offset`.
+fn metric_summary(row: &Row<'_>, offset: usize) -> duckdb::Result<MetricSummary> {
+    let pageviews: i64 = row.get(offset)?;
+    let visitors: i64 = row.get(offset + 1)?;
+    let events: i64 = row.get(offset + 2)?;
+    let samples: i64 = row.get(offset + 3)?;
+    let bounces: i64 = row.get(offset + 4)?;
+    let median: Option<f64> = row.get(offset + 5)?;
+    Ok(MetricSummary {
+        visitors,
+        pageviews,
+        events,
+        bounce_rate: (samples >= MIN_BOUNCE_SAMPLES).then(|| bounces as f64 / samples as f64),
+        median_duration_ms: median.map(|m| m.round() as i64),
     })
 }
 
@@ -310,261 +416,279 @@ pub fn project_source_uris(store: &Store, project_id: &str) -> Result<Vec<String
 /// the global Exceptions inbox.
 pub fn exception_groups_by_source(
     store: &Store,
-    parquet_dir: &str,
     from_ms: i64,
     to_ms: i64,
     filter: Option<&CompiledFilter>,
 ) -> Result<Vec<(ExceptionGroup, String)>> {
-    let _archive = crate::store::archive_read();
+    let occurrences = Where::window(from_ms, to_ms, filter)
+        .and("kind = 'exception' AND exc_group IS NOT NULL", Vec::new());
 
-    struct GroupAcc {
-        count: i64,
-        first: i64,
-        last: i64,
-        exc_type: Latest,
-        message: Latest,
-        trend: Vec<i64>,
-    }
-    let mut groups: HashMap<(String, String), GroupAcc> = HashMap::new();
-
-    scan_events(
-        store,
-        parquet_dir,
-        from_ms,
-        to_ms,
-        filter.map(|f| f.predicate.clone()),
-        &mut |rows| {
-            for i in 0..rows.height {
-                if rows.kind.get(i) != Some("exception") {
-                    continue;
-                }
-                let Some(group) = rows.exc_group.get(i) else {
-                    continue;
-                };
-                let t = rows.received_ms.get(i).unwrap_or(0);
-                let source = rows.source.get(i).unwrap_or("");
-                let acc = groups
-                    .entry((group.to_string(), source.to_string()))
-                    .or_insert_with(|| GroupAcc {
-                        count: 0,
-                        first: t,
-                        last: t,
-                        exc_type: Latest::default(),
-                        message: Latest::default(),
-                        trend: vec![0; TREND_BUCKETS],
-                    });
-                acc.count += 1;
-                acc.first = acc.first.min(t);
-                acc.last = acc.last.max(t);
-                acc.exc_type.observe(t, rows.exc_type.get(i));
-                acc.message.observe(t, rows.exc_message.get(i));
-                acc.trend[trend_index(t, from_ms, to_ms)] += 1;
-            }
-            Ok(())
-        },
-    )?;
-
-    let mut out: Vec<(ExceptionGroup, String)> = groups
-        .into_iter()
-        .map(|((group_id, source), acc)| {
-            (
-                ExceptionGroup {
-                    group_id,
-                    exc_type: acc.exc_type.value.unwrap_or_default(),
-                    sample_message: summary_line(acc.message.value.as_deref().unwrap_or(""))
+    store.with_conn(|conn| {
+        let mut out: Vec<(ExceptionGroup, String)> = rows(
+            conn,
+            &format!(
+                "SELECT exc_group, source, count(*),
+                        min(received_ms), max(received_ms),
+                        arg_max(exc_type, received_ms) FILTER (exc_type IS NOT NULL),
+                        arg_max(exc_message, received_ms) FILTER (exc_message IS NOT NULL)
+                 FROM events WHERE {}
+                 GROUP BY exc_group, source
+                 ORDER BY max(received_ms) DESC, exc_group, source
+                 LIMIT {EXCEPTION_GROUP_LIMIT}",
+                occurrences.sql
+            ),
+            &occurrences,
+            |row| {
+                Ok((
+                    ExceptionGroup {
+                        group_id: row.get(0)?,
+                        exc_type: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                        sample_message: summary_line(
+                            row.get::<_, Option<String>>(6)?.as_deref().unwrap_or(""),
+                        )
                         .to_string(),
-                    count: acc.count,
-                    first_seen_ms: acc.first,
-                    last_seen_ms: acc.last,
-                    status: ExceptionStatus::Unresolved,
-                    resolved: false,
-                    muted: false,
-                    note: None,
-                    trend: acc.trend,
-                },
-                source,
-            )
-        })
-        .collect();
-    out.sort_by(|a, b| {
-        b.0.last_seen_ms
-            .cmp(&a.0.last_seen_ms)
-            .then_with(|| a.0.group_id.cmp(&b.0.group_id))
-    });
-    out.truncate(EXCEPTION_GROUP_LIMIT);
-    Ok(out)
+                        count: row.get(2)?,
+                        first_seen_ms: row.get(3)?,
+                        last_seen_ms: row.get(4)?,
+                        status: ExceptionStatus::Unresolved,
+                        resolved: false,
+                        muted: false,
+                        note: None,
+                        trend: vec![0; TREND_BUCKETS],
+                    },
+                    row.get(1)?,
+                ))
+            },
+        )?;
+
+        // Trends per (group, source), merged onto the capped listing.
+        let index: HashMap<(String, String), usize> = out
+            .iter()
+            .enumerate()
+            .map(|(i, (group, source))| ((group.group_id.clone(), source.clone()), i))
+            .collect();
+        let buckets = trend_rows(conn, &occurrences, "exc_group, source", from_ms, to_ms)?;
+        for (keys, bucket, count) in buckets {
+            let key = (keys[0].clone(), keys[1].clone());
+            if let Some(&i) = index.get(&key) {
+                out[i].0.trend[bucket] += count;
+            }
+        }
+        Ok(out)
+    })
+}
+
+/// Occurrence counts per trend bucket, grouped by `group_columns` (comma
+/// separated; pass an empty string for a single global trend). Returns
+/// `(group key values, bucket index, count)` rows.
+fn trend_rows(
+    conn: &Connection,
+    occurrences: &Where,
+    group_columns: &str,
+    from_ms: i64,
+    to_ms: i64,
+) -> Result<Vec<(Vec<String>, usize, i64)>> {
+    let span = (to_ms - from_ms).max(1);
+    let buckets = TREND_BUCKETS as i64;
+    let bucket = format!(
+        "least(greatest((received_ms - {from_ms}) * {buckets} / {span}, 0), {})",
+        buckets - 1
+    );
+    let (select, group_by, key_count) = if group_columns.is_empty() {
+        (format!("{bucket}, count(*)"), "1".to_string(), 0)
+    } else {
+        (
+            format!("{group_columns}, {bucket}, count(*)"),
+            format!("{group_columns}, {}", group_columns.split(',').count() + 1),
+            group_columns.split(',').count(),
+        )
+    };
+    rows(
+        conn,
+        &format!(
+            "SELECT {select} FROM events WHERE {} GROUP BY {group_by}",
+            occurrences.sql
+        ),
+        occurrences,
+        |row| {
+            let mut keys = Vec::with_capacity(key_count);
+            for i in 0..key_count {
+                keys.push(row.get::<_, Option<String>>(i)?.unwrap_or_default());
+            }
+            let bucket: i64 = row.get(key_count)?;
+            let count: i64 = row.get(key_count + 1)?;
+            Ok((keys, bucket.clamp(0, buckets - 1) as usize, count))
+        },
+    )
+}
+
+/// A single trend over all matching occurrences.
+fn trend_of(conn: &Connection, occurrences: &Where, from_ms: i64, to_ms: i64) -> Result<Vec<i64>> {
+    let mut trend = vec![0i64; TREND_BUCKETS];
+    for (_, bucket, count) in trend_rows(conn, occurrences, "", from_ms, to_ms)? {
+        trend[bucket] += count;
+    }
+    Ok(trend)
+}
+
+/// Occurrence counts per value of `column` (nulls under the empty-string
+/// sentinel), largest first.
+fn count_by(conn: &Connection, occurrences: &Where, column: &str) -> Result<Vec<CountRow>> {
+    rows(
+        conn,
+        &format!(
+            "SELECT coalesce({column}, '') AS key, count(*)
+             FROM events WHERE {}
+             GROUP BY key ORDER BY 2 DESC, key LIMIT {BREAKDOWN_LIMIT}",
+            occurrences.sql
+        ),
+        occurrences,
+        |row| {
+            Ok(CountRow {
+                key: row.get(0)?,
+                count: row.get(1)?,
+            })
+        },
+    )
 }
 
 /// A single exception group in forensic detail: the aggregate (with trend),
 /// how its occurrences distribute across key dimensions, and its **distinct
 /// variants** — occurrences collapsed by (message, stack, handledness) so an
 /// operator scrubs through genuinely different examples rather than paging
-/// hundreds of identical ones. Folded from one streamed pass filtered to the
-/// group; looked up by id directly (no top-N cap), so a linked or bookmarked
-/// group opens regardless of how many fingerprints a project has. Returns
-/// `None` if the group has no occurrences in `[from_ms, to_ms)`.
+/// hundreds of identical ones. Looked up by id directly (no top-N cap), so a
+/// linked or bookmarked group opens regardless of how many fingerprints a
+/// project has. Returns `None` if the group has no occurrences in
+/// `[from_ms, to_ms)`.
 pub fn exception_detail(
     store: &Store,
-    parquet_dir: &str,
     sources: &[String],
     group_id: &str,
     from_ms: i64,
     to_ms: i64,
     limit: usize,
 ) -> Result<Option<ExceptionGroupDetail>> {
-    let _archive = crate::store::archive_read();
-    let sources: HashSet<&str> = sources.iter().map(String::as_str).collect();
-
-    #[derive(Default)]
-    struct VariantAcc {
-        count: i64,
-        first: i64,
-        last: i64,
-        // The representative context comes from the variant's latest occurrence
-        // (even if that occurrence's value is null)…
-        ctx_t: i64,
-        ua_browser: Option<String>,
-        ua_os: Option<String>,
-        source: Option<String>,
-        app_version: Option<String>,
-        // …except metadata and the session link, which come from the latest
-        // occurrence that actually carries one.
-        metadata: Latest,
-        sid: Latest,
-    }
-
-    let mut count = 0i64;
-    let mut first = i64::MAX;
-    let mut last = 0i64;
-    let mut latest_type = Latest::default();
-    let mut latest_message = Latest::default();
-    let mut trend = vec![0i64; TREND_BUCKETS];
-    let mut app_versions: HashMap<(String, String), i64> = HashMap::new();
-    let mut browsers = CountFold::default();
-    let mut operating_systems = CountFold::default();
-    let mut devices = CountFold::default();
-    // Variants collapse occurrences by (message, stack, handledness).
-    type VariantKey = (Option<String>, Option<String>, Option<bool>);
-    let mut variants: HashMap<VariantKey, VariantAcc> = HashMap::new();
-    let mut occurrence_sids: HashMap<String, i64> = HashMap::new();
-
-    scan_events(store, parquet_dir, from_ms, to_ms, None, &mut |rows| {
-        for i in 0..rows.height {
-            if rows.kind.get(i) != Some("exception")
-                || rows.exc_group.get(i) != Some(group_id)
-                || !rows.source.get(i).is_some_and(|s| sources.contains(s))
-            {
-                continue;
-            }
-            let t = rows.received_ms.get(i).unwrap_or(0);
-            count += 1;
-            first = first.min(t);
-            last = last.max(t);
-            latest_type.observe(t, rows.exc_type.get(i));
-            latest_message.observe(t, rows.exc_message.get(i));
-            trend[trend_index(t, from_ms, to_ms)] += 1;
-
-            *app_versions
-                .entry((
-                    rows.source.get(i).unwrap_or("").to_string(),
-                    rows.app_version.get(i).unwrap_or("").to_string(),
-                ))
-                .or_default() += 1;
-            browsers.hit(rows.ua_browser.get(i));
-            operating_systems.hit(rows.ua_os.get(i));
-            devices.hit(rows.ua_device.get(i));
-
-            let variant = variants
-                .entry((
-                    rows.exc_message.get(i).map(str::to_string),
-                    rows.exc_stack.get(i).map(str::to_string),
-                    rows.exc_handled.get(i),
-                ))
-                .or_insert_with(|| VariantAcc {
-                    first: t,
-                    last: t,
-                    ..Default::default()
-                });
-            variant.count += 1;
-            variant.first = variant.first.min(t);
-            variant.last = variant.last.max(t);
-            if t >= variant.ctx_t {
-                variant.ctx_t = t;
-                variant.ua_browser = rows.ua_browser.get(i).map(str::to_string);
-                variant.ua_os = rows.ua_os.get(i).map(str::to_string);
-                variant.source = rows.source.get(i).map(str::to_string);
-                variant.app_version = rows.app_version.get(i).map(str::to_string);
-            }
-            variant.metadata.observe(t, rows.metadata_json.get(i));
-            variant.sid.observe(t, rows.sid.get(i));
-
-            if let Some(sid) = rows.sid.get(i)
-                && !sid.is_empty()
-            {
-                let seen = occurrence_sids.entry(sid.to_string()).or_insert(t);
-                *seen = (*seen).max(t);
-            }
-        }
-        Ok(())
-    })?;
-
-    if count == 0 {
-        return Ok(None);
-    }
-
-    let group = ExceptionGroup {
-        group_id: group_id.to_string(),
-        exc_type: latest_type.value.unwrap_or_default(),
-        sample_message: summary_line(latest_message.value.as_deref().unwrap_or("")).to_string(),
-        count,
-        first_seen_ms: first,
-        last_seen_ms: last,
-        status: ExceptionStatus::Unresolved,
-        resolved: false,
-        muted: false,
-        note: None,
-        trend,
+    let mut params = vec![Value::Text(group_id.to_string())];
+    params.extend(sources.iter().map(|s| Value::Text(s.clone())));
+    let source_list = if sources.is_empty() {
+        "FALSE".to_string()
+    } else {
+        format!("source IN ({})", vec!["?"; sources.len()].join(", "))
     };
+    let occurrences = Where::window(from_ms, to_ms, None).and(
+        &format!("kind = 'exception' AND exc_group = ? AND {source_list}"),
+        params,
+    );
 
-    let mut variant_rows: Vec<(VariantKey, VariantAcc)> = variants.into_iter().collect();
-    variant_rows.sort_by(|a, b| {
-        b.1.count
-            .cmp(&a.1.count)
-            .then_with(|| b.1.last.cmp(&a.1.last))
-    });
-    variant_rows.truncate(limit);
-    let variants = variant_rows
+    store.with_conn(|conn| {
+        let (count, first, last, exc_type, message) = one(
+            conn,
+            &format!(
+                "SELECT count(*), min(received_ms), max(received_ms),
+                        arg_max(exc_type, received_ms) FILTER (exc_type IS NOT NULL),
+                        arg_max(exc_message, received_ms) FILTER (exc_message IS NOT NULL)
+                 FROM events WHERE {}",
+                occurrences.sql
+            ),
+            &occurrences,
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            },
+        )?;
+        if count == 0 {
+            return Ok(None);
+        }
+
+        let group = ExceptionGroup {
+            group_id: group_id.to_string(),
+            exc_type: exc_type.unwrap_or_default(),
+            sample_message: summary_line(message.as_deref().unwrap_or("")).to_string(),
+            count,
+            first_seen_ms: first.unwrap_or(0),
+            last_seen_ms: last.unwrap_or(0),
+            status: ExceptionStatus::Unresolved,
+            resolved: false,
+            muted: false,
+            note: None,
+            trend: trend_of(conn, &occurrences, from_ms, to_ms)?,
+        };
+
+        // Occurrence counts per reported release, folded through the label
+        // qualification rules (see [`app_version_rows`]).
+        let totals: HashMap<(String, String), i64> = rows(
+            conn,
+            &format!(
+                "SELECT coalesce(source, ''), coalesce(app_version, ''), count(*)
+                 FROM events WHERE {} GROUP BY 1, 2",
+                occurrences.sql
+            ),
+            &occurrences,
+            |row| Ok(((row.get(0)?, row.get(1)?), row.get(2)?)),
+        )?
         .into_iter()
-        .map(|((message, stack, handled), acc)| ExceptionVariant {
-            message: message.unwrap_or_default(),
-            stack,
-            handled: handled.unwrap_or(false),
-            count: acc.count,
-            first_seen_ms: acc.first,
-            last_seen_ms: acc.last,
-            ua_browser: acc.ua_browser,
-            ua_os: acc.ua_os,
-            source: acc.source,
-            app_version: acc.app_version,
-            metadata: acc.metadata.value,
-            session_id: acc.sid.value,
-        })
         .collect();
 
-    let breakdowns = ExceptionBreakdowns {
-        app_versions: app_version_rows(app_versions),
-        browsers: browsers.finish(),
-        operating_systems: operating_systems.finish(),
-        devices: devices.finish(),
-    };
-    let traces = traces_of_sessions(store, parquet_dir, occurrence_sids, None, from_ms, to_ms)?;
+        let breakdowns = ExceptionBreakdowns {
+            app_versions: app_version_rows(totals),
+            browsers: count_by(conn, &occurrences, "ua_browser")?,
+            operating_systems: count_by(conn, &occurrences, "ua_os")?,
+            devices: count_by(conn, &occurrences, "ua_device")?,
+        };
 
-    Ok(Some(ExceptionGroupDetail {
-        group,
-        breakdowns,
-        variants,
-        traces,
-    }))
+        // Distinct variants keyed by (message, stack, handledness): one
+        // representative each, counted, most frequent first. The
+        // representative context comes from the variant's latest occurrence
+        // that carries each value.
+        let variants = rows(
+            conn,
+            &format!(
+                "SELECT exc_message, exc_stack, exc_handled,
+                        count(*), min(received_ms), max(received_ms),
+                        arg_max(ua_browser, received_ms) FILTER (ua_browser IS NOT NULL),
+                        arg_max(ua_os, received_ms) FILTER (ua_os IS NOT NULL),
+                        arg_max(source, received_ms) FILTER (source IS NOT NULL),
+                        arg_max(app_version, received_ms) FILTER (app_version IS NOT NULL),
+                        arg_max(metadata_json, received_ms) FILTER (metadata_json IS NOT NULL),
+                        arg_max(sid, received_ms) FILTER (sid IS NOT NULL)
+                 FROM events WHERE {}
+                 GROUP BY 1, 2, 3
+                 ORDER BY 4 DESC, 6 DESC
+                 LIMIT {limit}",
+                occurrences.sql
+            ),
+            &occurrences,
+            |row| {
+                Ok(ExceptionVariant {
+                    message: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    stack: row.get(1)?,
+                    handled: row.get::<_, Option<bool>>(2)?.unwrap_or(false),
+                    count: row.get(3)?,
+                    first_seen_ms: row.get(4)?,
+                    last_seen_ms: row.get(5)?,
+                    ua_browser: row.get(6)?,
+                    ua_os: row.get(7)?,
+                    source: row.get(8)?,
+                    app_version: row.get(9)?,
+                    metadata: row.get(10)?,
+                    session_id: row.get(11)?,
+                })
+            },
+        )?;
+
+        let traces = occurrence_traces(conn, &occurrences, from_ms, to_ms)?;
+        Ok(Some(ExceptionGroupDetail {
+            group,
+            breakdowns,
+            variants,
+            traces,
+        }))
+    })
 }
 
 /// One named custom/pixel event in forensic detail: the aggregate (with
@@ -576,191 +700,168 @@ pub fn exception_detail(
 /// `[from_ms, to_ms)`.
 pub fn event_detail(
     store: &Store,
-    parquet_dir: &str,
     name: &str,
     from_ms: i64,
     to_ms: i64,
     filter: Option<&CompiledFilter>,
     limit: usize,
 ) -> Result<Option<EventDetail>> {
-    let _archive = crate::store::archive_read();
+    let occurrences = Where::window(from_ms, to_ms, filter).and(
+        "kind IN ('pixel', 'custom') AND event_name = ?",
+        vec![Value::Text(name.to_string())],
+    );
 
-    #[derive(Default)]
-    struct VariantAcc {
-        count: i64,
-        first: i64,
-        last: i64,
-        // Context of the latest occurrence; the session link is the latest
-        // occurrence that has one.
-        ctx_t: i64,
-        ua_browser: Option<String>,
-        ua_os: Option<String>,
-        source: Option<String>,
-        pathname: Option<String>,
-        sid: Latest,
-    }
+    store.with_conn(|conn| {
+        let (count, first, last) = one(
+            conn,
+            &format!(
+                "SELECT count(*), min(received_ms), max(received_ms) FROM events WHERE {}",
+                occurrences.sql
+            ),
+            &occurrences,
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            },
+        )?;
+        if count == 0 {
+            return Ok(None);
+        }
 
-    let mut count = 0i64;
-    let mut first = i64::MAX;
-    let mut last = 0i64;
-    let mut trend = vec![0i64; TREND_BUCKETS];
-    let mut sources = CountFold::default();
-    let mut pages = CountFold::default();
-    let mut browsers = CountFold::default();
-    let mut operating_systems = CountFold::default();
-    let mut devices = CountFold::default();
-    let mut countries = CountFold::default();
-    let mut languages = CountFold::default();
-    let mut variants: HashMap<Option<String>, VariantAcc> = HashMap::new();
-    let mut occurrence_sids: HashMap<String, i64> = HashMap::new();
+        let breakdowns = EventBreakdowns {
+            sources: count_by(conn, &occurrences, "source")?,
+            pages: count_by(conn, &occurrences, "pathname")?,
+            browsers: count_by(conn, &occurrences, "ua_browser")?,
+            operating_systems: count_by(conn, &occurrences, "ua_os")?,
+            devices: count_by(conn, &occurrences, "ua_device")?,
+            countries: count_by(conn, &occurrences, "country")?,
+            languages: count_by(conn, &occurrences, "language")?,
+        };
 
-    scan_events(
-        store,
-        parquet_dir,
-        from_ms,
-        to_ms,
-        filter.map(|f| f.predicate.clone()),
-        &mut |rows| {
-            for i in 0..rows.height {
-                let kind = rows.kind.get(i).unwrap_or("");
-                if (kind != "pixel" && kind != "custom") || rows.event_name.get(i) != Some(name) {
-                    continue;
-                }
-                let t = rows.received_ms.get(i).unwrap_or(0);
-                count += 1;
-                first = first.min(t);
-                last = last.max(t);
-                trend[trend_index(t, from_ms, to_ms)] += 1;
+        // Distinct variants keyed by their reporter metadata: one
+        // representative each, counted, most frequent first, with the context
+        // of each variant's latest occurrence.
+        let variants = rows(
+            conn,
+            &format!(
+                "SELECT metadata_json, count(*), min(received_ms), max(received_ms),
+                        arg_max(ua_browser, received_ms) FILTER (ua_browser IS NOT NULL),
+                        arg_max(ua_os, received_ms) FILTER (ua_os IS NOT NULL),
+                        arg_max(source, received_ms) FILTER (source IS NOT NULL),
+                        arg_max(pathname, received_ms) FILTER (pathname IS NOT NULL),
+                        arg_max(sid, received_ms) FILTER (sid IS NOT NULL)
+                 FROM events WHERE {}
+                 GROUP BY 1 ORDER BY 2 DESC, 4 DESC LIMIT {limit}",
+                occurrences.sql
+            ),
+            &occurrences,
+            |row| {
+                Ok(EventVariant {
+                    metadata: row.get(0)?,
+                    count: row.get(1)?,
+                    first_seen_ms: row.get(2)?,
+                    last_seen_ms: row.get(3)?,
+                    ua_browser: row.get(4)?,
+                    ua_os: row.get(5)?,
+                    source: row.get(6)?,
+                    pathname: row.get(7)?,
+                    session_id: row.get(8)?,
+                })
+            },
+        )?;
 
-                sources.hit(rows.source.get(i));
-                pages.hit(rows.pathname.get(i));
-                browsers.hit(rows.ua_browser.get(i));
-                operating_systems.hit(rows.ua_os.get(i));
-                devices.hit(rows.ua_device.get(i));
-                countries.hit(rows.country.get(i));
-                languages.hit(rows.language.get(i));
-
-                let variant = variants
-                    .entry(rows.metadata_json.get(i).map(str::to_string))
-                    .or_insert_with(|| VariantAcc {
-                        first: t,
-                        last: t,
-                        ..Default::default()
-                    });
-                variant.count += 1;
-                variant.first = variant.first.min(t);
-                variant.last = variant.last.max(t);
-                if t >= variant.ctx_t {
-                    variant.ctx_t = t;
-                    variant.ua_browser = rows.ua_browser.get(i).map(str::to_string);
-                    variant.ua_os = rows.ua_os.get(i).map(str::to_string);
-                    variant.source = rows.source.get(i).map(str::to_string);
-                    variant.pathname = rows.pathname.get(i).map(str::to_string);
-                }
-                variant.sid.observe(t, rows.sid.get(i));
-
-                if let Some(sid) = rows.sid.get(i)
-                    && !sid.is_empty()
-                {
-                    let seen = occurrence_sids.entry(sid.to_string()).or_insert(t);
-                    *seen = (*seen).max(t);
-                }
-            }
-            Ok(())
-        },
-    )?;
-
-    if count == 0 {
-        return Ok(None);
-    }
-
-    let mut variant_rows: Vec<(Option<String>, VariantAcc)> = variants.into_iter().collect();
-    variant_rows.sort_by(|a, b| {
-        b.1.count
-            .cmp(&a.1.count)
-            .then_with(|| b.1.last.cmp(&a.1.last))
-    });
-    variant_rows.truncate(limit);
-    let variants = variant_rows
-        .into_iter()
-        .map(|(metadata, acc)| EventVariant {
-            metadata,
-            count: acc.count,
-            first_seen_ms: acc.first,
-            last_seen_ms: acc.last,
-            ua_browser: acc.ua_browser,
-            ua_os: acc.ua_os,
-            source: acc.source,
-            pathname: acc.pathname,
-            session_id: acc.sid.value,
-        })
-        .collect();
-
-    let breakdowns = EventBreakdowns {
-        sources: sources.finish(),
-        pages: pages.finish(),
-        browsers: browsers.finish(),
-        operating_systems: operating_systems.finish(),
-        devices: devices.finish(),
-        countries: countries.finish(),
-        languages: languages.finish(),
-    };
-    let traces = traces_of_sessions(store, parquet_dir, occurrence_sids, None, from_ms, to_ms)?;
-
-    Ok(Some(EventDetail {
-        name: name.to_string(),
-        count,
-        first_seen_ms: first,
-        last_seen_ms: last,
-        trend,
-        breakdowns,
-        variants,
-        traces,
-    }))
+        let traces = occurrence_traces(conn, &occurrences, from_ms, to_ms)?;
+        Ok(Some(EventDetail {
+            name: name.to_string(),
+            count,
+            first_seen_ms: first.unwrap_or(0),
+            last_seen_ms: last.unwrap_or(0),
+            trend: trend_of(conn, &occurrences, from_ms, to_ms)?,
+            breakdowns,
+            variants,
+            traces,
+        }))
+    })
 }
 
-/// Summaries of a fold's most interesting sessions, newest first, so the
-/// operator can pick which trace to open. `sids` maps each candidate session
-/// id to its sampling weight — the dashboard passes session start times, the
-/// detail views the latest matching occurrence — and only the top
-/// [`TRACE_SAMPLE`] are summarized, by a second sid-scoped streamed pass.
-/// The detail views pass no `filter` so their sessions are summarized in full
-/// (their page views and events, not just the occurrences that matched); the
-/// dashboard passes its `q` so the list is scoped like every other panel.
-fn traces_of_sessions(
-    store: &Store,
-    parquet_dir: &str,
-    sids: HashMap<String, i64>,
-    filter: Option<&CompiledFilter>,
+/// The sessions of a detail view's occurrences: the sessions with the most
+/// recent matching occurrences, summarized **in full** (their page views and
+/// events, not just the occurrences that matched).
+fn occurrence_traces(
+    conn: &Connection,
+    occurrences: &Where,
     from_ms: i64,
     to_ms: i64,
+) -> Result<Vec<TraceSummary>> {
+    let sids: Vec<String> = rows(
+        conn,
+        &format!(
+            "SELECT sid FROM events WHERE {} AND sid IS NOT NULL AND sid <> ''
+             GROUP BY sid ORDER BY max(received_ms) DESC, sid LIMIT {TRACE_SAMPLE}",
+            occurrences.sql
+        ),
+        occurrences,
+        |row| row.get(0),
+    )?;
+    traces_of_sessions(conn, &sids, &Where::window(from_ms, to_ms, None))
+}
+
+/// Summaries of the given sessions within `where_`'s scope, newest first. The
+/// context columns are each session's earliest reported value; events without
+/// a session id never form a trace.
+fn traces_of_sessions(
+    conn: &Connection,
+    sids: &[String],
+    where_: &Where,
 ) -> Result<Vec<TraceSummary>> {
     if sids.is_empty() {
         return Ok(Vec::new());
     }
-    let mut recent: Vec<(String, i64)> = sids.into_iter().collect();
-    recent.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    recent.truncate(TRACE_SAMPLE);
-    let wanted: HashSet<String> = recent.into_iter().map(|(sid, _)| sid).collect();
-
-    let mut traces = TracesFold::default();
-    scan_events(
-        store,
-        parquet_dir,
-        from_ms,
-        to_ms,
-        filter.map(|f| f.predicate.clone()),
-        &mut |rows| {
-            for i in 0..rows.height {
-                if rows.sid.get(i).is_some_and(|sid| wanted.contains(sid)) {
-                    let t = rows.received_ms.get(i).unwrap_or(0);
-                    traces.observe(rows, i, t, rows.kind.get(i).unwrap_or(""));
-                }
-            }
-            Ok(())
+    let sessions = where_.clone().and(
+        &format!("sid IN ({})", vec!["?"; sids.len()].join(", ")),
+        sids.iter().map(|s| Value::Text(s.clone())).collect(),
+    );
+    rows(
+        conn,
+        &format!(
+            "SELECT sid, min(received_ms) AS started, max(received_ms),
+                    arg_min(source, received_ms) FILTER (source IS NOT NULL),
+                    arg_min(pathname, received_ms)
+                        FILTER (kind = 'page_load' AND pathname IS NOT NULL),
+                    arg_min(country, received_ms) FILTER (country IS NOT NULL),
+                    arg_min(ua_browser, received_ms) FILTER (ua_browser IS NOT NULL),
+                    arg_min(ua_version, received_ms) FILTER (ua_version IS NOT NULL),
+                    arg_min(ua_device, received_ms) FILTER (ua_device IS NOT NULL),
+                    arg_min(app_version, received_ms) FILTER (app_version IS NOT NULL),
+                    count(*) FILTER (kind = 'page_load'),
+                    count(*) FILTER (kind IN ('pixel', 'custom')),
+                    count(*) FILTER (kind = 'exception')
+             FROM events WHERE {}
+             GROUP BY sid ORDER BY started DESC, sid LIMIT {TRACE_SAMPLE}",
+            sessions.sql
+        ),
+        &sessions,
+        |row| {
+            Ok(TraceSummary {
+                session_id: row.get(0)?,
+                started_ms: row.get(1)?,
+                last_ms: row.get(2)?,
+                source: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                entry_path: row.get(4)?,
+                country: row.get(5)?,
+                ua_browser: row.get(6)?,
+                ua_version: row.get(7)?,
+                ua_device: row.get(8)?,
+                app_version: row.get(9)?,
+                pageviews: row.get(10)?,
+                events: row.get(11)?,
+                exceptions: row.get(12)?,
+            })
         },
-    )?;
-    Ok(traces.finish(TRACE_SAMPLE))
+    )
 }
 
 /// One session's full timeline: every event carrying the session id, oldest
@@ -771,17 +872,13 @@ fn traces_of_sessions(
 /// session has no events in `[from_ms, to_ms)`.
 pub fn session_trace(
     store: &Store,
-    parquet_dir: &str,
     session_id: &str,
     from_ms: i64,
     to_ms: i64,
     limit: usize,
 ) -> Result<Option<SessionTrace>> {
-    let _archive = crate::store::archive_read();
-
     struct Collected {
         received_ms: i64,
-        seq: u64,
         kind: String,
         bid: String,
         pathname: Option<String>,
@@ -802,44 +899,50 @@ pub fn session_trace(
         app_version: Option<String>,
     }
 
-    let mut collected: Vec<Collected> = Vec::new();
-    scan_events(store, parquet_dir, from_ms, to_ms, None, &mut |rows| {
-        for i in 0..rows.height {
-            if rows.sid.get(i) != Some(session_id) {
-                continue;
-            }
-            collected.push(Collected {
-                received_ms: rows.received_ms.get(i).unwrap_or(0),
-                seq: rows.seq.get(i).unwrap_or(0),
-                kind: rows.kind.get(i).unwrap_or("").to_string(),
-                bid: rows.bid.get(i).unwrap_or("").to_string(),
-                pathname: rows.pathname.get(i).map(str::to_string),
-                duration_ms: rows.duration_ms.get(i),
-                event_name: rows.event_name.get(i).map(str::to_string),
-                metadata: rows.metadata_json.get(i).map(str::to_string),
-                exc_type: rows.exc_type.get(i).map(str::to_string),
-                exc_message: rows.exc_message.get(i).map(str::to_string),
-                exc_stack: rows.exc_stack.get(i).map(str::to_string),
-                exc_group: rows.exc_group.get(i).map(str::to_string),
-                exc_handled: rows.exc_handled.get(i),
-                source: rows.source.get(i).map(str::to_string),
-                country: rows.country.get(i).map(str::to_string),
-                language: rows.language.get(i).map(str::to_string),
-                ua_browser: rows.ua_browser.get(i).map(str::to_string),
-                ua_version: rows.ua_version.get(i).map(str::to_string),
-                ua_os: rows.ua_os.get(i).map(str::to_string),
-                app_version: rows.app_version.get(i).map(str::to_string),
-            });
-        }
-        Ok(())
+    let timeline = Where::window(from_ms, to_ms, None)
+        .and("sid = ?", vec![Value::Text(session_id.to_string())]);
+    let collected = store.with_conn(|conn| {
+        rows(
+            conn,
+            &format!(
+                "SELECT received_ms, kind, bid, pathname, duration_ms, event_name,
+                        metadata_json, exc_type, exc_message, exc_stack, exc_group,
+                        exc_handled, source, country, language, ua_browser,
+                        ua_version, ua_os, app_version
+                 FROM events WHERE {}
+                 ORDER BY received_ms, seq LIMIT {limit}",
+                timeline.sql
+            ),
+            &timeline,
+            |row| {
+                Ok(Collected {
+                    received_ms: row.get(0)?,
+                    kind: row.get(1)?,
+                    bid: row.get(2)?,
+                    pathname: row.get(3)?,
+                    duration_ms: row.get(4)?,
+                    event_name: row.get(5)?,
+                    metadata: row.get(6)?,
+                    exc_type: row.get(7)?,
+                    exc_message: row.get(8)?,
+                    exc_stack: row.get(9)?,
+                    exc_group: row.get(10)?,
+                    exc_handled: row.get(11)?,
+                    source: row.get(12)?,
+                    country: row.get(13)?,
+                    language: row.get(14)?,
+                    ua_browser: row.get(15)?,
+                    ua_version: row.get(16)?,
+                    ua_os: row.get(17)?,
+                    app_version: row.get(18)?,
+                })
+            },
+        )
     })?;
 
     if collected.is_empty() {
         return Ok(None);
     }
-    // `seq` breaks same-millisecond ties in arrival order.
-    collected.sort_by_key(|row| (row.received_ms, row.seq));
-    collected.truncate(limit);
 
     let events: Vec<TraceEvent> = collected
         .iter()
@@ -895,243 +998,6 @@ pub fn session_trace(
 
 /// Per-bucket `(pageviews, visitors, events, exceptions)` counts.
 type BucketCounts = (i64, i64, i64, i64);
-
-/// Headline-metric accumulator for one window (current or previous).
-#[derive(Default)]
-struct SummaryFold {
-    pageviews: i64,
-    visitors: i64,
-    events: i64,
-    bounces: i64,
-    durations: Vec<i64>,
-}
-
-impl SummaryFold {
-    fn observe(&mut self, is_load: bool, is_event: bool, unique: bool, duration: Option<i64>) {
-        if is_load {
-            self.pageviews += 1;
-            if unique {
-                self.visitors += 1;
-            }
-        }
-        if is_event {
-            self.events += 1;
-        }
-        if let Some(duration) = duration {
-            self.durations.push(duration);
-            if (BOUNCE_MIN_MS..=BOUNCE_MAX_MS).contains(&duration) {
-                self.bounces += 1;
-            }
-        }
-    }
-
-    fn finish(mut self) -> MetricSummary {
-        let samples = self.durations.len() as i64;
-        self.durations.sort_unstable();
-        let median = match self.durations.len() {
-            0 => None,
-            n if n % 2 == 1 => Some(self.durations[n / 2] as f64),
-            n => Some((self.durations[n / 2 - 1] as f64 + self.durations[n / 2] as f64) / 2.0),
-        };
-        MetricSummary {
-            visitors: self.visitors,
-            pageviews: self.pageviews,
-            events: self.events,
-            bounce_rate: (samples >= MIN_BOUNCE_SAMPLES)
-                .then(|| self.bounces as f64 / samples as f64),
-            median_duration_ms: median.map(|m| m.round() as i64),
-        }
-    }
-}
-
-/// A dimension breakdown accumulator over the page-load rows. Null (and empty)
-/// dimension values aggregate under the sentinel empty-string key rather than
-/// being dropped, so direct traffic and unknown values stay visible and
-/// filterable and share percentages stay honest.
-#[derive(Default)]
-struct BreakdownFold(HashMap<String, (i64, i64)>);
-
-impl BreakdownFold {
-    fn hit(&mut self, key: Option<&str>, unique: bool) {
-        let counts = counter(&mut self.0, key.unwrap_or(""));
-        counts.0 += 1;
-        counts.1 += unique as i64;
-    }
-
-    fn finish(self) -> Vec<BreakdownRow> {
-        let mut rows: Vec<BreakdownRow> = self
-            .0
-            .into_iter()
-            .map(|(key, (pageviews, visitors))| BreakdownRow {
-                key,
-                pageviews,
-                visitors,
-                events: 0,
-            })
-            .collect();
-        rows.sort_by(|a, b| {
-            b.pageviews
-                .cmp(&a.pageviews)
-                .then_with(|| a.key.cmp(&b.key))
-        });
-        rows.truncate(BREAKDOWN_LIMIT);
-        rows
-    }
-}
-
-/// Occurrence counts per value (nulls under the empty-string sentinel),
-/// finished largest first.
-#[derive(Default)]
-struct CountFold(HashMap<String, i64>);
-
-impl CountFold {
-    fn hit(&mut self, key: Option<&str>) {
-        *counter(&mut self.0, key.unwrap_or("")) += 1;
-    }
-
-    fn finish(self) -> Vec<CountRow> {
-        let mut rows: Vec<CountRow> = self
-            .0
-            .into_iter()
-            .map(|(key, count)| CountRow { key, count })
-            .collect();
-        rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.key.cmp(&b.key)));
-        rows.truncate(BREAKDOWN_LIMIT);
-        rows
-    }
-}
-
-/// A string-keyed accumulator slot, probing by `&str` first so the hot fold
-/// paths only allocate an owned key the first time each distinct value is
-/// seen — not once per row.
-fn counter<'m, V: Default>(map: &'m mut HashMap<String, V>, key: &str) -> &'m mut V {
-    if !map.contains_key(key) {
-        map.insert(key.to_string(), V::default());
-    }
-    map.get_mut(key).expect("just inserted")
-}
-
-/// The latest (by timestamp) non-null value seen so far.
-#[derive(Default)]
-struct Latest {
-    t: Option<i64>,
-    value: Option<String>,
-}
-
-impl Latest {
-    fn observe(&mut self, t: i64, value: Option<&str>) {
-        if let Some(value) = value
-            && self.t.is_none_or(|seen| t >= seen)
-        {
-            self.t = Some(t);
-            self.value = Some(value.to_string());
-        }
-    }
-}
-
-/// The earliest (by timestamp) non-null value seen so far.
-fn keep_earliest(slot: &mut Option<(i64, String)>, t: i64, value: Option<&str>) {
-    if let Some(value) = value
-        && !slot.as_ref().is_some_and(|(seen, _)| *seen <= t)
-    {
-        *slot = Some((t, value.to_string()));
-    }
-}
-
-/// Folds session summaries out of the streamed rows: one accumulator per
-/// session id (events without one — pixel hits, pre-session trackers — never
-/// form a trace), finished as the most recently started `limit` sessions. The
-/// summary spans the rows the caller feeds it, so a dimension filter scopes
-/// this list exactly the way it scopes every other panel.
-#[derive(Default)]
-struct TracesFold {
-    sessions: HashMap<String, TraceAcc>,
-}
-
-#[derive(Default)]
-struct TraceAcc {
-    started: i64,
-    last: i64,
-    source: Option<(i64, String)>,
-    entry_path: Option<(i64, String)>,
-    country: Option<(i64, String)>,
-    ua_browser: Option<(i64, String)>,
-    ua_version: Option<(i64, String)>,
-    ua_device: Option<(i64, String)>,
-    app_version: Option<(i64, String)>,
-    pageviews: i64,
-    events: i64,
-    exceptions: i64,
-}
-
-impl TracesFold {
-    fn observe(&mut self, rows: &Rows, i: usize, t: i64, kind: &str) {
-        let Some(sid) = rows.sid.get(i) else {
-            return;
-        };
-        if sid.is_empty() {
-            return;
-        }
-        let acc = self
-            .sessions
-            .entry(sid.to_string())
-            .or_insert_with(|| TraceAcc {
-                started: t,
-                last: t,
-                ..Default::default()
-            });
-        acc.started = acc.started.min(t);
-        acc.last = acc.last.max(t);
-        keep_earliest(&mut acc.source, t, rows.source.get(i));
-        keep_earliest(&mut acc.country, t, rows.country.get(i));
-        keep_earliest(&mut acc.ua_browser, t, rows.ua_browser.get(i));
-        keep_earliest(&mut acc.ua_version, t, rows.ua_version.get(i));
-        keep_earliest(&mut acc.ua_device, t, rows.ua_device.get(i));
-        keep_earliest(&mut acc.app_version, t, rows.app_version.get(i));
-        match kind {
-            "page_load" => {
-                acc.pageviews += 1;
-                // The first page viewed in the session.
-                keep_earliest(&mut acc.entry_path, t, rows.pathname.get(i));
-            }
-            "pixel" | "custom" => acc.events += 1,
-            "exception" => acc.exceptions += 1,
-            _ => {}
-        }
-    }
-
-    fn finish(self, limit: usize) -> Vec<TraceSummary> {
-        let mut sessions: Vec<(String, TraceAcc)> = self.sessions.into_iter().collect();
-        sessions.sort_by(|a, b| b.1.started.cmp(&a.1.started).then_with(|| a.0.cmp(&b.0)));
-        sessions.truncate(limit);
-        sessions
-            .into_iter()
-            .map(|(session_id, acc)| TraceSummary {
-                session_id,
-                started_ms: acc.started,
-                last_ms: acc.last,
-                source: acc.source.map(|(_, v)| v).unwrap_or_default(),
-                entry_path: acc.entry_path.map(|(_, v)| v),
-                country: acc.country.map(|(_, v)| v),
-                ua_browser: acc.ua_browser.map(|(_, v)| v),
-                ua_version: acc.ua_version.map(|(_, v)| v),
-                ua_device: acc.ua_device.map(|(_, v)| v),
-                app_version: acc.app_version.map(|(_, v)| v),
-                pageviews: acc.pageviews,
-                events: acc.events,
-                exceptions: acc.exceptions,
-            })
-            .collect()
-    }
-}
-
-/// The [`TREND_BUCKETS`] bucket index for an occurrence at `t` within
-/// `[from_ms, to_ms)`.
-fn trend_index(t: i64, from_ms: i64, to_ms: i64) -> usize {
-    let span = (to_ms - from_ms).max(1) as i128;
-    ((t - from_ms) as i128 * TREND_BUCKETS as i128 / span).clamp(0, TREND_BUCKETS as i128 - 1)
-        as usize
-}
 
 /// A continuous time series over `[from_ms, to_ms)` at `bucket_ms` resolution.
 /// Buckets with no events are emitted as zeros so the chart shows a gap-free
@@ -1276,16 +1142,12 @@ fn project_rollup(
 /// The timestamp of the earliest stored event, or `None` when nothing has been
 /// recorded yet. Used to resolve "all time" queries (`from=0`) to the real
 /// start of the data, so the time series isn't padded with decades of empty
-/// buckets. The cold archive is date-partitioned, so its earliest partition
-/// directory answers without scanning any data; only a store with no cold
-/// partitions yet (first hours of a deployment) reads the hot store.
-pub fn earliest_event_ms(store: &Store, parquet_dir: &str) -> Result<Option<i64>> {
-    if let Some(ms) = scan::earliest_partition_ms(std::path::Path::new(parquet_dir)) {
-        return Ok(Some(ms));
-    }
-    // The hot event log is keyed by `(received_ms, seq)`, so the first entry is
-    // the earliest.
-    Ok(store.all_events()?.first().map(|event| event.received_ms))
+/// buckets.
+pub fn earliest_event_ms(store: &Store) -> Result<Option<i64>> {
+    store.with_conn(|conn| {
+        conn.query_row("SELECT min(received_ms) FROM events", [], |row| row.get(0))
+            .or_system_err(ADVICE)
+    })
 }
 #[cfg(test)]
 mod tests {
@@ -1332,47 +1194,22 @@ mod tests {
     }
 
     #[test]
-    fn earliest_event_ms_prefers_the_cold_archive_and_falls_back_to_hot() {
-        let parquet_dir = std::env::temp_dir().join(format!(
-            "analytics-earliest-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-
-        // With no partitions and an empty hot store there is no earliest event.
+    fn earliest_event_ms_tracks_the_oldest_stored_event() {
         let redb = temp_redb();
         let store = Store::open(&redb).unwrap();
-        assert_eq!(
-            earliest_event_ms(&store, parquet_dir.to_str().unwrap()).unwrap(),
-            None
-        );
+        // An empty store has no earliest event ("all time" stays unanchored).
+        assert_eq!(earliest_event_ms(&store).unwrap(), None);
 
-        // Hot-only: the earliest hot event answers.
         store
-            .append_events(&[load("https://a.com", 5_000, true, None)])
+            .append_events(&[
+                load("https://a.com", 5_000, true, None),
+                load("https://a.com", 3_000, true, None),
+            ])
             .unwrap();
-        assert_eq!(
-            earliest_event_ms(&store, parquet_dir.to_str().unwrap()).unwrap(),
-            Some(5_000)
-        );
+        assert_eq!(earliest_event_ms(&store).unwrap(), Some(3_000));
 
-        // A date partition (even an empty directory tree counts — partitions
-        // only exist once written) beats the hot store.
-        std::fs::create_dir_all(parquet_dir.join("2024/03/07")).unwrap();
-        std::fs::create_dir_all(parquet_dir.join("2025/01/01")).unwrap();
-        let expected = Utc
-            .with_ymd_and_hms(2024, 3, 7, 0, 0, 0)
-            .single()
-            .unwrap()
-            .timestamp_millis();
-        assert_eq!(
-            earliest_event_ms(&store, parquet_dir.to_str().unwrap()).unwrap(),
-            Some(expected)
-        );
-        std::fs::remove_dir_all(&parquet_dir).ok();
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
     }
 
     #[test]
@@ -1388,17 +1225,8 @@ mod tests {
             ])
             .unwrap();
 
-        // No parquet dir -> hot store only.
         let filter = dash_filter(&store, &source_q("https://a.com"));
-        let dash = dashboard(
-            &store,
-            "/nonexistent-parquet",
-            Some(&filter),
-            0,
-            10_000,
-            86_400_000,
-        )
-        .unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
 
         assert_eq!(dash.summary.pageviews, 3);
         assert_eq!(dash.summary.visitors, 2); // two unique loads for a.com
@@ -1433,7 +1261,7 @@ mod tests {
             .unwrap();
 
         let filter = dash_filter(&store, &source_q("https://a.com"));
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 3 * day, day).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 3 * day, day).unwrap();
 
         // Buckets at 0, 1d, 2d — empty days filled with zeros, not dropped
         // (the range is half-open, so the bucket at 3d is not included).
@@ -1470,7 +1298,7 @@ mod tests {
             .unwrap();
 
         let filter = dash_filter(&store, &source_q("https://a.com"));
-        let dash = dashboard(&store, "/none", Some(&filter), 10_000, 20_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 10_000, 20_000, 86_400_000).unwrap();
 
         assert_eq!(dash.summary.pageviews, 2);
         assert_eq!(dash.previous_summary.pageviews, 1);
@@ -1493,28 +1321,28 @@ mod tests {
 
         // Equality is case-insensitive, mirroring the filter language.
         let filter = dash_filter(&store, r#"browser == "chrome""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 1);
         assert_eq!(dash.summary.visitors, 1);
 
         // Disjunction spans values.
         let filter = dash_filter(&store, r#"browser == "Chrome" || browser == "Firefox""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 2);
 
         // Membership lists work too.
         let filter = dash_filter(&store, r#"browser in ["chrome", "firefox"]"#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 2);
 
         // An empty value matches events where the dimension is absent.
         let filter = dash_filter(&store, r#"browser == """#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 1);
         assert_eq!(dash.summary.visitors, 0);
 
         // The absent value surfaces as a sentinel row rather than being dropped.
-        let dash = dashboard(&store, "/none", None, 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, None, 0, 10_000, 86_400_000).unwrap();
         let sentinel = dash.breakdowns.browsers.iter().find(|r| r.key.is_empty());
         assert_eq!(sentinel.map(|r| r.pageviews), Some(1));
 
@@ -1531,7 +1359,7 @@ mod tests {
             .unwrap();
 
         let filter = dash_filter(&store, r#"source == "a.com""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 1);
 
         drop(store);
@@ -1553,7 +1381,7 @@ mod tests {
 
         // Bare hostnames expand to every canonical URI form.
         let filter = dash_filter(&store, r#"source in ["a.com", "b.com", "p1"]"#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 2);
         assert_eq!(dash.summary.events, 1); // the pixel matched via pixel://p1
         assert!(
@@ -1565,7 +1393,7 @@ mod tests {
 
         // Mixed bare and fully-qualified names work too.
         let filter = dash_filter(&store, r#"source in ["https://a.com", "b.com"]"#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 2);
         assert_eq!(dash.summary.events, 0);
 
@@ -1590,7 +1418,7 @@ mod tests {
         // browser == "" (absent) must match the browserless page view but NOT
         // the pixel hit, whose dimensions are null for a different reason.
         let filter = dash_filter(&store, r#"browser == """#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 1);
         assert_eq!(dash.summary.events, 0);
         assert!(
@@ -1616,7 +1444,7 @@ mod tests {
         store.append_events(&[blog]).unwrap();
 
         let filter = dash_filter(&store, r#"path == "/blog""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         // The sources rollup must agree with the headline visitor count.
         assert_eq!(dash.summary.visitors, 1);
         let source = dash.breakdowns.sources.first().expect("source row");
@@ -1641,7 +1469,7 @@ mod tests {
         store.append_events(&[landing, blog]).unwrap();
 
         let filter = dash_filter(&store, r#"path == "/blog""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 1);
         // is_unique_user would report 0 here; is_unique_page reports the truth.
         assert_eq!(dash.summary.visitors, 1);
@@ -1659,7 +1487,7 @@ mod tests {
             .unwrap();
 
         let filter = dash_filter(&store, r#"project == "empty-project""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 0);
         assert_eq!(dash.summary.visitors, 0);
         assert!(dash.breakdowns.sources.is_empty());
@@ -1707,13 +1535,13 @@ mod tests {
             r#"project == "01ARZAPPS""#,
         ] {
             let filter = dash_filter(&store, q);
-            let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+            let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
             assert_eq!(dash.summary.pageviews, 1, "query `{q}`");
         }
 
         // Negation excludes the project's traffic but keeps everything else.
         let filter = dash_filter(&store, r#"project != "Apps""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 1);
         assert!(
             dash.breakdowns
@@ -1768,7 +1596,7 @@ mod tests {
             ])
             .unwrap();
 
-        let rows = exception_groups_by_source(&store, "/none", 0, 10_000, None).unwrap();
+        let rows = exception_groups_by_source(&store, 0, 10_000, None).unwrap();
         // One row per (fingerprint, source) — not collapsed across sources.
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|(g, _)| g.group_id == "g1"));
@@ -1782,50 +1610,6 @@ mod tests {
 
         drop(store);
         let _ = std::fs::remove_file(&redb);
-    }
-
-    #[test]
-    fn union_deduplicates_a_crash_duplicated_window() {
-        let redb = temp_redb();
-        let store = Store::open(&redb).unwrap();
-        store
-            .append_events(&[
-                load("https://a.com", 1_000, true, None),
-                load("https://a.com", 2_000, false, None),
-            ])
-            .unwrap();
-
-        // Simulate a crash between archive and delete: the same window now lives in
-        // both Parquet and the hot store. The archived rows carry the stamped `seq`.
-        let archived = store.all_events().unwrap();
-        let parquet_dir =
-            std::env::temp_dir().join(format!("analytics-dedup-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&parquet_dir);
-        let partition = parquet_dir
-            .join("1970")
-            .join("01")
-            .join("01")
-            .join("events-1.parquet");
-        crate::store::write_partition(&archived, &partition).unwrap();
-
-        let filter = dash_filter(&store, &source_q("https://a.com"));
-        let dash = dashboard(
-            &store,
-            parquet_dir.to_str().unwrap(),
-            Some(&filter),
-            0,
-            10_000,
-            86_400_000,
-        )
-        .unwrap();
-
-        // Without dedup this would double to 4 pageviews / 2 visitors.
-        assert_eq!(dash.summary.pageviews, 2);
-        assert_eq!(dash.summary.visitors, 1);
-
-        drop(store);
-        let _ = std::fs::remove_file(&redb);
-        let _ = std::fs::remove_dir_all(&parquet_dir);
     }
 
     #[test]
@@ -1847,13 +1631,12 @@ mod tests {
         .unwrap()
         .unwrap();
         let listed =
-            exception_groups_by_source(&store, "/none", 0, 10_000_000, Some(&listing_filter))
-                .unwrap();
+            exception_groups_by_source(&store, 0, 10_000_000, Some(&listing_filter)).unwrap();
         assert_eq!(listed.len(), 500);
         assert!(!listed.iter().any(|(g, _)| g.group_id == "g1"));
 
         // ...but a direct lookup still resolves it (group + variants in one scan).
-        let g1 = exception_detail(&store, "/none", &sources, "g1", 0, 10_000_000, 10).unwrap();
+        let g1 = exception_detail(&store, &sources, "g1", 0, 10_000_000, 10).unwrap();
         let detail = g1.expect("g1 resolves");
         assert_eq!(detail.group.group_id, "g1");
         assert_eq!(detail.group.count, 1);
@@ -1861,7 +1644,7 @@ mod tests {
         assert_eq!(detail.variants.len(), 1);
         // An unknown group resolves to None.
         assert!(
-            exception_detail(&store, "/none", &sources, "nope", 0, 10_000_000, 10)
+            exception_detail(&store, &sources, "nope", 0, 10_000_000, 10)
                 .unwrap()
                 .is_none()
         );
@@ -1894,7 +1677,7 @@ mod tests {
         store.append_events(&[a1, a2, b]).unwrap();
 
         let sources = ["https://a.com".to_string()];
-        let detail = exception_detail(&store, "/none", &sources, "g1", 0, 10_000, 10)
+        let detail = exception_detail(&store, &sources, "g1", 0, 10_000, 10)
             .unwrap()
             .expect("g1 resolves");
 
@@ -1966,7 +1749,7 @@ mod tests {
             ])
             .unwrap();
 
-        let dash = dashboard(&store, "/none", None, 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, None, 0, 10_000, 86_400_000).unwrap();
         let names: Vec<(&str, i64)> = dash
             .breakdowns
             .event_names
@@ -2005,7 +1788,7 @@ mod tests {
             ])
             .unwrap();
 
-        let detail = event_detail(&store, "/none", "signup", 0, 10_000, None, 10)
+        let detail = event_detail(&store, "signup", 0, 10_000, None, 10)
             .unwrap()
             .expect("signup resolves");
         assert_eq!(detail.name, "signup");
@@ -2036,12 +1819,12 @@ mod tests {
         // separately, and an unknown one not at all.
         assert_eq!(detail.traces.len(), 2);
         assert!(
-            event_detail(&store, "/none", "checkout", 0, 10_000, None, 10)
+            event_detail(&store, "checkout", 0, 10_000, None, 10)
                 .unwrap()
                 .is_some()
         );
         assert!(
-            event_detail(&store, "/none", "nope", 0, 10_000, None, 10)
+            event_detail(&store, "nope", 0, 10_000, None, 10)
                 .unwrap()
                 .is_none()
         );
@@ -2049,7 +1832,7 @@ mod tests {
         // The dashboard filter scopes the detail like every other panel.
         let filter = dash_filter(&store, r#"source == "https://other.com""#);
         assert!(
-            event_detail(&store, "/none", "signup", 0, 10_000, Some(&filter), 10)
+            event_detail(&store, "signup", 0, 10_000, Some(&filter), 10)
                 .unwrap()
                 .is_none()
         );
@@ -2071,7 +1854,7 @@ mod tests {
         // Across two sources the bare number would be ambiguous, so rows stay
         // qualified as `app @ version`.
         let sources = ["https://a.com".to_string(), "https://b.com".to_string()];
-        let detail = exception_detail(&store, "/none", &sources, "g1", 0, 10_000, 10)
+        let detail = exception_detail(&store, &sources, "g1", 0, 10_000, 10)
             .unwrap()
             .expect("g1 resolves");
         let keys: Vec<&str> = detail
@@ -2114,7 +1897,7 @@ mod tests {
             ])
             .unwrap();
 
-        let dash = dashboard(&store, "/none", None, 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, None, 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.traces.len(), 2);
 
         // Newest session first.
@@ -2137,7 +1920,7 @@ mod tests {
 
         // The dashboard filter scopes traces like every other panel.
         let filter = dash_filter(&store, r#"path == "/pricing""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.traces.len(), 1);
         assert_eq!(dash.traces[0].session_id, "s2");
 
@@ -2165,7 +1948,7 @@ mod tests {
             ])
             .unwrap();
 
-        let trace = session_trace(&store, "/none", "s1", 0, 10_000, 1_000)
+        let trace = session_trace(&store, "s1", 0, 10_000, 1_000)
             .unwrap()
             .expect("s1 resolves");
         assert_eq!(trace.session_id, "s1");
@@ -2190,7 +1973,7 @@ mod tests {
 
         // An unknown session resolves to None.
         assert!(
-            session_trace(&store, "/none", "nope", 0, 10_000, 1_000)
+            session_trace(&store, "nope", 0, 10_000, 1_000)
                 .unwrap()
                 .is_none()
         );
@@ -2211,7 +1994,7 @@ mod tests {
             ])
             .unwrap();
 
-        let dash = dashboard(&store, "/none", None, 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, None, 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.timeseries.len(), 1);
         assert_eq!(dash.timeseries[0].pageviews, 1);
         assert_eq!(dash.timeseries[0].exceptions, 2);
@@ -2232,7 +2015,7 @@ mod tests {
             ])
             .unwrap();
 
-        let dash = dashboard(&store, "/none", None, 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, None, 0, 10_000, 86_400_000).unwrap();
         let uris: Vec<&str> = dash.unassigned.iter().map(|u| u.key.as_str()).collect();
         assert!(uris.contains(&"https://a.com"));
         assert!(uris.contains(&"pixel://p1")); // previously invisible
@@ -2263,39 +2046,15 @@ mod tests {
 }
 
 /// Smoke tests against a production data dump. Set `ANALYTICS_PROD_DUMP` to a
-/// directory containing a `parquet/` archive (e.g. `.prod-dump/analytics`) to
-/// enable them; they are silently skipped otherwise. Run with `--release` for a
-/// representative memory reading:
+/// directory containing the legacy `parquet/` archive (e.g.
+/// `.prod-dump/analytics`) to enable them; they are silently skipped
+/// otherwise. Run with `--release` for a representative reading:
 /// `ANALYTICS_PROD_DUMP=$PWD/.prod-dump/analytics cargo test -p analytics --release prod_dump -- --nocapture`
 #[cfg(test)]
 mod prod_dump_tests {
     use super::*;
+    use crate::config::StorageConfig;
     use crate::store::Store;
-    use std::path::Path;
-
-    fn copy_tree(from: &Path, to: &Path) {
-        std::fs::create_dir_all(to).unwrap();
-        for entry in std::fs::read_dir(from).unwrap().flatten() {
-            let target = to.join(entry.file_name());
-            if entry.path().is_dir() {
-                copy_tree(&entry.path(), &target);
-            } else {
-                std::fs::copy(entry.path(), &target).unwrap();
-            }
-        }
-    }
-
-    fn count_files(dir: &Path) -> usize {
-        let mut n = 0;
-        for entry in std::fs::read_dir(dir).unwrap().flatten() {
-            if entry.path().is_dir() {
-                n += count_files(&entry.path());
-            } else if entry.path().extension().is_some_and(|e| e == "parquet") {
-                n += 1;
-            }
-        }
-        n
-    }
 
     fn rss_stat_mb(stat: &str) -> f64 {
         let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
@@ -2307,131 +2066,73 @@ mod prod_dump_tests {
             .unwrap_or(0.0)
     }
 
-    fn peak_rss_mb() -> f64 {
-        rss_stat_mb("VmHWM:")
-    }
-
-    /// Measure dashboard queries against an existing archive in a fresh
-    /// process (no copies or rewrites): set `ANALYTICS_PROD_DUMP_DIR` to a
-    /// parquet archive directory. Reports cold/warm timing and peak RSS only.
+    /// Migrating the legacy production archive must produce a database that
+    /// serves the dashboard with the exact numbers the legacy engine computed
+    /// (recorded before the DuckDB migration), and the migration must be
+    /// idempotent across reopens.
     #[test]
-    fn dashboard_peak_memory() {
-        let Ok(parquet_dir) = std::env::var("ANALYTICS_PROD_DUMP_DIR") else {
-            return;
-        };
-        if let Some(mb) = std::env::var("ANALYTICS_CACHE_MB")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-        {
-            crate::store::partition_cache().set_budget(mb * 1024 * 1024);
-        }
-        let redb = std::env::temp_dir().join(format!("analytics-peak-{}.redb", std::process::id()));
-        let _ = std::fs::remove_file(&redb);
-        let store = Store::open(&redb).unwrap();
-        let from = earliest_event_ms(&store, &parquet_dir)
-            .unwrap()
-            .expect("archive has data");
-        let to = from + 400 * 86_400_000;
-        println!("baseline peak RSS {:.1} MB", peak_rss_mb());
-        let t = std::time::Instant::now();
-        let dash = dashboard(&store, &parquet_dir, None, from, to, 86_400_000).unwrap();
-        let cold = t.elapsed();
-        let t = std::time::Instant::now();
-        let _ = dashboard(&store, &parquet_dir, None, from, to, 86_400_000).unwrap();
-        println!(
-            "dashboard ({} pageviews): cold {cold:?}, warm {:?}, peak RSS {:.1} MB, \
-             steady RSS {:.1} MB",
-            dash.summary.pageviews,
-            t.elapsed(),
-            peak_rss_mb(),
-            rss_stat_mb("VmRSS:")
-        );
-
-        // Eight concurrent warm dashboards sharing the cached frames: the
-        // point of the partition pool is that these add fold state only.
-        let t = std::time::Instant::now();
-        std::thread::scope(|scope| {
-            for _ in 0..8 {
-                scope.spawn(|| {
-                    dashboard(&store, &parquet_dir, None, from, to, 86_400_000).unwrap();
-                });
-            }
-        });
-        println!(
-            "8 concurrent warm dashboards in {:?}: peak RSS {:.1} MB, steady RSS {:.1} MB",
-            t.elapsed(),
-            peak_rss_mb(),
-            rss_stat_mb("VmRSS:")
-        );
-        drop(store);
-        let _ = std::fs::remove_file(&redb);
-    }
-
-    /// The dashboard folded over the real archive must produce identical
-    /// results as the compactor repacks it: fragmented hourly files, daily
-    /// consolidation, and monthly sealing.
-    #[test]
-    fn dashboard_is_stable_across_consolidation_and_sealing() {
+    fn migrates_the_production_dump_and_matches_legacy_numbers() {
         let Ok(dump) = std::env::var("ANALYTICS_PROD_DUMP") else {
             return;
         };
         let work = std::env::temp_dir().join(format!("analytics-prod-dump-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&work);
-        copy_tree(&Path::new(&dump).join("parquet"), &work.join("parquet"));
-        let parquet = work.join("parquet");
-        let parquet_dir = parquet.to_str().unwrap();
+        std::fs::create_dir_all(&work).unwrap();
+        let storage = StorageConfig {
+            database_path: work.join("analytics.duckdb").to_string_lossy().into_owned(),
+            parquet_dir: format!("{dump}/parquet"),
+            redb_path: work.join("missing.redb").to_string_lossy().into_owned(),
+            ..Default::default()
+        };
 
-        let store = Store::open(work.join("smoke.redb")).unwrap();
-        let from = earliest_event_ms(&store, parquet_dir)
-            .unwrap()
-            .expect("dump has data");
+        let t = std::time::Instant::now();
+        let store = Store::open_with_migration(&storage).unwrap();
+        let migrate_time = t.elapsed();
+
+        let from = earliest_event_ms(&store).unwrap().expect("dump has data");
         let to = from + 400 * 86_400_000;
-
         let t = std::time::Instant::now();
-        let fragmented = dashboard(&store, parquet_dir, None, from, to, 86_400_000).unwrap();
-        let fragmented_time = t.elapsed();
-        assert!(
-            fragmented.summary.pageviews > 0,
-            "dump should contain page views"
-        );
-
-        let files_fragmented = count_files(&parquet);
-        crate::ingest::consolidate(&parquet, 1).unwrap();
-        let files_daily = count_files(&parquet);
-        let daily = dashboard(&store, parquet_dir, None, from, to, 86_400_000).unwrap();
-        assert_eq!(fragmented.summary, daily.summary);
-        assert_eq!(fragmented.timeseries, daily.timeseries);
-        assert_eq!(fragmented.breakdowns, daily.breakdowns);
-        assert_eq!(fragmented.traces, daily.traces);
-
-        // Seal every month in the dump (the cutoff is later than all of it).
-        crate::ingest::seal_months(&parquet, to, 2).unwrap();
-        let files_monthly = count_files(&parquet);
-        assert!(files_monthly <= files_daily);
+        let dash = dashboard(&store, None, from, to, 86_400_000).unwrap();
+        let cold = t.elapsed();
         let t = std::time::Instant::now();
-        let monthly = dashboard(&store, parquet_dir, None, from, to, 86_400_000).unwrap();
-        let monthly_time = t.elapsed();
-        assert_eq!(fragmented.summary, monthly.summary);
-        assert_eq!(fragmented.timeseries, monthly.timeseries);
-        assert_eq!(fragmented.breakdowns, monthly.breakdowns);
-        assert_eq!(fragmented.traces, monthly.traces);
+        let _ = dashboard(&store, None, from, to, 86_400_000).unwrap();
+        let warm = t.elapsed();
 
-        println!(
-            "prod dump: {files_fragmented} -> {files_daily} -> {files_monthly} files, \
-             {} pageviews / {} visitors, fragmented dashboard in {fragmented_time:?}, \
-             monthly in {monthly_time:?}, peak RSS {:.1} MB",
-            fragmented.summary.pageviews,
-            fragmented.summary.visitors,
-            peak_rss_mb()
-        );
+        // Ground truth computed by the legacy polars fold over this dump.
+        assert_eq!(dash.summary.pageviews, 55_193);
+        assert_eq!(dash.summary.visitors, 3_345);
+        assert_eq!(dash.summary.events, 78_357);
+        assert_eq!(dash.traces.len(), 10);
 
+        // Reopening performs no second import.
+        let events = store.event_count().unwrap();
         drop(store);
-        // `ANALYTICS_PROD_DUMP_KEEP=1` keeps the repacked archive around, e.g.
-        // to point `ANALYTICS_PROD_DUMP_DIR` at the sealed layout.
-        if std::env::var("ANALYTICS_PROD_DUMP_KEEP").is_ok() {
-            println!("keeping {}", parquet.display());
-        } else {
-            let _ = std::fs::remove_dir_all(&work);
-        }
+        let reopened = Store::open_with_migration(&storage).unwrap();
+        assert_eq!(reopened.event_count().unwrap(), events);
+
+        // Eight concurrent warm dashboards sharing the buffer manager.
+        let t = std::time::Instant::now();
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    dashboard(&reopened, None, from, to, 86_400_000).unwrap();
+                });
+            }
+        });
+        let concurrent = t.elapsed();
+
+        let db_size = std::fs::metadata(&storage.database_path)
+            .map(|m| m.len() as f64 / (1024.0 * 1024.0))
+            .unwrap_or(0.0);
+        println!(
+            "prod dump: migrated {events} events in {migrate_time:?} ({db_size:.1}MB db), \
+             dashboard cold {cold:?} / warm {warm:?}, 8 concurrent in {concurrent:?}, \
+             peak RSS {:.1} MB, steady RSS {:.1} MB",
+            rss_stat_mb("VmHWM:"),
+            rss_stat_mb("VmRSS:")
+        );
+
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&work);
     }
 }

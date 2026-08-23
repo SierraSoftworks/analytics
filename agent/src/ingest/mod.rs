@@ -1,19 +1,17 @@
 //! Event ingest: enrichment (UA/language/geo/referrer/UTM), bot filtering, and the
-//! non-blocking batched writer + compactor pipeline.
+//! non-blocking batched writer + store maintenance pipeline.
 
-mod compactor;
 mod enrich;
 mod exception;
 mod geo;
 mod language;
+mod maintenance;
 mod normalize;
 mod pipeline;
 mod referrer;
 mod regroup;
 mod ua;
 
-#[cfg(test)]
-pub(crate) use compactor::{consolidate, seal_months};
 pub use enrich::build_event;
 pub use exception::build_exception;
 pub use pipeline::{Ingest, spawn};

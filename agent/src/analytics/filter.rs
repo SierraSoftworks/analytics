@@ -1,22 +1,24 @@
-//! Compiles [`filt-rs`] filter expressions into polars predicates.
+//! Compiles [`filt-rs`] filter expressions into SQL predicates.
 //!
 //! The dashboard's `q` parameter is a filter expression over event dimensions
 //! (`browser == "Chrome" && (country == "DE" || country == "AT")`). This module
-//! walks the parsed AST with an [`ExprVisitor`] and folds it into a polars
-//! [`Expr`], mirroring the filter language's semantics: string comparisons are
-//! case-insensitive (the `_cs` operator variants are exact), `like` is a glob,
-//! `matches` a regular expression, and comparing a dimension to the empty
-//! string matches events where it is absent.
+//! walks the parsed AST with an [`ExprVisitor`] and folds it into a
+//! parameterized SQL `WHERE` fragment, mirroring the filter language's
+//! semantics: string comparisons are case-insensitive (the `_cs` operator
+//! variants are exact), `like` is a glob, `matches` a regular expression, and
+//! comparing a dimension to the empty string matches events where it is absent.
+//! Values always travel as bound parameters — only fixed column names and
+//! operators reach the SQL text.
 //!
 //! [`filt-rs`]: https://github.com/SierraSoftworks/filters
 
 use std::collections::HashSet;
 
+use duckdb::types::Value;
 use filt_rs::{
     BinaryOperator, CompiledRegex, Expr as FilterNode, ExprVisitor, Filter, FilterValue, Function,
     Glob, LogicalOperator, UnaryOperator,
 };
-use polars::prelude::*;
 
 use crate::store::Store;
 
@@ -91,10 +93,44 @@ struct Field {
     boolean: bool,
 }
 
-/// A query compiled to a polars predicate, plus the properties it referenced
-/// (the caller switches visitor-count semantics when `path` is filtered).
+/// A parameterized SQL boolean expression.
+#[derive(Clone)]
+struct Sql {
+    text: String,
+    params: Vec<Value>,
+}
+
+impl Sql {
+    fn new(text: impl Into<String>, params: Vec<Value>) -> Self {
+        Self {
+            text: text.into(),
+            params,
+        }
+    }
+
+    fn fixed(text: impl Into<String>) -> Self {
+        Self::new(text, Vec::new())
+    }
+
+    fn join(self, operator: &str, other: Sql) -> Sql {
+        let mut params = self.params;
+        params.extend(other.params);
+        Sql::new(format!("({} {operator} {})", self.text, other.text), params)
+    }
+
+    fn negate(self) -> Sql {
+        Sql::new(format!("(NOT {})", self.text), self.params)
+    }
+}
+
+/// A query compiled to a parameterized SQL predicate, plus the properties it
+/// referenced (the caller switches visitor-count semantics when `path` is
+/// filtered).
 pub struct CompiledFilter {
-    pub predicate: Expr,
+    /// The `WHERE` fragment, with `?` placeholders for [`Self::params`].
+    pub sql: String,
+    /// Bound values for the fragment's placeholders, in order.
+    pub params: Vec<Value>,
     referenced: HashSet<String>,
 }
 
@@ -124,7 +160,8 @@ pub fn compile_query(
     let node = filter.visit(&mut compiler);
     let predicate = node?.into_predicate()?;
     Ok(Some(CompiledFilter {
-        predicate,
+        sql: predicate.text,
+        params: predicate.params,
         referenced: compiler.referenced,
     }))
 }
@@ -133,7 +170,7 @@ pub fn compile_query(
 /// boolean predicate or an operand (column reference / literal) awaiting its
 /// enclosing comparison.
 enum Node {
-    Predicate(Expr),
+    Predicate(Sql),
     Column(Field),
     /// The `project` pseudo-field: comparisons resolve to source membership.
     Project,
@@ -144,15 +181,16 @@ enum Node {
 }
 
 impl Node {
-    fn into_predicate(self) -> std::result::Result<Expr, String> {
+    fn into_predicate(self) -> std::result::Result<Sql, String> {
         match self {
-            Node::Predicate(expr) => Ok(expr),
+            Node::Predicate(sql) => Ok(sql),
             // A bare string field is truthy when present and non-empty.
-            Node::Column(field) if !field.boolean => Ok(col(field.column)
-                .is_not_null()
-                .and(col(field.column).neq(lit("")))),
-            Node::Column(field) => Ok(col(field.column).fill_null(lit(false))),
-            Node::Bool(value) => Ok(lit(value)),
+            Node::Column(field) if !field.boolean => Ok(Sql::fixed(format!(
+                "({col} IS NOT NULL AND {col} <> '')",
+                col = field.column
+            ))),
+            Node::Column(field) => Ok(Sql::fixed(format!("coalesce({}, false)", field.column))),
+            Node::Bool(value) => Ok(Sql::fixed(if value { "TRUE" } else { "FALSE" })),
             Node::Project => Err("`project` must be compared, e.g. project == \"<name>\"".into()),
             Node::Str(_) | Node::List(_) | Node::Null => {
                 Err("this value cannot be used as a condition on its own".into())
@@ -190,24 +228,22 @@ impl Compiler<'_> {
         super::project_source_uris_by_name(self.store, project).unwrap_or_default()
     }
 
-    fn source_membership(&self, projects: &[String]) -> Expr {
+    fn source_membership(&self, projects: &[String]) -> Sql {
         let uris: Vec<String> = projects
             .iter()
             .flat_map(|name| self.project_sources(name))
             .collect();
-        col("source").is_in(
-            lit(Series::new("sources".into(), uris)).implode(false),
-            false,
-        )
+        in_list("source", uris)
     }
 
     /// `column == value` with the language's semantics: case-insensitive, and
     /// the empty string matching absent values.
-    fn string_eq(&self, field: Field, value: &str, case_sensitive: bool) -> Expr {
+    fn string_eq(&self, field: Field, value: &str, case_sensitive: bool) -> Sql {
         if field.boolean {
-            return col(field.column)
-                .fill_null(lit(false))
-                .eq(lit(value.eq_ignore_ascii_case("true")));
+            return Sql::new(
+                format!("coalesce({}, false) = ?", field.column),
+                vec![Value::Boolean(value.eq_ignore_ascii_case("true"))],
+            );
         }
         if value.is_empty() {
             // The sentinel means "absent on a page view". Pixel/custom events
@@ -217,17 +253,15 @@ impl Compiler<'_> {
             // inverts that: it lives only on pixel/custom events, so its
             // sentinel means "an unnamed event". Exception queries run on a
             // kind-scoped frame where "absent" genuinely means unknown.
-            let absent = col(field.column)
-                .is_null()
-                .or(col(field.column).eq(lit("")));
-            let event_kinds = col("kind")
-                .eq(lit("pixel"))
-                .or(col("kind").eq(lit("custom")));
-            return match self.fields {
-                FieldSet::Dashboard if field.column == "event_name" => absent.and(event_kinds),
-                FieldSet::Dashboard => absent.and(event_kinds.not()),
+            let absent = format!("({col} IS NULL OR {col} = '')", col = field.column);
+            let event_kinds = "kind IN ('pixel', 'custom')";
+            return Sql::fixed(match self.fields {
+                FieldSet::Dashboard if field.column == "event_name" => {
+                    format!("({absent} AND {event_kinds})")
+                }
+                FieldSet::Dashboard => format!("({absent} AND NOT {event_kinds})"),
                 FieldSet::Exceptions => absent,
-            };
+            });
         }
         // Sources are stored as canonical URIs (`https://…`, `app://…`,
         // `pixel://…`) but read as bare hostnames everywhere in the UI, so a
@@ -236,12 +270,15 @@ impl Compiler<'_> {
             return source_in(std::slice::from_ref(&value.to_string()));
         }
         if case_sensitive {
-            col(field.column).eq(lit(value.to_string()))
+            Sql::new(
+                format!("{} = ?", field.column),
+                vec![Value::Text(value.to_string())],
+            )
         } else {
-            col(field.column)
-                .str()
-                .to_lowercase()
-                .eq(lit(value.to_lowercase()))
+            Sql::new(
+                format!("lower({}) = ?", field.column),
+                vec![Value::Text(value.to_lowercase())],
+            )
         }
     }
 }
@@ -319,7 +356,7 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
                 self.source_membership(std::slice::from_ref(name)),
             )),
             (Node::Project, NotEquals, Node::Str(name)) => Ok(Node::Predicate(
-                self.source_membership(std::slice::from_ref(name)).not(),
+                self.source_membership(std::slice::from_ref(name)).negate(),
             )),
             (Node::Project, In | InCs, Node::List(names)) => {
                 Ok(Node::Predicate(self.source_membership(names)))
@@ -331,29 +368,38 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
             }
             (Node::Column(field), NotEquals, Node::Str(value)) if value.is_empty() => {
                 // `field != ""` means "the dimension is present".
-                Ok(Node::Predicate(
-                    col(field.column)
-                        .is_not_null()
-                        .and(col(field.column).neq(lit(""))),
-                ))
+                Ok(Node::Predicate(Sql::fixed(format!(
+                    "({col} IS NOT NULL AND {col} <> '')",
+                    col = field.column
+                ))))
             }
             (Node::Column(field), NotEquals, Node::Str(value)) => {
                 // "not X" includes rows where the dimension is absent.
-                let eq = self.string_eq(*field, value, false);
-                Ok(Node::Predicate(eq.not().or(col(field.column).is_null())))
+                let eq = self.string_eq(*field, value, false).negate();
+                Ok(Node::Predicate(eq.join(
+                    "OR",
+                    Sql::fixed(format!("{} IS NULL", field.column)),
+                )))
             }
-            (Node::Column(field), Equals, Node::Null) => {
-                Ok(Node::Predicate(col(field.column).is_null()))
+            (Node::Column(field), Equals, Node::Null) => Ok(Node::Predicate(Sql::fixed(format!(
+                "{} IS NULL",
+                field.column
+            )))),
+            (Node::Column(field), NotEquals, Node::Null) => Ok(Node::Predicate(Sql::fixed(
+                format!("{} IS NOT NULL", field.column),
+            ))),
+            (Node::Column(field), Equals, Node::Bool(value)) if field.boolean => {
+                Ok(Node::Predicate(Sql::new(
+                    format!("coalesce({}, false) = ?", field.column),
+                    vec![Value::Boolean(*value)],
+                )))
             }
-            (Node::Column(field), NotEquals, Node::Null) => {
-                Ok(Node::Predicate(col(field.column).is_not_null()))
+            (Node::Column(field), NotEquals, Node::Bool(value)) if field.boolean => {
+                Ok(Node::Predicate(Sql::new(
+                    format!("coalesce({}, false) <> ?", field.column),
+                    vec![Value::Boolean(*value)],
+                )))
             }
-            (Node::Column(field), Equals, Node::Bool(value)) if field.boolean => Ok(
-                Node::Predicate(col(field.column).fill_null(lit(false)).eq(lit(*value))),
-            ),
-            (Node::Column(field), NotEquals, Node::Bool(value)) if field.boolean => Ok(
-                Node::Predicate(col(field.column).fill_null(lit(false)).neq(lit(*value))),
-            ),
 
             // ---- membership ------------------------------------------------
             // Source membership gets the same scheme tolerance as source
@@ -363,34 +409,40 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
                 Ok(Node::Predicate(source_in(values)))
             }
             (Node::Column(field), In | InCs, Node::List(values)) => {
+                let column = if case_sensitive {
+                    field.column.to_string()
+                } else {
+                    format!("lower({})", field.column)
+                };
                 let values: Vec<String> = if case_sensitive {
                     values.clone()
                 } else {
                     values.iter().map(|v| v.to_lowercase()).collect()
                 };
-                let column = if case_sensitive {
-                    col(field.column)
-                } else {
-                    col(field.column).str().to_lowercase()
-                };
-                Ok(Node::Predicate(column.is_in(
-                    lit(Series::new("values".into(), values)).implode(false),
-                    false,
-                )))
+                Ok(Node::Predicate(in_list(&column, values)))
             }
 
             // ---- substrings / affixes -------------------------------------
             (Node::Column(field), Contains | ContainsCs, Node::Str(value)) => {
                 let (column, needle) = ci(*field, value, case_sensitive);
-                Ok(Node::Predicate(column.str().contains_literal(lit(needle))))
+                Ok(Node::Predicate(Sql::new(
+                    format!("contains({column}, ?)"),
+                    vec![Value::Text(needle)],
+                )))
             }
             (Node::Column(field), StartsWith | StartsWithCs, Node::Str(value)) => {
                 let (column, needle) = ci(*field, value, case_sensitive);
-                Ok(Node::Predicate(column.str().starts_with(lit(needle))))
+                Ok(Node::Predicate(Sql::new(
+                    format!("starts_with({column}, ?)"),
+                    vec![Value::Text(needle)],
+                )))
             }
             (Node::Column(field), EndsWith | EndsWithCs, Node::Str(value)) => {
                 let (column, needle) = ci(*field, value, case_sensitive);
-                Ok(Node::Predicate(column.str().ends_with(lit(needle))))
+                Ok(Node::Predicate(Sql::new(
+                    format!("ends_with({column}, ?)"),
+                    vec![Value::Text(needle)],
+                )))
             }
 
             // ---- everything else ------------------------------------------
@@ -419,15 +471,15 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
         let left = self.visit_expr(left)?.into_predicate()?;
         let right = self.visit_expr(right)?.into_predicate()?;
         Ok(Node::Predicate(match operator {
-            LogicalOperator::And => left.and(right),
-            LogicalOperator::Or => left.or(right),
+            LogicalOperator::And => left.join("AND", right),
+            LogicalOperator::Or => left.join("OR", right),
         }))
     }
 
     fn visit_unary(&mut self, operator: UnaryOperator, right: &'a FilterNode<'a>) -> Fold {
         let operand = self.visit_expr(right)?.into_predicate()?;
         Ok(Node::Predicate(match operator {
-            UnaryOperator::Not => operand.not(),
+            UnaryOperator::Not => operand.negate(),
         }))
     }
 
@@ -440,9 +492,10 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
             ));
         };
         let pattern = glob_regex(glob.pattern(), glob.is_case_sensitive());
-        Ok(Node::Predicate(
-            col(field.column).str().contains(lit(pattern), true),
-        ))
+        Ok(Node::Predicate(Sql::new(
+            format!("regexp_matches({}, ?)", field.column),
+            vec![Value::Text(pattern)],
+        )))
     }
 
     fn visit_matches(&mut self, left: &'a FilterNode<'a>, regex: &'a CompiledRegex) -> Fold {
@@ -453,12 +506,23 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
                 subject.describe()
             ));
         };
-        Ok(Node::Predicate(
-            col(field.column)
-                .str()
-                .contains(lit(regex.pattern().to_string()), true),
-        ))
+        Ok(Node::Predicate(Sql::new(
+            format!("regexp_matches({}, ?)", field.column),
+            vec![Value::Text(regex.pattern().to_string())],
+        )))
     }
+}
+
+/// `column IN (?, …)` with each value bound; an empty list matches nothing.
+fn in_list(column: &str, values: Vec<String>) -> Sql {
+    if values.is_empty() {
+        return Sql::fixed("FALSE");
+    }
+    let placeholders = vec!["?"; values.len()].join(", ");
+    Sql::new(
+        format!("{column} IN ({placeholders})"),
+        values.into_iter().map(Value::Text).collect(),
+    )
 }
 
 /// Membership over the `source` column, tolerant of scheme-less names: each
@@ -466,7 +530,7 @@ impl<'a> ExprVisitor<'a, Fold> for Compiler<'_> {
 /// are stored as `https://…`/`app://…`/`pixel://…` but read as bare hostnames
 /// throughout the UI). Values that already carry a scheme match as-is, always
 /// case-insensitively (hostnames are lowercased at ingest).
-fn source_in(values: &[String]) -> Expr {
+fn source_in(values: &[String]) -> Sql {
     let forms: Vec<String> = values
         .iter()
         .flat_map(|value| {
@@ -481,18 +545,15 @@ fn source_in(values: &[String]) -> Expr {
             }
         })
         .collect();
-    col("source").str().to_lowercase().is_in(
-        lit(Series::new("sources".into(), forms)).implode(false),
-        false,
-    )
+    in_list("lower(source)", forms)
 }
 
 /// Case-fold a column/needle pair for the case-insensitive operator variants.
-fn ci(field: Field, value: &str, case_sensitive: bool) -> (Expr, String) {
+fn ci(field: Field, value: &str, case_sensitive: bool) -> (String, String) {
     if case_sensitive {
-        (col(field.column), value.to_string())
+        (field.column.to_string(), value.to_string())
     } else {
-        (col(field.column).str().to_lowercase(), value.to_lowercase())
+        (format!("lower({})", field.column), value.to_lowercase())
     }
 }
 
@@ -534,7 +595,7 @@ mod tests {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!(
-            "analytics-filter-{}-{}.redb",
+            "analytics-filter-{}-{}.duckdb",
             std::process::id(),
             n
         ));

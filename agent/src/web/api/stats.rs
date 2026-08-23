@@ -1,6 +1,6 @@
 //! The unified dashboard statistics endpoint. One filterable query serves the
 //! global view and every drill-down of it — filtering is a single `q`
-//! expression (filt-rs syntax) compiled to a polars predicate, so the UI can
+//! expression (filt-rs syntax) compiled to a SQL predicate, so the UI can
 //! compose arbitrarily complex filters without switching endpoints.
 
 use actix_web::http::StatusCode;
@@ -19,7 +19,6 @@ use crate::state::AppState;
 pub async fn stats(state: web::Data<AppState>, query: web::Query<DashboardQuery>) -> HttpResponse {
     let query = query.into_inner();
     let store = state.store.clone();
-    let parquet_dir = state.config.storage.parquet_dir.clone();
 
     let filter = match query.q.as_deref() {
         Some(q) => match analytics::filter::compile_query(q, FieldSet::Dashboard, &store) {
@@ -33,11 +32,11 @@ pub async fn stats(state: web::Data<AppState>, query: web::Query<DashboardQuery>
         // `from=0` means "all time": anchor the window at the earliest stored
         // event so the series isn't padded back to 1970 with empty buckets.
         let from = match query.from {
-            Some(f) if f <= 0 => analytics::earliest_event_ms(&store, &parquet_dir)?,
+            Some(f) if f <= 0 => analytics::earliest_event_ms(&store)?,
             other => other,
         };
         let (from, to, bucket) = resolve_range(from, query.to, query.interval.as_deref());
-        analytics::dashboard(&store, &parquet_dir, filter.as_ref(), from, to, bucket)
+        analytics::dashboard(&store, filter.as_ref(), from, to, bucket)
     })
     .await;
 

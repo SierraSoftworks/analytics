@@ -35,10 +35,9 @@ jsonwebtoken.workspace = true
 base64.workspace = true
 sha2.workspace = true
 uuid.workspace = true
+duckdb.workspace = true
 redb.workspace = true
 ulid.workspace = true
-libc.workspace = true
-polars.workspace = true
 
 [dev-dependencies]
 wiremock = "0.6"

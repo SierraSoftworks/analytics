@@ -56,24 +56,11 @@ sha2 = "0.11"
 uuid = { version = "1", features = ["v4"] }
 
 # Storage / OLAP
+# DuckDB is the store: WAL'd ingest, columnar storage, and the query engine in
+# one embedded database. `bundled` compiles libduckdb from source so the binary
+# stays self-contained.
+duckdb = { version = "1.10505", features = ["bundled"] }
+# Legacy stores, retained only to migrate pre-DuckDB deployments at startup
+# (redb hot log; the Parquet archive is imported by DuckDB itself).
 redb = "4.1"
 ulid = "3"
-# glibc allocator introspection: returning freed decode buffers to the OS after
-# partition-cache fills, so container RSS tracks live data rather than the
-# allocator's high-water mark.
-libc = "0.2"
-polars = { version = "0.55", default-features = false, features = [
-  "lazy",
-  "parquet",
-  "streaming",
-  "is_in",
-  "strings",
-  "regex",
-  "diagonal_concat",
-  "temporal",
-  "dtype-datetime",
-  "dtype-date",
-  "fmt",
-  "round_series",
-  "cum_agg",
-] }
