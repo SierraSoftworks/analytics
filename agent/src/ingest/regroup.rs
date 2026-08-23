@@ -2,7 +2,6 @@
 
 use tracing_batteries::prelude::*;
 
-use crate::config::StorageConfig;
 use crate::errors::Result;
 use crate::store::Store;
 
@@ -14,11 +13,11 @@ use super::exception::{FINGERPRINT_VERSION, fingerprint};
 /// is cheap to call unconditionally at start-up.
 ///
 /// Recomputes each occurrence's `exc_group` from its stored `(type, message,
-/// stack)` using the current rules, over both the redb hot store and the archived
-/// Parquet partitions, so live and historical occurrences of the same failure land
-/// in one group. The work scales with the size of the archive, so it runs to
-/// completion before the server begins accepting traffic.
-pub fn regroup_if_needed(store: &Store, storage: &StorageConfig) -> Result<()> {
+/// stack)` using the current rules, so live and historical occurrences of the
+/// same failure land in one group. The work scales with the number of distinct
+/// stored errors, so it runs to completion before the server begins accepting
+/// traffic.
+pub fn regroup_if_needed(store: &Store) -> Result<()> {
     let applied = store.fingerprint_version()?;
     if applied == FINGERPRINT_VERSION {
         return Ok(());
@@ -32,13 +31,9 @@ pub fn regroup_if_needed(store: &Store, storage: &StorageConfig) -> Result<()> {
     let remap = |exc_type: &str, message: Option<&str>, stack: Option<&str>| {
         fingerprint(exc_type, message.unwrap_or_default(), stack, None)
     };
-    let hot = store.regroup_hot_exceptions(&remap)?;
-    let cold = store.regroup_cold_exceptions(&storage.parquet_dir, &remap)?;
+    let changed = store.regroup_exceptions(&remap)?;
     store.set_fingerprint_version(FINGERPRINT_VERSION)?;
 
-    info!(
-        "re-grouped {hot} live and {cold} archived exception occurrences to grouping rules \
-         v{FINGERPRINT_VERSION}"
-    );
+    info!("re-grouped {changed} exception occurrences to grouping rules v{FINGERPRINT_VERSION}");
     Ok(())
 }

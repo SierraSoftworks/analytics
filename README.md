@@ -51,9 +51,11 @@ deliberately collects only broad, non-identifying signals:
   tracking endpoints need no authentication.
 - **Rate limiting** — per-IP token-bucket limits on both the public tracking
   endpoints and unauthenticated hits to protected endpoints.
-- **Append-only, write-optimized storage** — events are appended to an
-  [redb](https://github.com/cberner/redb) hot store, compacted into date-partitioned
-  Parquet, and queried with [polars](https://pola.rs).
+- **Append-only, write-optimized storage** — events are appended to an embedded
+  [DuckDB](https://duckdb.org) database whose WAL makes every event immediately
+  durable and queryable, with retention enforced by a periodic purge and query
+  memory bounded by DuckDB's buffer manager. (Pre-DuckDB redb + Parquet stores
+  migrate automatically on first start.)
 
 ## Architecture
 
@@ -63,8 +65,8 @@ A Cargo workspace, mirroring [grey](https://github.com/SierraSoftworks/grey) and
 - **`api/`** — framework-free serde DTOs shared by the server and the WebAssembly
   frontend.
 - **`agent/`** — the `actix-web` server: clap CLI, YAML config, OIDC auth, the
-  ingest pipeline, storage, and the polars query layer. The compiled frontend is
-  embedded into the binary via `include_dir!`.
+  ingest pipeline, storage, and the SQL query layer over DuckDB. The compiled
+  frontend is embedded into the binary via `include_dir!`.
 - **`ui/`** — a client-side-rendered [Yew](https://yew.rs) dashboard, built with
   [Trunk](https://trunkrs.dev).
 - **`tracker/`** — the tracking beacon: a dependency-free, pure-JavaScript snippet
@@ -89,6 +91,16 @@ cp config.example.yaml config.yaml   # then edit to taste
 ```
 
 The dashboard is served at the configured address (default `http://127.0.0.1:8080`).
+
+> [!TIP]
+> The default build compiles DuckDB from source (several minutes, once) for a
+> fully self-contained binary. For a faster first build you can link against a
+> downloaded prebuilt library instead — the binary then needs `libduckdb` on
+> its library path at runtime:
+>
+> ```bash
+> DUCKDB_DOWNLOAD_LIB=1 cargo build --release -p analytics --no-default-features
+> ```
 
 ### Tracking a website
 

@@ -93,17 +93,24 @@ pub struct OidcConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct StorageConfig {
-    /// Path to the redb file used as the append-only hot store.
+    /// Path to the DuckDB database file holding events, entities, and serving
+    /// every query.
+    pub database_path: String,
+    /// Path of the legacy redb hot store (pre-DuckDB deployments). Imported
+    /// into the database on first start after an upgrade, then unused.
     pub redb_path: String,
-    /// Directory holding the rolled-up Parquet partitions (the cold archive).
+    /// Directory of the legacy Parquet archive (pre-DuckDB deployments).
+    /// Imported into the database on first start after an upgrade, then unused.
     pub parquet_dir: String,
-    /// How long events stay in redb before being compacted to Parquet.
+    /// Legacy setting from the redb-hot-window era; retained so existing
+    /// config files keep parsing, but no longer used (DuckDB's WAL makes every
+    /// ingested event immediately durable and queryable).
     #[serde(with = "humantime_serde")]
     pub hot_window: Duration,
-    /// How often the compactor seals redb windows into Parquet.
+    /// How often store maintenance (retention enforcement + checkpointing) runs.
     #[serde(with = "humantime_serde")]
     pub rollup_interval: Duration,
-    /// How long Parquet partitions are retained before deletion.
+    /// How long events are retained before deletion.
     #[serde(with = "humantime_serde")]
     pub retention: Duration,
     /// Ceiling on auto-registered (unassigned) sources. Unknown reporting hostnames
@@ -112,17 +119,24 @@ pub struct StorageConfig {
     /// this many sources exist, new ones stop auto-registering (their events are still
     /// stored). Raise it if you legitimately track more distinct sources.
     pub max_auto_sources: usize,
+    /// DuckDB's memory ceiling in megabytes: the buffer manager (shared by
+    /// every connection) stays under it and larger operations spill to disk
+    /// instead of growing RSS. Size it to the container's memory limit minus
+    /// ~150MB of process headroom.
+    pub memory_limit_mb: usize,
 }
 
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
+            database_path: "analytics.duckdb".to_string(),
             redb_path: "analytics.redb".to_string(),
             parquet_dir: "parquet-store".to_string(),
             hot_window: Duration::from_secs(48 * 60 * 60),
             rollup_interval: Duration::from_secs(60 * 60),
             retention: Duration::from_secs(365 * 24 * 60 * 60),
             max_auto_sources: 10_000,
+            memory_limit_mb: 512,
         }
     }
 }

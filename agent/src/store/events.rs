@@ -1,112 +1,146 @@
-//! Append-only event log: ingest, scan, and compaction drain.
+//! Append-only event log: ingest via DuckDB's appender, plus row mapping for
+//! the paths that read whole events back (tests, the session-trace view, and
+//! the legacy importer).
 
 use std::sync::atomic::Ordering;
 
-use polars::prelude::DataFrame;
-use redb::{ReadableDatabase, ReadableTable, ReadableTableMetadata};
+use duckdb::{Appender, Row, params};
 
-use super::Store;
-use super::event::StoredEvent;
-use super::parquet::build_dataframe;
-use super::tables::{EVENTS, META, META_NEXT_SEQ, STORAGE_ADVICE, event_key, u64_from_be};
+use super::{STORAGE_ADVICE, Store, StoredEvent, event::EventKind};
 use crate::errors::{Result, ResultExt};
 
 impl Store {
-    /// Append a batch of events in a single transaction. Non-blocking ingest is
-    /// achieved by the caller feeding this from a background writer task. Each event
-    /// is stamped with its monotonic `seq` before being persisted.
+    /// Append a batch of events in one appender flush (a single WAL'd
+    /// transaction). Non-blocking ingest is achieved by the caller feeding this
+    /// from a background writer task. Each event is stamped with its monotonic
+    /// `seq` before being persisted.
     pub fn append_events(&self, events: &[StoredEvent]) -> Result<()> {
         if events.is_empty() {
             return Ok(());
         }
-
-        let txn = self.db.begin_write().or_system_err(STORAGE_ADVICE)?;
-        {
-            let mut table = txn.open_table(EVENTS).or_system_err(STORAGE_ADVICE)?;
+        self.with_conn(|conn| {
+            let mut appender = conn.appender("events").or_system_err(STORAGE_ADVICE)?;
             for event in events {
                 let seq = self.next_seq.fetch_add(1, Ordering::SeqCst);
-                let key = event_key(event.received_ms, seq);
-                let mut stored = event.clone();
-                stored.seq = seq;
-                let value = serde_json::to_vec(&stored).or_system_err(STORAGE_ADVICE)?;
-                table
-                    .insert(key.as_slice(), value.as_slice())
-                    .or_system_err(STORAGE_ADVICE)?;
+                append_row(&mut appender, event, seq)?;
             }
-        }
-        {
-            let mut meta = txn.open_table(META).or_system_err(STORAGE_ADVICE)?;
-            let seq = self.next_seq.load(Ordering::SeqCst).to_be_bytes();
-            meta.insert(META_NEXT_SEQ, seq.as_slice())
-                .or_system_err(STORAGE_ADVICE)?;
-        }
-        txn.commit().or_system_err(STORAGE_ADVICE)?;
-        Ok(())
+            appender.flush().or_system_err(STORAGE_ADVICE)
+        })
     }
 
-    /// Return every event currently in the hot store (oldest first).
-    pub fn all_events(&self) -> Result<Vec<StoredEvent>> {
-        let txn = self.db.begin_read().or_system_err(STORAGE_ADVICE)?;
-        let table = txn.open_table(EVENTS).or_system_err(STORAGE_ADVICE)?;
-        let mut out = Vec::new();
-        for item in table.iter().or_system_err(STORAGE_ADVICE)? {
-            let (_key, value) = item.or_system_err(STORAGE_ADVICE)?;
-            out.push(serde_json::from_slice(value.value()).or_system_err(STORAGE_ADVICE)?);
-        }
-        Ok(out)
-    }
-
-    /// Number of events in the hot store.
-    pub fn event_count(&self) -> Result<u64> {
-        let txn = self.db.begin_read().or_system_err(STORAGE_ADVICE)?;
-        let table = txn.open_table(EVENTS).or_system_err(STORAGE_ADVICE)?;
-        table.len().or_system_err(STORAGE_ADVICE)
-    }
-
-    /// Read (without removing) all events with `received_ms < threshold_ms`, paired
-    /// with their storage keys. The compactor archives these to Parquet and then
-    /// deletes *exactly these keys* via [`delete_keys`](Store::delete_keys), so an
-    /// event committed after this read (but still below the cutoff) is never deleted
-    /// without first being archived.
-    pub fn events_before_with_keys(
-        &self,
-        threshold_ms: i64,
-    ) -> Result<Vec<(Vec<u8>, StoredEvent)>> {
-        let threshold = threshold_ms.max(0) as u64;
-        let txn = self.db.begin_read().or_system_err(STORAGE_ADVICE)?;
-        let table = txn.open_table(EVENTS).or_system_err(STORAGE_ADVICE)?;
-        let mut out = Vec::new();
-        for item in table.iter().or_system_err(STORAGE_ADVICE)? {
-            let (key, value) = item.or_system_err(STORAGE_ADVICE)?;
-            let key_bytes = key.value();
-            if u64_from_be(&key_bytes[0..8]) < threshold {
-                out.push((
-                    key_bytes.to_vec(),
-                    serde_json::from_slice(value.value()).or_system_err(STORAGE_ADVICE)?,
-                ));
-            }
-        }
-        Ok(out)
-    }
-
-    /// Remove the exact set of event keys (returned by `events_before_with_keys`).
-    pub fn delete_keys(&self, keys: &[Vec<u8>]) -> Result<()> {
-        if keys.is_empty() {
+    /// Append already-stamped events, preserving their `seq` (the legacy
+    /// importer). The caller refreshes the sequence counter afterwards.
+    pub(super) fn import_events(&self, events: &[StoredEvent]) -> Result<()> {
+        if events.is_empty() {
             return Ok(());
         }
-        let txn = self.db.begin_write().or_system_err(STORAGE_ADVICE)?;
-        {
-            let mut table = txn.open_table(EVENTS).or_system_err(STORAGE_ADVICE)?;
-            for key in keys {
-                table.remove(key.as_slice()).or_system_err(STORAGE_ADVICE)?;
+        self.with_conn(|conn| {
+            let mut appender = conn.appender("events").or_system_err(STORAGE_ADVICE)?;
+            for event in events {
+                append_row(&mut appender, event, event.seq)?;
             }
-        }
-        txn.commit().or_system_err(STORAGE_ADVICE)?;
-        Ok(())
+            appender.flush().or_system_err(STORAGE_ADVICE)
+        })
     }
 
-    /// Build a polars [`DataFrame`] from the current hot store.
-    pub fn hot_dataframe(&self) -> Result<DataFrame> {
-        build_dataframe(&self.all_events()?).or_system_err(STORAGE_ADVICE)
+    /// Every stored event, oldest first (tests and diagnostics; production
+    /// queries aggregate in SQL instead of materializing events).
+    pub fn all_events(&self) -> Result<Vec<StoredEvent>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT * FROM events ORDER BY received_ms, seq")
+                .or_system_err(STORAGE_ADVICE)?;
+            let rows = stmt
+                .query_map([], event_from_row)
+                .or_system_err(STORAGE_ADVICE)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.or_system_err(STORAGE_ADVICE)?);
+            }
+            Ok(out)
+        })
     }
+
+    /// Number of stored events.
+    pub fn event_count(&self) -> Result<u64> {
+        self.with_conn(|conn| {
+            conn.query_row("SELECT count(*) FROM events", [], |row| row.get(0))
+                .or_system_err(STORAGE_ADVICE)
+        })
+    }
+}
+
+/// Append one event; the parameter order must match [`super::schema`]'s table
+/// definition.
+fn append_row(appender: &mut Appender<'_>, event: &StoredEvent, seq: u64) -> Result<()> {
+    appender
+        .append_row(params![
+            event.created_ms,
+            event.received_ms,
+            seq,
+            event.bid,
+            event.sid,
+            event.kind.as_str(),
+            event.source,
+            event.pathname,
+            event.is_unique_user,
+            event.is_unique_page,
+            event.referrer_host,
+            event.referrer_group,
+            event.country,
+            event.language,
+            event.ua_browser,
+            event.ua_version,
+            event.ua_os,
+            event.ua_device,
+            event.utm_source,
+            event.utm_medium,
+            event.utm_campaign,
+            event.duration_ms,
+            event.event_name,
+            event.metadata_json,
+            event.app_version,
+            event.exc_type,
+            event.exc_message,
+            event.exc_stack,
+            event.exc_group,
+            event.exc_handled,
+        ])
+        .or_system_err(STORAGE_ADVICE)
+}
+
+/// Map a `SELECT *` row (table column order) back into a [`StoredEvent`].
+pub(super) fn event_from_row(row: &Row<'_>) -> duckdb::Result<StoredEvent> {
+    Ok(StoredEvent {
+        created_ms: row.get(0)?,
+        received_ms: row.get(1)?,
+        seq: row.get(2)?,
+        bid: row.get(3)?,
+        sid: row.get(4)?,
+        kind: EventKind::parse(&row.get::<_, String>(5)?),
+        source: row.get(6)?,
+        pathname: row.get(7)?,
+        is_unique_user: row.get(8)?,
+        is_unique_page: row.get(9)?,
+        referrer_host: row.get(10)?,
+        referrer_group: row.get(11)?,
+        country: row.get(12)?,
+        language: row.get(13)?,
+        ua_browser: row.get(14)?,
+        ua_version: row.get(15)?,
+        ua_os: row.get(16)?,
+        ua_device: row.get(17)?,
+        utm_source: row.get(18)?,
+        utm_medium: row.get(19)?,
+        utm_campaign: row.get(20)?,
+        duration_ms: row.get(21)?,
+        event_name: row.get(22)?,
+        metadata_json: row.get(23)?,
+        app_version: row.get(24)?,
+        exc_type: row.get(25)?,
+        exc_message: row.get(26)?,
+        exc_stack: row.get(27)?,
+        exc_group: row.get(28)?,
+        exc_handled: row.get(29)?,
+    })
 }

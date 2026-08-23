@@ -40,17 +40,9 @@ pub async fn detail(
         .clamp(1, super::query::MAX_INSTANT_MS);
     let from = query.from.unwrap_or(0).clamp(0, to - 1);
     let store = state.store.clone();
-    let parquet_dir = state.config.storage.parquet_dir.clone();
 
     let result = web::block(move || -> crate::errors::Result<Option<SessionTrace>> {
-        analytics::session_trace(
-            &store,
-            &parquet_dir,
-            &session_id,
-            from,
-            to,
-            TRACE_EVENT_LIMIT,
-        )
+        analytics::session_trace(&store, &session_id, from, to, TRACE_EVENT_LIMIT)
     })
     .await;
 

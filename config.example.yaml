@@ -26,15 +26,22 @@ web:
     #   scopes: ["profile", "email", "groups", "offline_access"]
 
 storage:
+  # The embedded DuckDB database holding events, entities, and serving queries.
+  database_path: "analytics.duckdb"
+  # Legacy pre-DuckDB stores; imported into the database on first start after an
+  # upgrade, then unused (safe to delete once the migration is verified).
   redb_path: "analytics.redb"
   parquet_dir: "parquet-store"
-  hot_window: "48h"
+  # How often store maintenance (retention enforcement + checkpointing) runs.
   rollup_interval: "1h"
   retention: "365d"
   # Ceiling on auto-registered (unassigned) sources. Unknown reporting hostnames
   # register automatically, but this bounds how far a flood of rotated hostnames can
   # grow the source list. Events are stored regardless once the ceiling is reached.
   max_auto_sources: 10000
+  # DuckDB's memory ceiling (MB): the buffer manager stays under it and larger
+  # operations spill to disk. Size it to the memory limit minus ~150MB headroom.
+  memory_limit_mb: 512
 
 privacy:
   salt_rotation: "24h"

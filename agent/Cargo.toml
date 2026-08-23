@@ -35,9 +35,20 @@ jsonwebtoken.workspace = true
 base64.workspace = true
 sha2.workspace = true
 uuid.workspace = true
+duckdb.workspace = true
 redb.workspace = true
 ulid.workspace = true
-polars.workspace = true
+
+[features]
+default = ["bundled-duckdb"]
+# Compile libduckdb from source into the binary, keeping it fully
+# self-contained — the default for local development and for release builds.
+# CI's per-push builds disable this (`--no-default-features` with
+# `DUCKDB_DOWNLOAD_LIB=1`) and link a downloaded prebuilt library instead: the
+# libduckdb-sys build script fetches the exact version its crate release wraps
+# and caches it under `target/duckdb-download`, cutting cold builds by many
+# minutes without any version pinning to maintain.
+bundled-duckdb = ["duckdb/bundled"]
 
 [dev-dependencies]
 wiremock = "0.6"

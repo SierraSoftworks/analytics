@@ -1,12 +1,23 @@
-//! The polars query layer. Statistics are computed over the union of the redb hot
-//! store and the cold Parquet partitions, filtered by a compiled [`filter`]
-//! expression, and bounded to a half-open `[from, to)` time range. Queries are
-//! CPU-bound and synchronous, so handlers run them via `web::block`.
+//! The SQL query layer. Statistics are computed by DuckDB over the events
+//! table, filtered by a compiled [`filter`] expression, and bounded to a
+//! half-open `[from, to)` time range.
+//!
+//! Each endpoint is a handful of aggregation queries sharing one pooled
+//! connection; DuckDB's buffer manager (bounded by `storage.memory_limit_mb`)
+//! serves concurrent requests from shared cached blocks, and zone maps prune
+//! the time range since events are appended in arrival order. Window bounds
+//! and limits are trusted integers interpolated into the SQL; everything
+//! user-influenced travels as a bound parameter.
+//!
+//! Queries are CPU-bound and synchronous, so handlers run them via
+//! `web::block`.
 
 pub mod filter;
 
 use std::collections::HashMap;
-use std::path::Path;
+
+#[cfg(test)]
+use chrono::Utc;
 
 use analytics_api::{
     BreakdownRow, Breakdowns, CountRow, Dashboard, EventBreakdowns, EventDetail, EventVariant,
@@ -14,9 +25,8 @@ use analytics_api::{
     MetricSummary, SessionTrace, TREND_BUCKETS, TimeSeriesPoint, TraceEvent, TraceEventKind,
     TraceSummary, VersionRow, pixel_source, source_label, summary_line,
 };
-use chrono::{Datelike, TimeZone, Utc};
-use polars::prelude::*;
-use tracing_batteries::prelude::warn;
+use duckdb::types::Value;
+use duckdb::{Connection, Row, params_from_iter};
 
 use crate::errors::{Result, ResultExt};
 use crate::store::Store;
@@ -25,27 +35,83 @@ use filter::CompiledFilter;
 
 const ADVICE: &[&str] = &["This is an internal analytics error; please report it with the logs."];
 
-const BREAKDOWN_LIMIT: u32 = 25;
+const BREAKDOWN_LIMIT: usize = 25;
 /// How many recent session traces the dashboard payload samples.
-const TRACE_SAMPLE: u32 = 10;
+const TRACE_SAMPLE: usize = 10;
 /// `[100ms, 5s]` is treated as a bounce (per the medama methodology).
 const BOUNCE_MIN_MS: i64 = 100;
 const BOUNCE_MAX_MS: i64 = 5_000;
 const MIN_BOUNCE_SAMPLES: i64 = 5;
+/// Exception listings are capped to the most recently seen groups.
+const EXCEPTION_GROUP_LIMIT: usize = 500;
+
+/// A composable `WHERE` fragment: trusted integers (window bounds, limits) are
+/// interpolated, user-influenced values ride as bound parameters in text order.
+#[derive(Clone)]
+struct Where {
+    sql: String,
+    params: Vec<Value>,
+}
+
+impl Where {
+    /// The half-open `[from, to)` window plus the compiled `q`, if any.
+    fn window(from_ms: i64, to_ms: i64, filter: Option<&CompiledFilter>) -> Where {
+        let mut this = Where {
+            sql: format!("received_ms >= {from_ms} AND received_ms < {to_ms}"),
+            params: Vec::new(),
+        };
+        if let Some(filter) = filter {
+            this.sql = format!("{} AND ({})", this.sql, filter.sql);
+            this.params.extend(filter.params.iter().cloned());
+        }
+        this
+    }
+
+    /// Conjoin an extra condition (with its bound parameters).
+    fn and(mut self, sql: &str, params: Vec<Value>) -> Where {
+        self.sql = format!("{} AND ({sql})", self.sql);
+        self.params.extend(params);
+        self
+    }
+}
+
+/// Run a query, mapping every row.
+fn rows<T>(
+    conn: &Connection,
+    sql: &str,
+    where_: &Where,
+    map: impl FnMut(&Row<'_>) -> duckdb::Result<T>,
+) -> Result<Vec<T>> {
+    let mut stmt = conn.prepare(sql).or_system_err(ADVICE)?;
+    let mapped = stmt
+        .query_map(params_from_iter(where_.params.iter().cloned()), map)
+        .or_system_err(ADVICE)?;
+    let mut out = Vec::new();
+    for row in mapped {
+        out.push(row.or_system_err(ADVICE)?);
+    }
+    Ok(out)
+}
+
+/// Run an aggregate query that returns exactly one row.
+fn one<T>(
+    conn: &Connection,
+    sql: &str,
+    where_: &Where,
+    map: impl FnOnce(&Row<'_>) -> duckdb::Result<T>,
+) -> Result<T> {
+    conn.query_row(sql, params_from_iter(where_.params.iter().cloned()), map)
+        .or_system_err(ADVICE)
+}
 
 /// The full dashboard payload: headline metrics with a previous-window baseline,
 /// the (index-aligned) time series pair, every dimension breakdown, and the
-/// project/source rollups — all computed over one filtered scan.
+/// project/source rollups.
 ///
 /// `filter` is the compiled `q` expression (see [`filter::compile_query`]);
 /// `None` means unfiltered.
-///
-/// The event frame spanning `[from - len, to)` is collected **once** and every
-/// aggregation runs against the in-memory frame, so a dashboard request costs a
-/// single pass over the Parquet partitions regardless of how many panels it feeds.
 pub fn dashboard(
     store: &Store,
-    parquet_dir: &str,
     filter: Option<&CompiledFilter>,
     from_ms: i64,
     to_ms: i64,
@@ -53,69 +119,256 @@ pub fn dashboard(
 ) -> Result<Dashboard> {
     let len = (to_ms - from_ms).max(1);
     let prev_from = from_ms - len;
-
-    // One scan covers both the current window and the comparison baseline.
-    let mut lf = combined(store, parquet_dir, prev_from, to_ms)?;
-    if let Some(filter) = filter {
-        lf = lf.filter(filter.predicate.clone());
-    }
-    let df = lf.collect().or_system_err(ADVICE)?;
-
-    let current = df
-        .clone()
-        .lazy()
-        .filter(col("received_ms").gt_eq(lit(from_ms)));
-    let previous = df.lazy().filter(col("received_ms").lt(lit(from_ms)));
+    let bucket_ms = bucket_ms.max(1);
 
     // With a path filter active, `is_unique_user` (which rides only on the first
     // page load of a visitor's day) would undercount non-landing pages to ~zero;
     // daily-unique *page* views are the honest visitor count there.
-    let unique_flag = if filter.is_some_and(|f| f.references("path")) {
+    let flag = if filter.is_some_and(|f| f.references("path")) {
         "is_unique_page"
     } else {
         "is_unique_user"
     };
 
-    // The previous series is computed on the *current* window's bucket grid by
-    // shifting events forward one window length, guaranteeing index alignment;
-    // timestamps are then shifted back to the previous window's own instants.
-    let prev_shifted = previous
-        .clone()
-        .with_columns([(col("received_ms") + lit(len)).alias("received_ms")]);
-    let mut previous_timeseries = timeseries(prev_shifted, from_ms, to_ms, bucket_ms, unique_flag)?;
-    for point in &mut previous_timeseries {
-        point.timestamp_ms -= len;
-    }
+    // One span covers both the current window and the comparison baseline.
+    let span = Where::window(prev_from, to_ms, filter);
+    let current = Where::window(from_ms, to_ms, filter);
 
-    let pageloads = current.clone().filter(col("kind").eq(lit("page_load")));
-    let event_names = event_name_breakdown(current.clone().filter(is_event()))?;
-    let per_source = source_rollup(current.clone(), unique_flag)?;
-    let (projects, sources, unassigned) = project_rollup(store, per_source)?;
-    let traces = recent_traces(current.clone(), TRACE_SAMPLE)?;
+    store.with_conn(|conn| {
+        // Headline metrics for both windows in one scan: each aggregate is
+        // computed twice, split on the window boundary.
+        let windows = [
+            format!("received_ms >= {from_ms}"),
+            format!("received_ms < {from_ms}"),
+        ];
+        let metrics: Vec<String> = windows
+            .iter()
+            .map(|in_window| {
+                format!(
+                    "count(*) FILTER (kind = 'page_load' AND {in_window}),
+                     count(*) FILTER (kind = 'page_load' AND {flag} AND {in_window}),
+                     count(*) FILTER (kind IN ('pixel', 'custom') AND {in_window}),
+                     count(duration_ms) FILTER ({in_window}),
+                     count(*) FILTER (duration_ms BETWEEN {BOUNCE_MIN_MS} AND {BOUNCE_MAX_MS} AND {in_window}),
+                     median(duration_ms) FILTER ({in_window})"
+                )
+            })
+            .collect();
+        let (summary, previous_summary) = one(
+            conn,
+            &format!(
+                "SELECT {} FROM events WHERE {}",
+                metrics.join(", "),
+                span.sql
+            ),
+            &span,
+            |row| Ok((metric_summary(row, 0)?, metric_summary(row, 6)?)),
+        )?;
 
-    Ok(Dashboard {
-        summary: summary(current.clone(), unique_flag)?,
-        previous_summary: summary(previous, unique_flag)?,
-        timeseries: timeseries(current, from_ms, to_ms, bucket_ms, unique_flag)?,
-        previous_timeseries,
-        breakdowns: Breakdowns {
-            pages: breakdown(pageloads.clone(), "pathname", "is_unique_page")?,
-            referrers: breakdown(pageloads.clone(), "referrer_host", unique_flag)?,
-            countries: breakdown(pageloads.clone(), "country", unique_flag)?,
-            languages: breakdown(pageloads.clone(), "language", unique_flag)?,
-            browsers: breakdown(pageloads.clone(), "ua_browser", unique_flag)?,
-            versions: version_breakdown(pageloads.clone(), unique_flag)?,
-            operating_systems: breakdown(pageloads.clone(), "ua_os", unique_flag)?,
-            devices: breakdown(pageloads.clone(), "ua_device", unique_flag)?,
-            utm_sources: breakdown(pageloads.clone(), "utm_source", unique_flag)?,
-            utm_mediums: breakdown(pageloads.clone(), "utm_medium", unique_flag)?,
-            utm_campaigns: breakdown(pageloads, "utm_campaign", unique_flag)?,
-            event_names,
-            projects,
-            sources,
-        },
-        unassigned,
-        traces,
+        // Both time series in one scan. The previous series is computed on the
+        // *current* window's bucket grid by shifting events forward one window
+        // length, guaranteeing index alignment; timestamps are shifted back to
+        // the previous window's own instants after zero-filling.
+        let mut current_buckets: HashMap<i64, BucketCounts> = HashMap::new();
+        let mut previous_buckets: HashMap<i64, BucketCounts> = HashMap::new();
+        let series = rows(
+            conn,
+            &format!(
+                "SELECT received_ms >= {from_ms},
+                        CASE WHEN received_ms >= {from_ms}
+                             THEN received_ms - received_ms % {bucket_ms}
+                             ELSE (received_ms + {len}) - (received_ms + {len}) % {bucket_ms}
+                        END AS bucket,
+                        count(*) FILTER (kind = 'page_load'),
+                        count(*) FILTER (kind = 'page_load' AND {flag}),
+                        count(*) FILTER (kind IN ('pixel', 'custom')),
+                        count(*) FILTER (kind = 'exception')
+                 FROM events
+                 WHERE {} AND kind IN ('page_load', 'pixel', 'custom', 'exception')
+                 GROUP BY 1, 2",
+                span.sql
+            ),
+            &span,
+            |row| {
+                Ok((
+                    row.get::<_, bool>(0)?,
+                    row.get::<_, i64>(1)?,
+                    (row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?),
+                ))
+            },
+        )?;
+        for (in_current, bucket, counts) in series {
+            let target = if in_current {
+                &mut current_buckets
+            } else {
+                &mut previous_buckets
+            };
+            target.insert(bucket, counts);
+        }
+        let timeseries = fill_series(&current_buckets, from_ms, to_ms, bucket_ms);
+        let mut previous_timeseries = fill_series(&previous_buckets, from_ms, to_ms, bucket_ms);
+        for point in &mut previous_timeseries {
+            point.timestamp_ms -= len;
+        }
+
+        // Dimension breakdowns over the current window's page loads. The pages
+        // panel always counts daily-unique *page* views; the rest follow the
+        // headline's uniqueness flag.
+        let breakdown = |column: &str, flag: &str| -> Result<Vec<BreakdownRow>> {
+            rows(
+                conn,
+                &format!(
+                    "SELECT coalesce({column}, '') AS key,
+                            count(*),
+                            count(*) FILTER ({flag})
+                     FROM events WHERE {} AND kind = 'page_load'
+                     GROUP BY key ORDER BY 2 DESC, key LIMIT {BREAKDOWN_LIMIT}",
+                    current.sql
+                ),
+                &current,
+                |row| {
+                    Ok(BreakdownRow {
+                        key: row.get(0)?,
+                        pageviews: row.get(1)?,
+                        visitors: row.get(2)?,
+                        events: 0,
+                    })
+                },
+            )
+        };
+
+        // The client-versions breakdown, keyed by the (application, version)
+        // pair — a version number is only meaningful within its application.
+        let versions = rows(
+            conn,
+            &format!(
+                "SELECT coalesce(ua_browser, ''), coalesce(ua_version, ''),
+                        count(*), count(*) FILTER ({flag})
+                 FROM events WHERE {} AND kind = 'page_load'
+                 GROUP BY 1, 2 ORDER BY 3 DESC, 1, 2 LIMIT {BREAKDOWN_LIMIT}",
+                current.sql
+            ),
+            &current,
+            |row| {
+                Ok(VersionRow {
+                    app: row.get(0)?,
+                    version: row.get(1)?,
+                    pageviews: row.get(2)?,
+                    visitors: row.get(3)?,
+                    events: 0,
+                })
+            },
+        )?;
+
+        // The custom/pixel events breakdown, keyed by event name (unnamed
+        // events aggregate under the empty sentinel). Only the `events` count
+        // is meaningful — these rows have no page views, and visitor
+        // uniqueness rides on page loads.
+        let event_names = rows(
+            conn,
+            &format!(
+                "SELECT coalesce(event_name, '') AS key, count(*)
+                 FROM events WHERE {} AND kind IN ('pixel', 'custom')
+                 GROUP BY key ORDER BY 2 DESC, key LIMIT {BREAKDOWN_LIMIT}",
+                current.sql
+            ),
+            &current,
+            |row| {
+                Ok(BreakdownRow {
+                    key: row.get(0)?,
+                    visitors: 0,
+                    pageviews: 0,
+                    events: row.get(1)?,
+                })
+            },
+        )?;
+
+        // Per-source totals. Page loads count as `pageviews`; pixel hits and
+        // custom events count as `events` so pixel-only and application
+        // sources still surface; `visitors` uses the same daily-unique flag as
+        // every other aggregation in the response, so the panels agree with
+        // the headline.
+        let per_source = rows(
+            conn,
+            &format!(
+                "SELECT source,
+                        count(*) FILTER (kind = 'page_load'),
+                        count(*) FILTER ({flag}),
+                        count(*) FILTER (kind IN ('pixel', 'custom'))
+                 FROM events WHERE {} AND kind IN ('page_load', 'pixel', 'custom')
+                 GROUP BY source
+                 ORDER BY count(*) FILTER (kind = 'page_load')
+                          + count(*) FILTER (kind IN ('pixel', 'custom')) DESC, source",
+                current.sql
+            ),
+            &current,
+            |row| {
+                Ok(BreakdownRow {
+                    key: row.get(0)?,
+                    pageviews: row.get(1)?,
+                    visitors: row.get(2)?,
+                    events: row.get(3)?,
+                })
+            },
+        )?;
+        let (projects, sources, unassigned) = project_rollup(store, per_source)?;
+
+        // Sample the most recently started sessions in the filtered window,
+        // then summarize just those — scoped by `q` exactly the way every
+        // other panel is.
+        let sids: Vec<String> = rows(
+            conn,
+            &format!(
+                "SELECT sid FROM events WHERE {} AND sid IS NOT NULL AND sid <> ''
+                 GROUP BY sid ORDER BY min(received_ms) DESC, sid LIMIT {TRACE_SAMPLE}",
+                current.sql
+            ),
+            &current,
+            |row| row.get(0),
+        )?;
+        let traces = traces_of_sessions(conn, &sids, &current)?;
+
+        Ok(Dashboard {
+            summary,
+            previous_summary,
+            timeseries,
+            previous_timeseries,
+            breakdowns: Breakdowns {
+                pages: breakdown("pathname", "is_unique_page")?,
+                referrers: breakdown("referrer_host", flag)?,
+                countries: breakdown("country", flag)?,
+                languages: breakdown("language", flag)?,
+                browsers: breakdown("ua_browser", flag)?,
+                versions,
+                operating_systems: breakdown("ua_os", flag)?,
+                devices: breakdown("ua_device", flag)?,
+                utm_sources: breakdown("utm_source", flag)?,
+                utm_mediums: breakdown("utm_medium", flag)?,
+                utm_campaigns: breakdown("utm_campaign", flag)?,
+                event_names,
+                projects,
+                sources,
+            },
+            unassigned,
+            traces,
+        })
+    })
+}
+
+/// The six headline aggregates of one window, starting at column `offset`.
+fn metric_summary(row: &Row<'_>, offset: usize) -> duckdb::Result<MetricSummary> {
+    let pageviews: i64 = row.get(offset)?;
+    let visitors: i64 = row.get(offset + 1)?;
+    let events: i64 = row.get(offset + 2)?;
+    let samples: i64 = row.get(offset + 3)?;
+    let bounces: i64 = row.get(offset + 4)?;
+    let median: Option<f64> = row.get(offset + 5)?;
+    Ok(MetricSummary {
+        visitors,
+        pageviews,
+        events,
+        bounce_rate: (samples >= MIN_BOUNCE_SAMPLES).then(|| bounces as f64 / samples as f64),
+        median_duration_ms: median.map(|m| m.round() as i64),
     })
 }
 
@@ -163,203 +416,279 @@ pub fn project_source_uris(store: &Store, project_id: &str) -> Result<Vec<String
 /// the global Exceptions inbox.
 pub fn exception_groups_by_source(
     store: &Store,
-    parquet_dir: &str,
     from_ms: i64,
     to_ms: i64,
     filter: Option<&CompiledFilter>,
 ) -> Result<Vec<(ExceptionGroup, String)>> {
-    let mut lf = combined(store, parquet_dir, from_ms, to_ms)?
-        .filter(col("kind").eq(lit("exception")))
-        .filter(col("exc_group").is_not_null());
-    if let Some(filter) = filter {
-        lf = lf.filter(filter.predicate.clone());
-    }
-    let df = lf
-        .group_by([col("exc_group"), col("source")])
-        .agg([
-            len().cast(DataType::Int64).alias("count"),
-            col("received_ms")
-                .min()
-                .cast(DataType::Int64)
-                .alias("first_seen"),
-            col("received_ms")
-                .max()
-                .cast(DataType::Int64)
-                .alias("last_seen"),
-            col("exc_type").first().alias("exc_type"),
-            col("exc_message").first().alias("sample_message"),
-            col("received_ms").alias("times"),
-        ])
-        .sort(
-            ["last_seen"],
-            SortMultipleOptions::default().with_order_descending(true),
-        )
-        .limit(500)
-        .collect()
-        .or_system_err(ADVICE)?;
+    let occurrences = Where::window(from_ms, to_ms, filter)
+        .and("kind = 'exception' AND exc_group IS NOT NULL", Vec::new());
 
-    let group_id = df
-        .column("exc_group")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let count = df
-        .column("count")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let first = df
-        .column("first_seen")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let last = df
-        .column("last_seen")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let exc_type = df
-        .column("exc_type")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let message = df
-        .column("sample_message")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let source = df
-        .column("source")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let times = df
-        .column("times")
-        .or_system_err(ADVICE)?
-        .list()
-        .or_system_err(ADVICE)?;
-
-    Ok((0..df.height())
-        .filter_map(|i| {
-            group_id.get(i).map(|gid| {
-                (
+    store.with_conn(|conn| {
+        let mut out: Vec<(ExceptionGroup, String)> = rows(
+            conn,
+            &format!(
+                "SELECT exc_group, source, count(*),
+                        min(received_ms), max(received_ms),
+                        arg_max(exc_type, received_ms) FILTER (exc_type IS NOT NULL),
+                        arg_max(exc_message, received_ms) FILTER (exc_message IS NOT NULL)
+                 FROM events WHERE {}
+                 GROUP BY exc_group, source
+                 ORDER BY max(received_ms) DESC, exc_group, source
+                 LIMIT {EXCEPTION_GROUP_LIMIT}",
+                occurrences.sql
+            ),
+            &occurrences,
+            |row| {
+                Ok((
                     ExceptionGroup {
-                        group_id: gid.to_string(),
-                        exc_type: exc_type.get(i).unwrap_or("").to_string(),
-                        sample_message: summary_line(message.get(i).unwrap_or("")).to_string(),
-                        count: count.get(i).unwrap_or(0),
-                        first_seen_ms: first.get(i).unwrap_or(0),
-                        last_seen_ms: last.get(i).unwrap_or(0),
+                        group_id: row.get(0)?,
+                        exc_type: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                        sample_message: summary_line(
+                            row.get::<_, Option<String>>(6)?.as_deref().unwrap_or(""),
+                        )
+                        .to_string(),
+                        count: row.get(2)?,
+                        first_seen_ms: row.get(3)?,
+                        last_seen_ms: row.get(4)?,
                         status: ExceptionStatus::Unresolved,
                         resolved: false,
                         muted: false,
                         note: None,
-                        trend: trend_of(list_i64(times, i).into_iter(), from_ms, to_ms),
+                        trend: vec![0; TREND_BUCKETS],
                     },
-                    source.get(i).unwrap_or("").to_string(),
-                )
+                    row.get(1)?,
+                ))
+            },
+        )?;
+
+        // Trends per (group, source), merged onto the capped listing.
+        let index: HashMap<(String, String), usize> = out
+            .iter()
+            .enumerate()
+            .map(|(i, (group, source))| ((group.group_id.clone(), source.clone()), i))
+            .collect();
+        let buckets = trend_rows(conn, &occurrences, "exc_group, source", from_ms, to_ms)?;
+        for (keys, bucket, count) in buckets {
+            let key = (keys[0].clone(), keys[1].clone());
+            if let Some(&i) = index.get(&key) {
+                out[i].0.trend[bucket] += count;
+            }
+        }
+        Ok(out)
+    })
+}
+
+/// Occurrence counts per trend bucket, grouped by `group_columns` (comma
+/// separated; pass an empty string for a single global trend). Returns
+/// `(group key values, bucket index, count)` rows.
+fn trend_rows(
+    conn: &Connection,
+    occurrences: &Where,
+    group_columns: &str,
+    from_ms: i64,
+    to_ms: i64,
+) -> Result<Vec<(Vec<String>, usize, i64)>> {
+    let span = (to_ms - from_ms).max(1);
+    let buckets = TREND_BUCKETS as i64;
+    let bucket = format!(
+        "least(greatest((received_ms - {from_ms}) * {buckets} / {span}, 0), {})",
+        buckets - 1
+    );
+    let (select, group_by, key_count) = if group_columns.is_empty() {
+        (format!("{bucket}, count(*)"), "1".to_string(), 0)
+    } else {
+        (
+            format!("{group_columns}, {bucket}, count(*)"),
+            format!("{group_columns}, {}", group_columns.split(',').count() + 1),
+            group_columns.split(',').count(),
+        )
+    };
+    rows(
+        conn,
+        &format!(
+            "SELECT {select} FROM events WHERE {} GROUP BY {group_by}",
+            occurrences.sql
+        ),
+        occurrences,
+        |row| {
+            let mut keys = Vec::with_capacity(key_count);
+            for i in 0..key_count {
+                keys.push(row.get::<_, Option<String>>(i)?.unwrap_or_default());
+            }
+            let bucket: i64 = row.get(key_count)?;
+            let count: i64 = row.get(key_count + 1)?;
+            Ok((keys, bucket.clamp(0, buckets - 1) as usize, count))
+        },
+    )
+}
+
+/// A single trend over all matching occurrences.
+fn trend_of(conn: &Connection, occurrences: &Where, from_ms: i64, to_ms: i64) -> Result<Vec<i64>> {
+    let mut trend = vec![0i64; TREND_BUCKETS];
+    for (_, bucket, count) in trend_rows(conn, occurrences, "", from_ms, to_ms)? {
+        trend[bucket] += count;
+    }
+    Ok(trend)
+}
+
+/// Occurrence counts per value of `column` (nulls under the empty-string
+/// sentinel), largest first.
+fn count_by(conn: &Connection, occurrences: &Where, column: &str) -> Result<Vec<CountRow>> {
+    rows(
+        conn,
+        &format!(
+            "SELECT coalesce({column}, '') AS key, count(*)
+             FROM events WHERE {}
+             GROUP BY key ORDER BY 2 DESC, key LIMIT {BREAKDOWN_LIMIT}",
+            occurrences.sql
+        ),
+        occurrences,
+        |row| {
+            Ok(CountRow {
+                key: row.get(0)?,
+                count: row.get(1)?,
             })
-        })
-        .collect())
+        },
+    )
 }
 
 /// A single exception group in forensic detail: the aggregate (with trend),
 /// how its occurrences distribute across key dimensions, and its **distinct
 /// variants** — occurrences collapsed by (message, stack, handledness) so an
 /// operator scrubs through genuinely different examples rather than paging
-/// hundreds of identical ones. Derived from one scan filtered to the group;
-/// looked up by id directly (no top-N cap), so a linked or bookmarked group
-/// opens regardless of how many fingerprints a project has. Returns `None` if
-/// the group has no occurrences in `[from_ms, to_ms)`.
+/// hundreds of identical ones. Looked up by id directly (no top-N cap), so a
+/// linked or bookmarked group opens regardless of how many fingerprints a
+/// project has. Returns `None` if the group has no occurrences in
+/// `[from_ms, to_ms)`.
 pub fn exception_detail(
     store: &Store,
-    parquet_dir: &str,
     sources: &[String],
     group_id: &str,
     from_ms: i64,
     to_ms: i64,
     limit: usize,
 ) -> Result<Option<ExceptionGroupDetail>> {
-    let df = combined(store, parquet_dir, from_ms, to_ms)?
-        .filter(source_filter(sources))
-        .filter(col("kind").eq(lit("exception")))
-        .filter(col("exc_group").eq(lit(group_id.to_string())))
-        .select([
-            col("exc_type"),
-            col("exc_message"),
-            col("exc_stack"),
-            col("exc_handled"),
-            col("received_ms")
-                .cast(DataType::Int64)
-                .alias("received_ms"),
-            col("ua_browser"),
-            col("ua_os"),
-            col("ua_device"),
-            col("app_version"),
-            col("source"),
-            col("metadata_json"),
-            col("sid"),
-        ])
-        .sort(
-            ["received_ms"],
-            SortMultipleOptions::default().with_order_descending(true),
-        )
-        .collect()
-        .or_system_err(ADVICE)?;
-
-    let height = df.height();
-    if height == 0 {
-        return Ok(None);
-    }
-
-    let exc_type = df
-        .column("exc_type")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let message = df
-        .column("exc_message")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let received = df
-        .column("received_ms")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-
-    // Rows are newest-first: index 0 is the most recent occurrence, the last
-    // index the oldest. The aggregate spans every row.
-    let group = ExceptionGroup {
-        group_id: group_id.to_string(),
-        exc_type: exc_type.get(0).unwrap_or("").to_string(),
-        sample_message: summary_line(message.get(0).unwrap_or("")).to_string(),
-        count: height as i64,
-        first_seen_ms: received.get(height - 1).unwrap_or(0),
-        last_seen_ms: received.get(0).unwrap_or(0),
-        status: ExceptionStatus::Unresolved,
-        resolved: false,
-        muted: false,
-        note: None,
-        trend: trend_of((0..height).filter_map(|i| received.get(i)), from_ms, to_ms),
+    let mut params = vec![Value::Text(group_id.to_string())];
+    params.extend(sources.iter().map(|s| Value::Text(s.clone())));
+    let source_list = if sources.is_empty() {
+        "FALSE".to_string()
+    } else {
+        format!("source IN ({})", vec!["?"; sources.len()].join(", "))
     };
+    let occurrences = Where::window(from_ms, to_ms, None).and(
+        &format!("kind = 'exception' AND exc_group = ? AND {source_list}"),
+        params,
+    );
 
-    let breakdowns = ExceptionBreakdowns {
-        app_versions: app_version_rows(&df)?,
-        browsers: count_by(&df, "ua_browser")?,
-        operating_systems: count_by(&df, "ua_os")?,
-        devices: count_by(&df, "ua_device")?,
-    };
-    let variants = variants_of(&df, limit)?;
+    store.with_conn(|conn| {
+        let (count, first, last, exc_type, message) = one(
+            conn,
+            &format!(
+                "SELECT count(*), min(received_ms), max(received_ms),
+                        arg_max(exc_type, received_ms) FILTER (exc_type IS NOT NULL),
+                        arg_max(exc_message, received_ms) FILTER (exc_message IS NOT NULL)
+                 FROM events WHERE {}",
+                occurrences.sql
+            ),
+            &occurrences,
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            },
+        )?;
+        if count == 0 {
+            return Ok(None);
+        }
 
-    let traces = traces_of_occurrences(store, parquet_dir, &df, from_ms, to_ms)?;
+        let group = ExceptionGroup {
+            group_id: group_id.to_string(),
+            exc_type: exc_type.unwrap_or_default(),
+            sample_message: summary_line(message.as_deref().unwrap_or("")).to_string(),
+            count,
+            first_seen_ms: first.unwrap_or(0),
+            last_seen_ms: last.unwrap_or(0),
+            status: ExceptionStatus::Unresolved,
+            resolved: false,
+            muted: false,
+            note: None,
+            trend: trend_of(conn, &occurrences, from_ms, to_ms)?,
+        };
 
-    Ok(Some(ExceptionGroupDetail {
-        group,
-        breakdowns,
-        variants,
-        traces,
-    }))
+        // Occurrence counts per reported release, folded through the label
+        // qualification rules (see [`app_version_rows`]).
+        let totals: HashMap<(String, String), i64> = rows(
+            conn,
+            &format!(
+                "SELECT coalesce(source, ''), coalesce(app_version, ''), count(*)
+                 FROM events WHERE {} GROUP BY 1, 2",
+                occurrences.sql
+            ),
+            &occurrences,
+            |row| Ok(((row.get(0)?, row.get(1)?), row.get(2)?)),
+        )?
+        .into_iter()
+        .collect();
+
+        let breakdowns = ExceptionBreakdowns {
+            app_versions: app_version_rows(totals),
+            browsers: count_by(conn, &occurrences, "ua_browser")?,
+            operating_systems: count_by(conn, &occurrences, "ua_os")?,
+            devices: count_by(conn, &occurrences, "ua_device")?,
+        };
+
+        // Distinct variants keyed by (message, stack, handledness): one
+        // representative each, counted, most frequent first. The
+        // representative context comes from the variant's latest occurrence
+        // that carries each value.
+        let variants = rows(
+            conn,
+            &format!(
+                "SELECT exc_message, exc_stack, exc_handled,
+                        count(*), min(received_ms), max(received_ms),
+                        arg_max(ua_browser, received_ms) FILTER (ua_browser IS NOT NULL),
+                        arg_max(ua_os, received_ms) FILTER (ua_os IS NOT NULL),
+                        arg_max(source, received_ms) FILTER (source IS NOT NULL),
+                        arg_max(app_version, received_ms) FILTER (app_version IS NOT NULL),
+                        arg_max(metadata_json, received_ms) FILTER (metadata_json IS NOT NULL),
+                        arg_max(sid, received_ms) FILTER (sid IS NOT NULL)
+                 FROM events WHERE {}
+                 GROUP BY 1, 2, 3
+                 ORDER BY 4 DESC, 6 DESC
+                 LIMIT {limit}",
+                occurrences.sql
+            ),
+            &occurrences,
+            |row| {
+                Ok(ExceptionVariant {
+                    message: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    stack: row.get(1)?,
+                    handled: row.get::<_, Option<bool>>(2)?.unwrap_or(false),
+                    count: row.get(3)?,
+                    first_seen_ms: row.get(4)?,
+                    last_seen_ms: row.get(5)?,
+                    ua_browser: row.get(6)?,
+                    ua_os: row.get(7)?,
+                    source: row.get(8)?,
+                    app_version: row.get(9)?,
+                    metadata: row.get(10)?,
+                    session_id: row.get(11)?,
+                })
+            },
+        )?;
+
+        let traces = occurrence_traces(conn, &occurrences, from_ms, to_ms)?;
+        Ok(Some(ExceptionGroupDetail {
+            group,
+            breakdowns,
+            variants,
+            traces,
+        }))
+    })
 }
 
 /// One named custom/pixel event in forensic detail: the aggregate (with
@@ -371,561 +700,168 @@ pub fn exception_detail(
 /// `[from_ms, to_ms)`.
 pub fn event_detail(
     store: &Store,
-    parquet_dir: &str,
     name: &str,
     from_ms: i64,
     to_ms: i64,
     filter: Option<&CompiledFilter>,
     limit: usize,
 ) -> Result<Option<EventDetail>> {
-    let mut lf = combined(store, parquet_dir, from_ms, to_ms)?
-        .filter(is_event())
-        .filter(col("event_name").eq(lit(name.to_string())));
-    if let Some(filter) = filter {
-        lf = lf.filter(filter.predicate.clone());
-    }
-    let df = lf
-        .select([
-            col("received_ms")
-                .cast(DataType::Int64)
-                .alias("received_ms"),
-            col("source"),
-            col("pathname"),
-            col("country"),
-            col("language"),
-            col("ua_browser"),
-            col("ua_os"),
-            col("ua_device"),
-            col("metadata_json"),
-            col("sid"),
-        ])
-        .sort(
-            ["received_ms"],
-            SortMultipleOptions::default().with_order_descending(true),
-        )
-        .collect()
-        .or_system_err(ADVICE)?;
+    let occurrences = Where::window(from_ms, to_ms, filter).and(
+        "kind IN ('pixel', 'custom') AND event_name = ?",
+        vec![Value::Text(name.to_string())],
+    );
 
-    let height = df.height();
-    if height == 0 {
-        return Ok(None);
-    }
+    store.with_conn(|conn| {
+        let (count, first, last) = one(
+            conn,
+            &format!(
+                "SELECT count(*), min(received_ms), max(received_ms) FROM events WHERE {}",
+                occurrences.sql
+            ),
+            &occurrences,
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            },
+        )?;
+        if count == 0 {
+            return Ok(None);
+        }
 
-    let received = df
-        .column("received_ms")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
+        let breakdowns = EventBreakdowns {
+            sources: count_by(conn, &occurrences, "source")?,
+            pages: count_by(conn, &occurrences, "pathname")?,
+            browsers: count_by(conn, &occurrences, "ua_browser")?,
+            operating_systems: count_by(conn, &occurrences, "ua_os")?,
+            devices: count_by(conn, &occurrences, "ua_device")?,
+            countries: count_by(conn, &occurrences, "country")?,
+            languages: count_by(conn, &occurrences, "language")?,
+        };
 
-    let breakdowns = EventBreakdowns {
-        sources: count_by(&df, "source")?,
-        pages: count_by(&df, "pathname")?,
-        browsers: count_by(&df, "ua_browser")?,
-        operating_systems: count_by(&df, "ua_os")?,
-        devices: count_by(&df, "ua_device")?,
-        countries: count_by(&df, "country")?,
-        languages: count_by(&df, "language")?,
-    };
-    let variants = event_variants(&df, limit)?;
-    let traces = traces_of_occurrences(store, parquet_dir, &df, from_ms, to_ms)?;
+        // Distinct variants keyed by their reporter metadata: one
+        // representative each, counted, most frequent first, with the context
+        // of each variant's latest occurrence.
+        let variants = rows(
+            conn,
+            &format!(
+                "SELECT metadata_json, count(*), min(received_ms), max(received_ms),
+                        arg_max(ua_browser, received_ms) FILTER (ua_browser IS NOT NULL),
+                        arg_max(ua_os, received_ms) FILTER (ua_os IS NOT NULL),
+                        arg_max(source, received_ms) FILTER (source IS NOT NULL),
+                        arg_max(pathname, received_ms) FILTER (pathname IS NOT NULL),
+                        arg_max(sid, received_ms) FILTER (sid IS NOT NULL)
+                 FROM events WHERE {}
+                 GROUP BY 1 ORDER BY 2 DESC, 4 DESC LIMIT {limit}",
+                occurrences.sql
+            ),
+            &occurrences,
+            |row| {
+                Ok(EventVariant {
+                    metadata: row.get(0)?,
+                    count: row.get(1)?,
+                    first_seen_ms: row.get(2)?,
+                    last_seen_ms: row.get(3)?,
+                    ua_browser: row.get(4)?,
+                    ua_os: row.get(5)?,
+                    source: row.get(6)?,
+                    pathname: row.get(7)?,
+                    session_id: row.get(8)?,
+                })
+            },
+        )?;
 
-    Ok(Some(EventDetail {
-        name: name.to_string(),
-        count: height as i64,
-        first_seen_ms: received.get(height - 1).unwrap_or(0),
-        last_seen_ms: received.get(0).unwrap_or(0),
-        trend: trend_of((0..height).filter_map(|i| received.get(i)), from_ms, to_ms),
-        breakdowns,
-        variants,
-        traces,
-    }))
+        let traces = occurrence_traces(conn, &occurrences, from_ms, to_ms)?;
+        Ok(Some(EventDetail {
+            name: name.to_string(),
+            count,
+            first_seen_ms: first.unwrap_or(0),
+            last_seen_ms: last.unwrap_or(0),
+            trend: trend_of(conn, &occurrences, from_ms, to_ms)?,
+            breakdowns,
+            variants,
+            traces,
+        }))
+    })
 }
 
-/// The sessions an (already newest-first) occurrence frame belonged to, newest
-/// first, so the operator can pick which trace to open. A second scan
-/// summarizes those sessions in full — their page views and events, not just
-/// the occurrences that matched.
-fn traces_of_occurrences(
-    store: &Store,
-    parquet_dir: &str,
-    occurrences: &DataFrame,
+/// The sessions of a detail view's occurrences: the sessions with the most
+/// recent matching occurrences, summarized **in full** (their page views and
+/// events, not just the occurrences that matched).
+fn occurrence_traces(
+    conn: &Connection,
+    occurrences: &Where,
     from_ms: i64,
     to_ms: i64,
 ) -> Result<Vec<TraceSummary>> {
-    let sid = occurrences
-        .column("sid")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let mut sids: Vec<String> = Vec::new();
-    for i in 0..occurrences.height() {
-        if let Some(sid) = sid.get(i)
-            && !sid.is_empty()
-            && !sids.iter().any(|seen| seen == sid)
-        {
-            sids.push(sid.to_string());
-            if sids.len() >= TRACE_SAMPLE as usize {
-                break;
-            }
-        }
-    }
+    let sids: Vec<String> = rows(
+        conn,
+        &format!(
+            "SELECT sid FROM events WHERE {} AND sid IS NOT NULL AND sid <> ''
+             GROUP BY sid ORDER BY max(received_ms) DESC, sid LIMIT {TRACE_SAMPLE}",
+            occurrences.sql
+        ),
+        occurrences,
+        |row| row.get(0),
+    )?;
+    traces_of_sessions(conn, &sids, &Where::window(from_ms, to_ms, None))
+}
+
+/// Summaries of the given sessions within `where_`'s scope, newest first. The
+/// context columns are each session's earliest reported value; events without
+/// a session id never form a trace.
+fn traces_of_sessions(
+    conn: &Connection,
+    sids: &[String],
+    where_: &Where,
+) -> Result<Vec<TraceSummary>> {
     if sids.is_empty() {
         return Ok(Vec::new());
     }
-    let sessions = combined(store, parquet_dir, from_ms, to_ms)?
-        .filter(col("sid").is_in(lit(Series::new("sids".into(), sids)).implode(false), false));
-    recent_traces(sessions, TRACE_SAMPLE)
-}
-
-/// Collapse an event's occurrences (already sorted newest-first) into distinct
-/// variants keyed by their reporter metadata: one representative each, counted,
-/// most frequent first. The representative context (client, source, page)
-/// comes from the variant's latest occurrence.
-fn event_variants(occurrences: &DataFrame, limit: usize) -> Result<Vec<EventVariant>> {
-    let df = occurrences
-        .clone()
-        .lazy()
-        .group_by([col("metadata_json")])
-        .agg([
-            len().cast(DataType::Int64).alias("count"),
-            col("received_ms").min().alias("first_seen"),
-            col("received_ms").max().alias("last_seen"),
-            // The frame is newest-first, so `first()` is the latest context.
-            col("ua_browser").first().alias("ua_browser"),
-            col("ua_os").first().alias("ua_os"),
-            col("source").first().alias("source"),
-            col("pathname").first().alias("pathname"),
-            // The session link: the latest occurrence that has one.
-            col("sid").drop_nulls().first().alias("sid"),
-        ])
-        .sort(
-            ["count"],
-            SortMultipleOptions::default().with_order_descending(true),
-        )
-        .limit(limit as u32)
-        .collect()
-        .or_system_err(ADVICE)?;
-
-    let metadata = df
-        .column("metadata_json")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let count = df
-        .column("count")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let first = df
-        .column("first_seen")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let last = df
-        .column("last_seen")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let browser = df
-        .column("ua_browser")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let os = df
-        .column("ua_os")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let source = df
-        .column("source")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let pathname = df
-        .column("pathname")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let sid = df
-        .column("sid")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-
-    Ok((0..df.height())
-        .map(|i| EventVariant {
-            metadata: metadata.get(i).map(str::to_string),
-            count: count.get(i).unwrap_or(0),
-            first_seen_ms: first.get(i).unwrap_or(0),
-            last_seen_ms: last.get(i).unwrap_or(0),
-            ua_browser: browser.get(i).map(str::to_string),
-            ua_os: os.get(i).map(str::to_string),
-            source: source.get(i).map(str::to_string),
-            pathname: pathname.get(i).map(str::to_string),
-            session_id: sid.get(i).map(str::to_string),
-        })
-        .collect())
-}
-
-/// Occurrence counts per value of `column` (nulls under the empty-string
-/// sentinel), largest first.
-fn count_by(occurrences: &DataFrame, column: &str) -> Result<Vec<CountRow>> {
-    let df = occurrences
-        .clone()
-        .lazy()
-        .with_columns([col(column).fill_null(lit("")).alias("key")])
-        .group_by([col("key")])
-        .agg([len().cast(DataType::Int64).alias("count")])
-        .sort(
-            ["count"],
-            SortMultipleOptions::default().with_order_descending(true),
-        )
-        .limit(BREAKDOWN_LIMIT)
-        .collect()
-        .or_system_err(ADVICE)?;
-
-    let keys = df
-        .column("key")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let counts = df
-        .column("count")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    Ok((0..df.height())
-        .filter_map(|i| {
-            keys.get(i).map(|key| CountRow {
-                key: key.to_string(),
-                count: counts.get(i).unwrap_or(0),
+    let sessions = where_.clone().and(
+        &format!("sid IN ({})", vec!["?"; sids.len()].join(", ")),
+        sids.iter().map(|s| Value::Text(s.clone())).collect(),
+    );
+    rows(
+        conn,
+        &format!(
+            "SELECT sid, min(received_ms) AS started, max(received_ms),
+                    arg_min(source, received_ms) FILTER (source IS NOT NULL),
+                    arg_min(pathname, received_ms)
+                        FILTER (kind = 'page_load' AND pathname IS NOT NULL),
+                    arg_min(country, received_ms) FILTER (country IS NOT NULL),
+                    arg_min(ua_browser, received_ms) FILTER (ua_browser IS NOT NULL),
+                    arg_min(ua_version, received_ms) FILTER (ua_version IS NOT NULL),
+                    arg_min(ua_device, received_ms) FILTER (ua_device IS NOT NULL),
+                    arg_min(app_version, received_ms) FILTER (app_version IS NOT NULL),
+                    count(*) FILTER (kind = 'page_load'),
+                    count(*) FILTER (kind IN ('pixel', 'custom')),
+                    count(*) FILTER (kind = 'exception')
+             FROM events WHERE {}
+             GROUP BY sid ORDER BY started DESC, sid LIMIT {TRACE_SAMPLE}",
+            sessions.sql
+        ),
+        &sessions,
+        |row| {
+            Ok(TraceSummary {
+                session_id: row.get(0)?,
+                started_ms: row.get(1)?,
+                last_ms: row.get(2)?,
+                source: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                entry_path: row.get(4)?,
+                country: row.get(5)?,
+                ua_browser: row.get(6)?,
+                ua_version: row.get(7)?,
+                ua_device: row.get(8)?,
+                app_version: row.get(9)?,
+                pageviews: row.get(10)?,
+                events: row.get(11)?,
+                exceptions: row.get(12)?,
             })
-        })
-        .collect())
-}
-
-/// Occurrence counts per reported release. When the frame spans several
-/// sources, rows are keyed as `app @ version` (the app being the source's
-/// label) — a release number is only meaningful within its application. A
-/// frame scoped to a single source (the per-source detail view) keys rows by
-/// the bare version number, since the application is given. Occurrences with
-/// no reported version aggregate under the empty sentinel, whichever source
-/// they came from.
-fn app_version_rows(occurrences: &DataFrame) -> Result<Vec<CountRow>> {
-    let df = occurrences
-        .clone()
-        .lazy()
-        .with_columns([
-            col("source").fill_null(lit("")).alias("app"),
-            col("app_version").fill_null(lit("")).alias("version"),
-        ])
-        .group_by([col("app"), col("version")])
-        .agg([len().cast(DataType::Int64).alias("count")])
-        .collect()
-        .or_system_err(ADVICE)?;
-
-    let apps = df
-        .column("app")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let versions = df
-        .column("version")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let counts = df
-        .column("count")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-
-    // Qualify versions with their application only when the frame genuinely
-    // mixes applications; labels are compared (not URIs) since distinct
-    // sources can share one (http vs https).
-    let mut labels: Vec<&str> = (0..df.height())
-        .filter_map(|i| apps.get(i))
-        .filter(|app| !app.is_empty())
-        .map(source_label)
-        .collect();
-    labels.sort_unstable();
-    labels.dedup();
-    let qualify = labels.len() > 1;
-
-    // Fold by the display key rather than trusting the group-by to have
-    // finished the job (see the label-sharing note above).
-    let mut totals: HashMap<String, i64> = HashMap::new();
-    for i in 0..df.height() {
-        let (Some(app), Some(version)) = (apps.get(i), versions.get(i)) else {
-            continue;
-        };
-        let key = match (app.is_empty(), version.is_empty()) {
-            (_, true) => String::new(),
-            (true, false) => version.to_string(),
-            (false, false) if qualify => format!("{} @ {version}", source_label(app)),
-            (false, false) => version.to_string(),
-        };
-        *totals.entry(key).or_insert(0) += counts.get(i).unwrap_or(0);
-    }
-    let mut rows: Vec<CountRow> = totals
-        .into_iter()
-        .map(|(key, count)| CountRow { key, count })
-        .collect();
-    rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.key.cmp(&b.key)));
-    rows.truncate(BREAKDOWN_LIMIT as usize);
-    Ok(rows)
-}
-
-/// Collapse a group's occurrences (already sorted newest-first) into distinct
-/// variants keyed by (message, stack, handledness): one representative each,
-/// counted, most frequent first. The representative context (client, source,
-/// version, reporter metadata) comes from the variant's latest occurrence.
-fn variants_of(occurrences: &DataFrame, limit: usize) -> Result<Vec<ExceptionVariant>> {
-    let df = occurrences
-        .clone()
-        .lazy()
-        .group_by([col("exc_message"), col("exc_stack"), col("exc_handled")])
-        .agg([
-            len().cast(DataType::Int64).alias("count"),
-            col("received_ms").min().alias("first_seen"),
-            col("received_ms").max().alias("last_seen"),
-            // The frame is newest-first, so `first()` is the latest context.
-            col("ua_browser").first().alias("ua_browser"),
-            col("ua_os").first().alias("ua_os"),
-            col("source").first().alias("source"),
-            col("app_version").first().alias("app_version"),
-            // Metadata is optional per report; surface the latest occurrence
-            // that actually carried some.
-            col("metadata_json")
-                .drop_nulls()
-                .first()
-                .alias("metadata_json"),
-            // Likewise the session link: the latest occurrence that has one.
-            col("sid").drop_nulls().first().alias("sid"),
-        ])
-        .sort(
-            ["count"],
-            SortMultipleOptions::default().with_order_descending(true),
-        )
-        .limit(limit as u32)
-        .collect()
-        .or_system_err(ADVICE)?;
-
-    let message = df
-        .column("exc_message")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let stack = df
-        .column("exc_stack")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let handled = df
-        .column("exc_handled")
-        .or_system_err(ADVICE)?
-        .bool()
-        .or_system_err(ADVICE)?;
-    let count = df
-        .column("count")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let first = df
-        .column("first_seen")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let last = df
-        .column("last_seen")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let browser = df
-        .column("ua_browser")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let os = df
-        .column("ua_os")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let source = df
-        .column("source")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let version = df
-        .column("app_version")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let metadata = df
-        .column("metadata_json")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let sid = df
-        .column("sid")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-
-    Ok((0..df.height())
-        .map(|i| ExceptionVariant {
-            message: message.get(i).unwrap_or("").to_string(),
-            stack: stack.get(i).map(str::to_string),
-            handled: handled.get(i).unwrap_or(false),
-            count: count.get(i).unwrap_or(0),
-            first_seen_ms: first.get(i).unwrap_or(0),
-            last_seen_ms: last.get(i).unwrap_or(0),
-            ua_browser: browser.get(i).map(str::to_string),
-            ua_os: os.get(i).map(str::to_string),
-            source: source.get(i).map(str::to_string),
-            app_version: version.get(i).map(str::to_string),
-            metadata: metadata.get(i).map(str::to_string),
-            session_id: sid.get(i).map(str::to_string),
-        })
-        .collect())
-}
-
-/// The most recent sessions in the (already filtered) event frame, one summary
-/// row each, newest first. Events are grouped by the tracker's per-visit
-/// session id; events without one (pixel hits, pre-session trackers) never
-/// form a trace. The summary spans the *matching* events only, so a dimension
-/// filter scopes this list exactly the way it scopes every other panel.
-fn recent_traces(base: LazyFrame, limit: u32) -> Result<Vec<TraceSummary>> {
-    let df = base
-        .filter(col("sid").is_not_null().and(col("sid").neq(lit(""))))
-        // Frame order feeds the `first()` aggregations below: oldest first
-        // makes them "the session's earliest value".
-        .sort(["received_ms"], SortMultipleOptions::default())
-        .group_by([col("sid")])
-        .agg([
-            col("received_ms")
-                .min()
-                .cast(DataType::Int64)
-                .alias("started"),
-            col("received_ms").max().cast(DataType::Int64).alias("last"),
-            col("source").first().alias("source"),
-            // The first page viewed in the session.
-            col("pathname")
-                .filter(col("kind").eq(lit("page_load")))
-                .drop_nulls()
-                .first()
-                .alias("entry_path"),
-            col("country").drop_nulls().first().alias("country"),
-            col("ua_browser").drop_nulls().first().alias("ua_browser"),
-            col("ua_version").drop_nulls().first().alias("ua_version"),
-            col("ua_device").drop_nulls().first().alias("ua_device"),
-            // Exception reports carry the app's claimed release.
-            col("app_version").drop_nulls().first().alias("app_version"),
-            col("kind")
-                .eq(lit("page_load"))
-                .sum()
-                .cast(DataType::Int64)
-                .alias("pageviews"),
-            is_event().sum().cast(DataType::Int64).alias("events"),
-            col("kind")
-                .eq(lit("exception"))
-                .sum()
-                .cast(DataType::Int64)
-                .alias("exceptions"),
-        ])
-        .sort(
-            ["started"],
-            SortMultipleOptions::default().with_order_descending(true),
-        )
-        .limit(limit)
-        .collect()
-        .or_system_err(ADVICE)?;
-
-    let sid = df
-        .column("sid")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let started = df
-        .column("started")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let last = df
-        .column("last")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let source = df
-        .column("source")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let entry_path = df
-        .column("entry_path")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let country = df
-        .column("country")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let ua_browser = df
-        .column("ua_browser")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let ua_version = df
-        .column("ua_version")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let ua_device = df
-        .column("ua_device")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let app_version = df
-        .column("app_version")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let pageviews = df
-        .column("pageviews")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let events = df
-        .column("events")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let exceptions = df
-        .column("exceptions")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-
-    Ok((0..df.height())
-        .filter_map(|i| {
-            sid.get(i).map(|session_id| TraceSummary {
-                session_id: session_id.to_string(),
-                started_ms: started.get(i).unwrap_or(0),
-                last_ms: last.get(i).unwrap_or(0),
-                source: source.get(i).unwrap_or("").to_string(),
-                entry_path: entry_path.get(i).map(str::to_string),
-                country: country.get(i).map(str::to_string),
-                ua_browser: ua_browser.get(i).map(str::to_string),
-                ua_version: ua_version.get(i).map(str::to_string),
-                ua_device: ua_device.get(i).map(str::to_string),
-                app_version: app_version.get(i).map(str::to_string),
-                pageviews: pageviews.get(i).unwrap_or(0),
-                events: events.get(i).unwrap_or(0),
-                exceptions: exceptions.get(i).unwrap_or(0),
-            })
-        })
-        .collect())
+        },
+    )
 }
 
 /// One session's full timeline: every event carrying the session id, oldest
@@ -936,133 +872,102 @@ fn recent_traces(base: LazyFrame, limit: u32) -> Result<Vec<TraceSummary>> {
 /// session has no events in `[from_ms, to_ms)`.
 pub fn session_trace(
     store: &Store,
-    parquet_dir: &str,
     session_id: &str,
     from_ms: i64,
     to_ms: i64,
     limit: usize,
 ) -> Result<Option<SessionTrace>> {
-    let df = combined(store, parquet_dir, from_ms, to_ms)?
-        .filter(col("sid").eq(lit(session_id.to_string())))
-        .select([
-            col("received_ms")
-                .cast(DataType::Int64)
-                .alias("received_ms"),
-            col("seq"),
-            col("kind"),
-            col("bid"),
-            col("source"),
-            col("pathname"),
-            col("country"),
-            col("language"),
-            col("ua_browser"),
-            col("ua_version"),
-            col("ua_os"),
-            col("app_version"),
-            col("duration_ms"),
-            col("event_name"),
-            col("metadata_json"),
-            col("exc_type"),
-            col("exc_message"),
-            col("exc_stack"),
-            col("exc_group"),
-            col("exc_handled"),
-        ])
-        // `seq` breaks same-millisecond ties in arrival order.
-        .sort(["received_ms", "seq"], SortMultipleOptions::default())
-        .limit(limit as u32)
-        .collect()
-        .or_system_err(ADVICE)?;
+    struct Collected {
+        received_ms: i64,
+        kind: String,
+        bid: String,
+        pathname: Option<String>,
+        duration_ms: Option<i64>,
+        event_name: Option<String>,
+        metadata: Option<String>,
+        exc_type: Option<String>,
+        exc_message: Option<String>,
+        exc_stack: Option<String>,
+        exc_group: Option<String>,
+        exc_handled: Option<bool>,
+        source: Option<String>,
+        country: Option<String>,
+        language: Option<String>,
+        ua_browser: Option<String>,
+        ua_version: Option<String>,
+        ua_os: Option<String>,
+        app_version: Option<String>,
+    }
 
-    let height = df.height();
-    if height == 0 {
+    let timeline = Where::window(from_ms, to_ms, None)
+        .and("sid = ?", vec![Value::Text(session_id.to_string())]);
+    let collected = store.with_conn(|conn| {
+        rows(
+            conn,
+            &format!(
+                "SELECT received_ms, kind, bid, pathname, duration_ms, event_name,
+                        metadata_json, exc_type, exc_message, exc_stack, exc_group,
+                        exc_handled, source, country, language, ua_browser,
+                        ua_version, ua_os, app_version
+                 FROM events WHERE {}
+                 ORDER BY received_ms, seq LIMIT {limit}",
+                timeline.sql
+            ),
+            &timeline,
+            |row| {
+                Ok(Collected {
+                    received_ms: row.get(0)?,
+                    kind: row.get(1)?,
+                    bid: row.get(2)?,
+                    pathname: row.get(3)?,
+                    duration_ms: row.get(4)?,
+                    event_name: row.get(5)?,
+                    metadata: row.get(6)?,
+                    exc_type: row.get(7)?,
+                    exc_message: row.get(8)?,
+                    exc_stack: row.get(9)?,
+                    exc_group: row.get(10)?,
+                    exc_handled: row.get(11)?,
+                    source: row.get(12)?,
+                    country: row.get(13)?,
+                    language: row.get(14)?,
+                    ua_browser: row.get(15)?,
+                    ua_version: row.get(16)?,
+                    ua_os: row.get(17)?,
+                    app_version: row.get(18)?,
+                })
+            },
+        )
+    })?;
+
+    if collected.is_empty() {
         return Ok(None);
     }
 
-    let received = df
-        .column("received_ms")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let kind = df
-        .column("kind")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let bid = df
-        .column("bid")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let pathname = df
-        .column("pathname")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let duration = df
-        .column("duration_ms")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let event_name = df
-        .column("event_name")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let metadata = df
-        .column("metadata_json")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let exc_type = df
-        .column("exc_type")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let exc_message = df
-        .column("exc_message")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let exc_stack = df
-        .column("exc_stack")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let exc_group = df
-        .column("exc_group")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let exc_handled = df
-        .column("exc_handled")
-        .or_system_err(ADVICE)?
-        .bool()
-        .or_system_err(ADVICE)?;
-
-    let events: Vec<TraceEvent> = (0..height)
-        .filter_map(|i| {
-            let kind = match kind.get(i) {
-                Some("page_load") => TraceEventKind::PageLoad,
-                Some("page_unload") => TraceEventKind::PageUnload,
-                Some("custom") => TraceEventKind::Custom,
-                Some("exception") => TraceEventKind::Exception,
+    let events: Vec<TraceEvent> = collected
+        .iter()
+        .filter_map(|row| {
+            let kind = match row.kind.as_str() {
+                "page_load" => TraceEventKind::PageLoad,
+                "page_unload" => TraceEventKind::PageUnload,
+                "custom" => TraceEventKind::Custom,
+                "exception" => TraceEventKind::Exception,
                 // Pixels carry no session; anything else has no place on a trace.
                 _ => return None,
             };
             Some(TraceEvent {
-                received_ms: received.get(i).unwrap_or(0),
+                received_ms: row.received_ms,
                 kind,
-                bid: bid.get(i).unwrap_or("").to_string(),
-                pathname: pathname.get(i).map(str::to_string),
-                duration_ms: duration.get(i),
-                event_name: event_name.get(i).map(str::to_string),
-                metadata: metadata.get(i).map(str::to_string),
-                exc_type: exc_type.get(i).map(str::to_string),
-                exc_message: exc_message.get(i).map(str::to_string),
-                exc_stack: exc_stack.get(i).map(str::to_string),
-                exc_group: exc_group.get(i).map(str::to_string),
-                exc_handled: exc_handled.get(i),
+                bid: row.bid.clone(),
+                pathname: row.pathname.clone(),
+                duration_ms: row.duration_ms,
+                event_name: row.event_name.clone(),
+                metadata: row.metadata.clone(),
+                exc_type: row.exc_type.clone(),
+                exc_message: row.exc_message.clone(),
+                exc_stack: row.exc_stack.clone(),
+                exc_group: row.exc_group.clone(),
+                exc_handled: row.exc_handled,
             })
         })
         .collect();
@@ -1070,250 +975,40 @@ pub fn session_trace(
     // The visit's context: the earliest non-null value of each dimension (a
     // session is one client on one source, so any row would do — but events
     // differ in which columns they carry).
-    let first_str = |name: &str| -> Result<Option<String>> {
-        let column = df
-            .column(name)
-            .or_system_err(ADVICE)?
-            .str()
-            .or_system_err(ADVICE)?
-            .clone();
-        Ok((0..height).find_map(|i| column.get(i).map(str::to_string)))
+    let first_str = |get: fn(&Collected) -> Option<&String>| -> Option<String> {
+        collected.iter().find_map(|row| get(row).cloned())
     };
 
     Ok(Some(SessionTrace {
         session_id: session_id.to_string(),
-        started_ms: received.get(0).unwrap_or(0),
-        ended_ms: received.get(height - 1).unwrap_or(0),
-        source: first_str("source")?.unwrap_or_default(),
-        country: first_str("country")?,
-        language: first_str("language")?,
-        ua_browser: first_str("ua_browser")?,
-        ua_version: first_str("ua_version")?,
-        ua_os: first_str("ua_os")?,
-        app_version: first_str("app_version")?,
+        started_ms: collected.first().map(|r| r.received_ms).unwrap_or(0),
+        ended_ms: collected.last().map(|r| r.received_ms).unwrap_or(0),
+        source: first_str(|r| r.source.as_ref()).unwrap_or_default(),
+        country: first_str(|r| r.country.as_ref()),
+        language: first_str(|r| r.language.as_ref()),
+        ua_browser: first_str(|r| r.ua_browser.as_ref()),
+        ua_version: first_str(|r| r.ua_version.as_ref()),
+        ua_os: first_str(|r| r.ua_os.as_ref()),
+        app_version: first_str(|r| r.app_version.as_ref()),
         events,
     }))
 }
 
 // ----------------------------------------------------------------- internals
 
-/// Occurrence timestamps bucketed into [`TREND_BUCKETS`] equal slices of
-/// `[from, to)`, oldest first.
-fn trend_of(times: impl Iterator<Item = i64>, from_ms: i64, to_ms: i64) -> Vec<i64> {
-    let span = (to_ms - from_ms).max(1) as i128;
-    let mut buckets = vec![0i64; TREND_BUCKETS];
-    for t in times {
-        let idx = ((t - from_ms) as i128 * TREND_BUCKETS as i128 / span)
-            .clamp(0, TREND_BUCKETS as i128 - 1) as usize;
-        buckets[idx] += 1;
-    }
-    buckets
-}
-
-/// The `i64` values of row `i` of a list column.
-fn list_i64(column: &ListChunked, i: usize) -> Vec<i64> {
-    let Some(series) = column.get_as_series(i) else {
-        return Vec::new();
-    };
-    let Ok(values) = series.i64() else {
-        return Vec::new();
-    };
-    (0..values.len()).filter_map(|j| values.get(j)).collect()
-}
-
-/// The time-filtered (half-open `[from, to)`) union of the cold Parquet
-/// partitions and the redb hot store.
-fn combined(store: &Store, parquet_dir: &str, from_ms: i64, to_ms: i64) -> Result<LazyFrame> {
-    let mut frames: Vec<LazyFrame> = Vec::new();
-    for file in parquet_files_in_range(Path::new(parquet_dir), from_ms, to_ms) {
-        let path = file.to_string_lossy();
-        match LazyFrame::scan_parquet(PlRefPath::from(path.as_ref()), ScanArgsParquet::default()) {
-            Ok(lf) => frames.push(lf),
-            // A corrupt/unreadable partition must surface in the logs, not silently
-            // drop events from every query that touches its date range.
-            Err(err) => warn!("skipping unreadable parquet partition {path}: {err}"),
-        }
-    }
-    frames.push(store.hot_dataframe()?.lazy());
-
-    let combined = if frames.len() == 1 {
-        frames.pop().expect("one frame")
-    } else {
-        // Diagonal: partitions written before a column existed (e.g. the app
-        // attribution columns) read back with that column as nulls instead of
-        // failing the union.
-        concat(
-            frames,
-            UnionArgs {
-                to_supertypes: true,
-                diagonal: true,
-                ..Default::default()
-            },
-        )
-        .or_system_err(ADVICE)?
-    };
-
-    // De-duplicate the union: if a crash leaves a compaction window present in both
-    // Parquet and redb, the same events appear twice. Every row carries the globally
-    // unique per-event `seq`, so two *distinct* events can never be all-columns-equal;
-    // a full-row unique therefore collapses exactly the crash duplicates and nothing
-    // else.
-    Ok(combined
-        .filter(
-            col("received_ms")
-                .gt_eq(lit(from_ms))
-                .and(col("received_ms").lt(lit(to_ms))),
-        )
-        .unique(None, UniqueKeepStrategy::Any))
-}
-
-/// An OR-chain matching any of the given source URIs (empty set matches nothing).
-fn source_filter(sources: &[String]) -> Expr {
-    let mut expr = lit(false);
-    for source in sources {
-        expr = expr.or(col("source").eq(lit(source.clone())));
-    }
-    expr
-}
-
-/// Pixel hits and custom application events (counted as `events`, not pageviews).
-fn is_event() -> Expr {
-    col("kind")
-        .eq(lit("pixel"))
-        .or(col("kind").eq(lit("custom")))
-}
-
-fn summary(base: LazyFrame, unique_flag: &str) -> Result<MetricSummary> {
-    let df = base
-        .select([
-            col("kind")
-                .eq(lit("page_load"))
-                .sum()
-                .cast(DataType::Int64)
-                .alias("pageviews"),
-            col("kind")
-                .eq(lit("page_load"))
-                .and(col(unique_flag))
-                .sum()
-                .cast(DataType::Int64)
-                .alias("visitors"),
-            is_event().sum().cast(DataType::Int64).alias("events"),
-            col("duration_ms")
-                .is_not_null()
-                .sum()
-                .cast(DataType::Int64)
-                .alias("samples"),
-            col("duration_ms")
-                .gt_eq(lit(BOUNCE_MIN_MS))
-                .and(col("duration_ms").lt_eq(lit(BOUNCE_MAX_MS)))
-                .sum()
-                .cast(DataType::Int64)
-                .alias("bounces"),
-            col("duration_ms").median().alias("median_ms"),
-        ])
-        .collect()
-        .or_system_err(ADVICE)?;
-
-    let samples = scalar_i64(&df, "samples");
-    let bounces = scalar_i64(&df, "bounces");
-    let median = df
-        .column("median_ms")
-        .ok()
-        .and_then(|c| c.f64().ok())
-        .and_then(|a| a.get(0));
-
-    Ok(MetricSummary {
-        visitors: scalar_i64(&df, "visitors"),
-        pageviews: scalar_i64(&df, "pageviews"),
-        events: scalar_i64(&df, "events"),
-        bounce_rate: (samples >= MIN_BOUNCE_SAMPLES).then(|| bounces as f64 / samples as f64),
-        median_duration_ms: median.map(|m| m.round() as i64),
-    })
-}
+/// Per-bucket `(pageviews, visitors, events, exceptions)` counts.
+type BucketCounts = (i64, i64, i64, i64);
 
 /// A continuous time series over `[from_ms, to_ms)` at `bucket_ms` resolution.
-/// Buckets with no events are emitted as zeros so the chart shows a gap-free line
-/// across the whole window instead of collapsing absent periods.
-fn timeseries(
-    base: LazyFrame,
+/// Buckets with no events are emitted as zeros so the chart shows a gap-free
+/// line across the whole window instead of collapsing absent periods.
+fn fill_series(
+    counts: &HashMap<i64, BucketCounts>,
     from_ms: i64,
     to_ms: i64,
     bucket_ms: i64,
-    unique_flag: &str,
-) -> Result<Vec<TimeSeriesPoint>> {
-    let bucket_ms = bucket_ms.max(1);
-    let is_exception = col("kind").eq(lit("exception"));
-    let df = base
-        .filter(
-            col("kind")
-                .eq(lit("page_load"))
-                .or(is_event())
-                .or(is_exception.clone()),
-        )
-        .with_columns([(col("received_ms") - col("received_ms") % lit(bucket_ms)).alias("bucket")])
-        .group_by([col("bucket")])
-        .agg([
-            col("kind")
-                .eq(lit("page_load"))
-                .sum()
-                .cast(DataType::Int64)
-                .alias("pageviews"),
-            col("kind")
-                .eq(lit("page_load"))
-                .and(col(unique_flag))
-                .sum()
-                .cast(DataType::Int64)
-                .alias("visitors"),
-            is_event().sum().cast(DataType::Int64).alias("events"),
-            is_exception.sum().cast(DataType::Int64).alias("exceptions"),
-        ])
-        .collect()
-        .or_system_err(ADVICE)?;
-
-    let bucket = df
-        .column("bucket")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let pageviews = df
-        .column("pageviews")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let visitors = df
-        .column("visitors")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let events = df
-        .column("events")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let exceptions = df
-        .column("exceptions")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-
-    // Index the populated buckets, then walk every bucket in the window.
-    let mut counts: HashMap<i64, (i64, i64, i64, i64)> = HashMap::new();
-    for i in 0..df.height() {
-        if let Some(b) = bucket.get(i) {
-            counts.insert(
-                b,
-                (
-                    pageviews.get(i).unwrap_or(0),
-                    visitors.get(i).unwrap_or(0),
-                    events.get(i).unwrap_or(0),
-                    exceptions.get(i).unwrap_or(0),
-                ),
-            );
-        }
-    }
-
-    let point = |timestamp_ms: i64,
-                 (pageviews, visitors, events, exceptions): (i64, i64, i64, i64)| {
+) -> Vec<TimeSeriesPoint> {
+    let point = |timestamp_ms: i64, (pageviews, visitors, events, exceptions): BucketCounts| {
         TimeSeriesPoint {
             timestamp_ms,
             pageviews,
@@ -1329,12 +1024,10 @@ fn timeseries(
     let estimated = ((last - first) / bucket_ms).unsigned_abs() as usize + 1;
     if first > last || estimated > 5_000 {
         // Fall back to the populated buckets only (sorted).
-        let mut points: Vec<TimeSeriesPoint> = counts
-            .into_iter()
-            .map(|(b, tuple)| point(b, tuple))
-            .collect();
+        let mut points: Vec<TimeSeriesPoint> =
+            counts.iter().map(|(b, tuple)| point(*b, *tuple)).collect();
         points.sort_by_key(|p| p.timestamp_ms);
-        return Ok(points);
+        return points;
     }
 
     let mut points = Vec::with_capacity(estimated);
@@ -1343,217 +1036,45 @@ fn timeseries(
         points.push(point(b, counts.get(&b).copied().unwrap_or((0, 0, 0, 0))));
         b += bucket_ms;
     }
-    Ok(points)
+    points
 }
 
-/// A dimension breakdown over the page-load frame. Null (and empty) dimension
-/// values aggregate under the sentinel empty-string key rather than being
-/// dropped, so direct traffic and unknown values stay visible and filterable and
-/// share percentages stay honest.
-fn breakdown(pageloads: LazyFrame, column: &str, unique_flag: &str) -> Result<Vec<BreakdownRow>> {
-    let df = pageloads
-        .with_columns([col(column).fill_null(lit("")).alias("key")])
-        .group_by([col("key")])
-        .agg([
-            len().cast(DataType::Int64).alias("pageviews"),
-            col(unique_flag)
-                .sum()
-                .cast(DataType::Int64)
-                .alias("visitors"),
-        ])
-        .sort(
-            ["pageviews"],
-            SortMultipleOptions::default().with_order_descending(true),
-        )
-        .limit(BREAKDOWN_LIMIT)
-        .collect()
-        .or_system_err(ADVICE)?;
-
-    let keys = df
-        .column("key")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let pageviews = df
-        .column("pageviews")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let visitors = df
-        .column("visitors")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-
-    Ok((0..df.height())
-        .filter_map(|i| {
-            keys.get(i).map(|key| BreakdownRow {
-                key: key.to_string(),
-                pageviews: pageviews.get(i).unwrap_or(0),
-                visitors: visitors.get(i).unwrap_or(0),
-                events: 0,
-            })
-        })
-        .collect())
-}
-
-/// The client-versions breakdown over the page-load frame, keyed by the
-/// (application, version) pair — a version number is only meaningful within
-/// its application, so "120.0" from Chrome and "120.0" from Edge stay separate
-/// rows. Nulls aggregate under the empty-string sentinel like every other
-/// breakdown.
-fn version_breakdown(pageloads: LazyFrame, unique_flag: &str) -> Result<Vec<VersionRow>> {
-    let df = pageloads
-        .with_columns([
-            col("ua_browser").fill_null(lit("")).alias("app"),
-            col("ua_version").fill_null(lit("")).alias("version"),
-        ])
-        .group_by([col("app"), col("version")])
-        .agg([
-            len().cast(DataType::Int64).alias("pageviews"),
-            col(unique_flag)
-                .sum()
-                .cast(DataType::Int64)
-                .alias("visitors"),
-        ])
-        .sort(
-            ["pageviews"],
-            SortMultipleOptions::default().with_order_descending(true),
-        )
-        .limit(BREAKDOWN_LIMIT)
-        .collect()
-        .or_system_err(ADVICE)?;
-
-    let apps = df
-        .column("app")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let versions = df
-        .column("version")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let pageviews = df
-        .column("pageviews")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let visitors = df
-        .column("visitors")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-
-    Ok((0..df.height())
-        .filter_map(|i| {
-            Some(VersionRow {
-                app: apps.get(i)?.to_string(),
-                version: versions.get(i)?.to_string(),
-                pageviews: pageviews.get(i).unwrap_or(0),
-                visitors: visitors.get(i).unwrap_or(0),
-                events: 0,
-            })
-        })
-        .collect())
-}
-
-/// The custom/pixel events breakdown, keyed by event name (unnamed events
-/// aggregate under the empty sentinel). Only the `events` count is meaningful —
-/// these rows have no page views, and visitor uniqueness rides on page loads —
-/// so the panel displays them under the Events metric.
-fn event_name_breakdown(events: LazyFrame) -> Result<Vec<BreakdownRow>> {
-    let df = events
-        .with_columns([col("event_name").fill_null(lit("")).alias("key")])
-        .group_by([col("key")])
-        .agg([len().cast(DataType::Int64).alias("events")])
-        .sort(
-            ["events"],
-            SortMultipleOptions::default().with_order_descending(true),
-        )
-        .limit(BREAKDOWN_LIMIT)
-        .collect()
-        .or_system_err(ADVICE)?;
-
-    let keys = df
-        .column("key")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let events = df
-        .column("events")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-
-    Ok((0..df.height())
-        .filter_map(|i| {
-            keys.get(i).map(|key| BreakdownRow {
-                key: key.to_string(),
-                visitors: 0,
-                pageviews: 0,
-                events: events.get(i).unwrap_or(0),
-            })
-        })
-        .collect())
-}
-
-/// Per-source totals. Page loads count as `pageviews`; pixel hits and custom
-/// events count as `events` so pixel-only and application sources still surface;
-/// `visitors` uses the same daily-unique flag as every other aggregation in the
-/// response (only page loads carry it), so the panels agree with the headline.
-fn source_rollup(base: LazyFrame, unique_flag: &str) -> Result<Vec<BreakdownRow>> {
-    let df = base
-        .filter(col("kind").eq(lit("page_load")).or(is_event()))
-        .group_by([col("source")])
-        .agg([
-            col("kind")
-                .eq(lit("page_load"))
-                .sum()
-                .cast(DataType::Int64)
-                .alias("pageviews"),
-            col(unique_flag)
-                .sum()
-                .cast(DataType::Int64)
-                .alias("visitors"),
-            is_event().sum().cast(DataType::Int64).alias("events"),
-        ])
-        .collect()
-        .or_system_err(ADVICE)?;
-
-    let sources = df
-        .column("source")
-        .or_system_err(ADVICE)?
-        .str()
-        .or_system_err(ADVICE)?;
-    let pageviews = df
-        .column("pageviews")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let visitors = df
-        .column("visitors")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-    let events = df
-        .column("events")
-        .or_system_err(ADVICE)?
-        .i64()
-        .or_system_err(ADVICE)?;
-
-    let mut rows: Vec<BreakdownRow> = (0..df.height())
-        .filter_map(|i| {
-            sources.get(i).map(|s| BreakdownRow {
-                key: s.to_string(),
-                pageviews: pageviews.get(i).unwrap_or(0),
-                visitors: visitors.get(i).unwrap_or(0),
-                events: events.get(i).unwrap_or(0),
-            })
-        })
+/// Occurrence counts per reported release, from totals keyed by
+/// `(source, version)`. When the occurrences span several sources, rows are
+/// keyed as `app @ version` (the app being the source's label) — a release
+/// number is only meaningful within its application. Occurrences scoped to a
+/// single source (the per-source detail view) key rows by the bare version
+/// number, since the application is given. Occurrences with no reported
+/// version aggregate under the empty sentinel, whichever source they came
+/// from. Labels are compared (not URIs) since distinct sources can share one
+/// (http vs https).
+fn app_version_rows(totals: HashMap<(String, String), i64>) -> Vec<CountRow> {
+    let mut labels: Vec<&str> = totals
+        .keys()
+        .filter(|(app, _)| !app.is_empty())
+        .map(|(app, _)| source_label(app))
         .collect();
-    rows.sort_by_key(|r| std::cmp::Reverse(r.pageviews + r.events));
-    Ok(rows)
+    labels.sort_unstable();
+    labels.dedup();
+    let qualify = labels.len() > 1;
+
+    let mut folded: HashMap<String, i64> = HashMap::new();
+    for ((app, version), count) in &totals {
+        let key = match (app.is_empty(), version.is_empty()) {
+            (_, true) => String::new(),
+            (true, false) => version.clone(),
+            (false, false) if qualify => format!("{} @ {version}", source_label(app)),
+            (false, false) => version.clone(),
+        };
+        *folded.entry(key).or_insert(0) += count;
+    }
+    let mut rows: Vec<CountRow> = folded
+        .into_iter()
+        .map(|(key, count)| CountRow { key, count })
+        .collect();
+    rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.key.cmp(&b.key)));
+    rows.truncate(BREAKDOWN_LIMIT);
+    rows
 }
 
 /// Fold per-source totals up to per-project rows, and split off the sources that
@@ -1613,102 +1134,21 @@ fn project_rollup(
     unassigned.sort_by_key(|r| std::cmp::Reverse(r.pageviews + r.events));
 
     let mut sources = per_source;
-    sources.truncate(BREAKDOWN_LIMIT as usize);
+    sources.truncate(BREAKDOWN_LIMIT);
 
     Ok((projects, sources, unassigned))
-}
-
-fn scalar_i64(df: &DataFrame, name: &str) -> i64 {
-    df.column(name)
-        .ok()
-        .and_then(|c| c.i64().ok())
-        .and_then(|a| a.get(0))
-        .unwrap_or(0)
-}
-
-/// Parquet partition files whose `YYYY/MM/DD` directory overlaps `[from_ms, to_ms]`.
-/// Partitions are date-partitioned, so pruning whole day directories keeps a wide
-/// query range from scanning the entire archive.
-fn parquet_files_in_range(dir: &Path, from_ms: i64, to_ms: i64) -> Vec<std::path::PathBuf> {
-    let (from, to) = (day_of(from_ms), day_of(to_ms));
-    let mut out = Vec::new();
-    for year in numeric_subdirs::<i32>(dir) {
-        let year_dir = dir.join(format!("{year:04}"));
-        for month in numeric_subdirs::<u32>(&year_dir) {
-            let month_dir = year_dir.join(format!("{month:02}"));
-            for day in numeric_subdirs::<u32>(&month_dir) {
-                let date = (year, month, day);
-                if date < from || date > to {
-                    continue;
-                }
-                let day_dir = month_dir.join(format!("{day:02}"));
-                let Ok(entries) = std::fs::read_dir(&day_dir) else {
-                    continue;
-                };
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().is_some_and(|e| e == "parquet") {
-                        out.push(path);
-                    }
-                }
-            }
-        }
-    }
-    out
 }
 
 /// The timestamp of the earliest stored event, or `None` when nothing has been
 /// recorded yet. Used to resolve "all time" queries (`from=0`) to the real
 /// start of the data, so the time series isn't padded with decades of empty
-/// buckets. The cold archive is date-partitioned, so its earliest partition
-/// directory answers without scanning any data; only a store with no cold
-/// partitions yet (first hours of a deployment) reads the hot store.
-pub fn earliest_event_ms(store: &Store, parquet_dir: &str) -> Result<Option<i64>> {
-    if let Some(ms) = earliest_partition_ms(Path::new(parquet_dir)) {
-        return Ok(Some(ms));
-    }
-    let df = store.hot_dataframe()?;
-    Ok(df
-        .column("received_ms")
-        .ok()
-        .and_then(|c| c.i64().ok())
-        .and_then(|a| a.min()))
+/// buckets.
+pub fn earliest_event_ms(store: &Store) -> Result<Option<i64>> {
+    store.with_conn(|conn| {
+        conn.query_row("SELECT min(received_ms) FROM events", [], |row| row.get(0))
+            .or_system_err(ADVICE)
+    })
 }
-
-/// The UTC-midnight instant of the earliest `YYYY/MM/DD` partition directory,
-/// if any exist.
-fn earliest_partition_ms(dir: &Path) -> Option<i64> {
-    let year = numeric_subdirs::<i32>(dir).into_iter().min()?;
-    let year_dir = dir.join(format!("{year:04}"));
-    let month = numeric_subdirs::<u32>(&year_dir).into_iter().min()?;
-    let month_dir = year_dir.join(format!("{month:02}"));
-    let day = numeric_subdirs::<u32>(&month_dir).into_iter().min()?;
-    Utc.with_ymd_and_hms(year, month, day, 0, 0, 0)
-        .single()
-        .map(|dt| dt.timestamp_millis())
-}
-
-/// `(year, month, day)` in UTC for an epoch-millis instant (epoch on overflow).
-fn day_of(ms: i64) -> (i32, u32, u32) {
-    let dt = Utc
-        .timestamp_millis_opt(ms)
-        .single()
-        .unwrap_or_else(|| Utc.timestamp_opt(0, 0).single().unwrap());
-    (dt.year(), dt.month(), dt.day())
-}
-
-/// Numeric subdirectory names (a year/month/day component) directly under `dir`.
-fn numeric_subdirs<T: std::str::FromStr>(dir: &Path) -> Vec<T> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().to_str().and_then(|n| n.parse::<T>().ok()))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1754,47 +1194,22 @@ mod tests {
     }
 
     #[test]
-    fn earliest_event_ms_prefers_the_cold_archive_and_falls_back_to_hot() {
-        let parquet_dir = std::env::temp_dir().join(format!(
-            "analytics-earliest-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-
-        // With no partitions and an empty hot store there is no earliest event.
+    fn earliest_event_ms_tracks_the_oldest_stored_event() {
         let redb = temp_redb();
         let store = Store::open(&redb).unwrap();
-        assert_eq!(
-            earliest_event_ms(&store, parquet_dir.to_str().unwrap()).unwrap(),
-            None
-        );
+        // An empty store has no earliest event ("all time" stays unanchored).
+        assert_eq!(earliest_event_ms(&store).unwrap(), None);
 
-        // Hot-only: the earliest hot event answers.
         store
-            .append_events(&[load("https://a.com", 5_000, true, None)])
+            .append_events(&[
+                load("https://a.com", 5_000, true, None),
+                load("https://a.com", 3_000, true, None),
+            ])
             .unwrap();
-        assert_eq!(
-            earliest_event_ms(&store, parquet_dir.to_str().unwrap()).unwrap(),
-            Some(5_000)
-        );
+        assert_eq!(earliest_event_ms(&store).unwrap(), Some(3_000));
 
-        // A date partition (even an empty directory tree counts — partitions
-        // only exist once written) beats the hot store.
-        std::fs::create_dir_all(parquet_dir.join("2024/03/07")).unwrap();
-        std::fs::create_dir_all(parquet_dir.join("2025/01/01")).unwrap();
-        let expected = Utc
-            .with_ymd_and_hms(2024, 3, 7, 0, 0, 0)
-            .single()
-            .unwrap()
-            .timestamp_millis();
-        assert_eq!(
-            earliest_event_ms(&store, parquet_dir.to_str().unwrap()).unwrap(),
-            Some(expected)
-        );
-        std::fs::remove_dir_all(&parquet_dir).ok();
+        drop(store);
+        let _ = std::fs::remove_file(&redb);
     }
 
     #[test]
@@ -1810,17 +1225,8 @@ mod tests {
             ])
             .unwrap();
 
-        // No parquet dir -> hot store only.
         let filter = dash_filter(&store, &source_q("https://a.com"));
-        let dash = dashboard(
-            &store,
-            "/nonexistent-parquet",
-            Some(&filter),
-            0,
-            10_000,
-            86_400_000,
-        )
-        .unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
 
         assert_eq!(dash.summary.pageviews, 3);
         assert_eq!(dash.summary.visitors, 2); // two unique loads for a.com
@@ -1855,7 +1261,7 @@ mod tests {
             .unwrap();
 
         let filter = dash_filter(&store, &source_q("https://a.com"));
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 3 * day, day).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 3 * day, day).unwrap();
 
         // Buckets at 0, 1d, 2d — empty days filled with zeros, not dropped
         // (the range is half-open, so the bucket at 3d is not included).
@@ -1892,7 +1298,7 @@ mod tests {
             .unwrap();
 
         let filter = dash_filter(&store, &source_q("https://a.com"));
-        let dash = dashboard(&store, "/none", Some(&filter), 10_000, 20_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 10_000, 20_000, 86_400_000).unwrap();
 
         assert_eq!(dash.summary.pageviews, 2);
         assert_eq!(dash.previous_summary.pageviews, 1);
@@ -1915,28 +1321,28 @@ mod tests {
 
         // Equality is case-insensitive, mirroring the filter language.
         let filter = dash_filter(&store, r#"browser == "chrome""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 1);
         assert_eq!(dash.summary.visitors, 1);
 
         // Disjunction spans values.
         let filter = dash_filter(&store, r#"browser == "Chrome" || browser == "Firefox""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 2);
 
         // Membership lists work too.
         let filter = dash_filter(&store, r#"browser in ["chrome", "firefox"]"#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 2);
 
         // An empty value matches events where the dimension is absent.
         let filter = dash_filter(&store, r#"browser == """#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 1);
         assert_eq!(dash.summary.visitors, 0);
 
         // The absent value surfaces as a sentinel row rather than being dropped.
-        let dash = dashboard(&store, "/none", None, 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, None, 0, 10_000, 86_400_000).unwrap();
         let sentinel = dash.breakdowns.browsers.iter().find(|r| r.key.is_empty());
         assert_eq!(sentinel.map(|r| r.pageviews), Some(1));
 
@@ -1953,7 +1359,7 @@ mod tests {
             .unwrap();
 
         let filter = dash_filter(&store, r#"source == "a.com""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 1);
 
         drop(store);
@@ -1975,7 +1381,7 @@ mod tests {
 
         // Bare hostnames expand to every canonical URI form.
         let filter = dash_filter(&store, r#"source in ["a.com", "b.com", "p1"]"#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 2);
         assert_eq!(dash.summary.events, 1); // the pixel matched via pixel://p1
         assert!(
@@ -1987,7 +1393,7 @@ mod tests {
 
         // Mixed bare and fully-qualified names work too.
         let filter = dash_filter(&store, r#"source in ["https://a.com", "b.com"]"#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 2);
         assert_eq!(dash.summary.events, 0);
 
@@ -2012,7 +1418,7 @@ mod tests {
         // browser == "" (absent) must match the browserless page view but NOT
         // the pixel hit, whose dimensions are null for a different reason.
         let filter = dash_filter(&store, r#"browser == """#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 1);
         assert_eq!(dash.summary.events, 0);
         assert!(
@@ -2038,7 +1444,7 @@ mod tests {
         store.append_events(&[blog]).unwrap();
 
         let filter = dash_filter(&store, r#"path == "/blog""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         // The sources rollup must agree with the headline visitor count.
         assert_eq!(dash.summary.visitors, 1);
         let source = dash.breakdowns.sources.first().expect("source row");
@@ -2063,7 +1469,7 @@ mod tests {
         store.append_events(&[landing, blog]).unwrap();
 
         let filter = dash_filter(&store, r#"path == "/blog""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 1);
         // is_unique_user would report 0 here; is_unique_page reports the truth.
         assert_eq!(dash.summary.visitors, 1);
@@ -2081,7 +1487,7 @@ mod tests {
             .unwrap();
 
         let filter = dash_filter(&store, r#"project == "empty-project""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 0);
         assert_eq!(dash.summary.visitors, 0);
         assert!(dash.breakdowns.sources.is_empty());
@@ -2129,13 +1535,13 @@ mod tests {
             r#"project == "01ARZAPPS""#,
         ] {
             let filter = dash_filter(&store, q);
-            let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+            let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
             assert_eq!(dash.summary.pageviews, 1, "query `{q}`");
         }
 
         // Negation excludes the project's traffic but keeps everything else.
         let filter = dash_filter(&store, r#"project != "Apps""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.summary.pageviews, 1);
         assert!(
             dash.breakdowns
@@ -2190,7 +1596,7 @@ mod tests {
             ])
             .unwrap();
 
-        let rows = exception_groups_by_source(&store, "/none", 0, 10_000, None).unwrap();
+        let rows = exception_groups_by_source(&store, 0, 10_000, None).unwrap();
         // One row per (fingerprint, source) — not collapsed across sources.
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|(g, _)| g.group_id == "g1"));
@@ -2204,50 +1610,6 @@ mod tests {
 
         drop(store);
         let _ = std::fs::remove_file(&redb);
-    }
-
-    #[test]
-    fn union_deduplicates_a_crash_duplicated_window() {
-        let redb = temp_redb();
-        let store = Store::open(&redb).unwrap();
-        store
-            .append_events(&[
-                load("https://a.com", 1_000, true, None),
-                load("https://a.com", 2_000, false, None),
-            ])
-            .unwrap();
-
-        // Simulate a crash between archive and delete: the same window now lives in
-        // both Parquet and the hot store. The archived rows carry the stamped `seq`.
-        let archived = store.all_events().unwrap();
-        let parquet_dir =
-            std::env::temp_dir().join(format!("analytics-dedup-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&parquet_dir);
-        let partition = parquet_dir
-            .join("1970")
-            .join("01")
-            .join("01")
-            .join("events-1.parquet");
-        crate::store::write_partition(&archived, &partition).unwrap();
-
-        let filter = dash_filter(&store, &source_q("https://a.com"));
-        let dash = dashboard(
-            &store,
-            parquet_dir.to_str().unwrap(),
-            Some(&filter),
-            0,
-            10_000,
-            86_400_000,
-        )
-        .unwrap();
-
-        // Without dedup this would double to 4 pageviews / 2 visitors.
-        assert_eq!(dash.summary.pageviews, 2);
-        assert_eq!(dash.summary.visitors, 1);
-
-        drop(store);
-        let _ = std::fs::remove_file(&redb);
-        let _ = std::fs::remove_dir_all(&parquet_dir);
     }
 
     #[test]
@@ -2269,13 +1631,12 @@ mod tests {
         .unwrap()
         .unwrap();
         let listed =
-            exception_groups_by_source(&store, "/none", 0, 10_000_000, Some(&listing_filter))
-                .unwrap();
+            exception_groups_by_source(&store, 0, 10_000_000, Some(&listing_filter)).unwrap();
         assert_eq!(listed.len(), 500);
         assert!(!listed.iter().any(|(g, _)| g.group_id == "g1"));
 
         // ...but a direct lookup still resolves it (group + variants in one scan).
-        let g1 = exception_detail(&store, "/none", &sources, "g1", 0, 10_000_000, 10).unwrap();
+        let g1 = exception_detail(&store, &sources, "g1", 0, 10_000_000, 10).unwrap();
         let detail = g1.expect("g1 resolves");
         assert_eq!(detail.group.group_id, "g1");
         assert_eq!(detail.group.count, 1);
@@ -2283,7 +1644,7 @@ mod tests {
         assert_eq!(detail.variants.len(), 1);
         // An unknown group resolves to None.
         assert!(
-            exception_detail(&store, "/none", &sources, "nope", 0, 10_000_000, 10)
+            exception_detail(&store, &sources, "nope", 0, 10_000_000, 10)
                 .unwrap()
                 .is_none()
         );
@@ -2316,7 +1677,7 @@ mod tests {
         store.append_events(&[a1, a2, b]).unwrap();
 
         let sources = ["https://a.com".to_string()];
-        let detail = exception_detail(&store, "/none", &sources, "g1", 0, 10_000, 10)
+        let detail = exception_detail(&store, &sources, "g1", 0, 10_000, 10)
             .unwrap()
             .expect("g1 resolves");
 
@@ -2388,7 +1749,7 @@ mod tests {
             ])
             .unwrap();
 
-        let dash = dashboard(&store, "/none", None, 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, None, 0, 10_000, 86_400_000).unwrap();
         let names: Vec<(&str, i64)> = dash
             .breakdowns
             .event_names
@@ -2427,7 +1788,7 @@ mod tests {
             ])
             .unwrap();
 
-        let detail = event_detail(&store, "/none", "signup", 0, 10_000, None, 10)
+        let detail = event_detail(&store, "signup", 0, 10_000, None, 10)
             .unwrap()
             .expect("signup resolves");
         assert_eq!(detail.name, "signup");
@@ -2458,12 +1819,12 @@ mod tests {
         // separately, and an unknown one not at all.
         assert_eq!(detail.traces.len(), 2);
         assert!(
-            event_detail(&store, "/none", "checkout", 0, 10_000, None, 10)
+            event_detail(&store, "checkout", 0, 10_000, None, 10)
                 .unwrap()
                 .is_some()
         );
         assert!(
-            event_detail(&store, "/none", "nope", 0, 10_000, None, 10)
+            event_detail(&store, "nope", 0, 10_000, None, 10)
                 .unwrap()
                 .is_none()
         );
@@ -2471,7 +1832,7 @@ mod tests {
         // The dashboard filter scopes the detail like every other panel.
         let filter = dash_filter(&store, r#"source == "https://other.com""#);
         assert!(
-            event_detail(&store, "/none", "signup", 0, 10_000, Some(&filter), 10)
+            event_detail(&store, "signup", 0, 10_000, Some(&filter), 10)
                 .unwrap()
                 .is_none()
         );
@@ -2493,7 +1854,7 @@ mod tests {
         // Across two sources the bare number would be ambiguous, so rows stay
         // qualified as `app @ version`.
         let sources = ["https://a.com".to_string(), "https://b.com".to_string()];
-        let detail = exception_detail(&store, "/none", &sources, "g1", 0, 10_000, 10)
+        let detail = exception_detail(&store, &sources, "g1", 0, 10_000, 10)
             .unwrap()
             .expect("g1 resolves");
         let keys: Vec<&str> = detail
@@ -2536,7 +1897,7 @@ mod tests {
             ])
             .unwrap();
 
-        let dash = dashboard(&store, "/none", None, 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, None, 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.traces.len(), 2);
 
         // Newest session first.
@@ -2559,7 +1920,7 @@ mod tests {
 
         // The dashboard filter scopes traces like every other panel.
         let filter = dash_filter(&store, r#"path == "/pricing""#);
-        let dash = dashboard(&store, "/none", Some(&filter), 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, Some(&filter), 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.traces.len(), 1);
         assert_eq!(dash.traces[0].session_id, "s2");
 
@@ -2587,7 +1948,7 @@ mod tests {
             ])
             .unwrap();
 
-        let trace = session_trace(&store, "/none", "s1", 0, 10_000, 1_000)
+        let trace = session_trace(&store, "s1", 0, 10_000, 1_000)
             .unwrap()
             .expect("s1 resolves");
         assert_eq!(trace.session_id, "s1");
@@ -2612,7 +1973,7 @@ mod tests {
 
         // An unknown session resolves to None.
         assert!(
-            session_trace(&store, "/none", "nope", 0, 10_000, 1_000)
+            session_trace(&store, "nope", 0, 10_000, 1_000)
                 .unwrap()
                 .is_none()
         );
@@ -2633,7 +1994,7 @@ mod tests {
             ])
             .unwrap();
 
-        let dash = dashboard(&store, "/none", None, 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, None, 0, 10_000, 86_400_000).unwrap();
         assert_eq!(dash.timeseries.len(), 1);
         assert_eq!(dash.timeseries[0].pageviews, 1);
         assert_eq!(dash.timeseries[0].exceptions, 2);
@@ -2654,7 +2015,7 @@ mod tests {
             ])
             .unwrap();
 
-        let dash = dashboard(&store, "/none", None, 0, 10_000, 86_400_000).unwrap();
+        let dash = dashboard(&store, None, 0, 10_000, 86_400_000).unwrap();
         let uris: Vec<&str> = dash.unassigned.iter().map(|u| u.key.as_str()).collect();
         assert!(uris.contains(&"https://a.com"));
         assert!(uris.contains(&"pixel://p1")); // previously invisible
@@ -2681,5 +2042,97 @@ mod tests {
 
         drop(store);
         let _ = std::fs::remove_file(&redb);
+    }
+}
+
+/// Smoke tests against a production data dump. Set `ANALYTICS_PROD_DUMP` to a
+/// directory containing the legacy `parquet/` archive (e.g.
+/// `.prod-dump/analytics`) to enable them; they are silently skipped
+/// otherwise. Run with `--release` for a representative reading:
+/// `ANALYTICS_PROD_DUMP=$PWD/.prod-dump/analytics cargo test -p analytics --release prod_dump -- --nocapture`
+#[cfg(test)]
+mod prod_dump_tests {
+    use super::*;
+    use crate::config::StorageConfig;
+    use crate::store::Store;
+
+    fn rss_stat_mb(stat: &str) -> f64 {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix(stat))
+            .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<f64>().ok())
+            .map(|kb| kb / 1024.0)
+            .unwrap_or(0.0)
+    }
+
+    /// Migrating the legacy production archive must produce a database that
+    /// serves the dashboard with the exact numbers the legacy engine computed
+    /// (recorded before the DuckDB migration), and the migration must be
+    /// idempotent across reopens.
+    #[test]
+    fn migrates_the_production_dump_and_matches_legacy_numbers() {
+        let Ok(dump) = std::env::var("ANALYTICS_PROD_DUMP") else {
+            return;
+        };
+        let work = std::env::temp_dir().join(format!("analytics-prod-dump-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).unwrap();
+        let storage = StorageConfig {
+            database_path: work.join("analytics.duckdb").to_string_lossy().into_owned(),
+            parquet_dir: format!("{dump}/parquet"),
+            redb_path: work.join("missing.redb").to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        let t = std::time::Instant::now();
+        let store = Store::open_with_migration(&storage).unwrap();
+        let migrate_time = t.elapsed();
+
+        let from = earliest_event_ms(&store).unwrap().expect("dump has data");
+        let to = from + 400 * 86_400_000;
+        let t = std::time::Instant::now();
+        let dash = dashboard(&store, None, from, to, 86_400_000).unwrap();
+        let cold = t.elapsed();
+        let t = std::time::Instant::now();
+        let _ = dashboard(&store, None, from, to, 86_400_000).unwrap();
+        let warm = t.elapsed();
+
+        // Ground truth computed by the legacy polars fold over this dump.
+        assert_eq!(dash.summary.pageviews, 55_193);
+        assert_eq!(dash.summary.visitors, 3_345);
+        assert_eq!(dash.summary.events, 78_357);
+        assert_eq!(dash.traces.len(), 10);
+
+        // Reopening performs no second import.
+        let events = store.event_count().unwrap();
+        drop(store);
+        let reopened = Store::open_with_migration(&storage).unwrap();
+        assert_eq!(reopened.event_count().unwrap(), events);
+
+        // Eight concurrent warm dashboards sharing the buffer manager.
+        let t = std::time::Instant::now();
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    dashboard(&reopened, None, from, to, 86_400_000).unwrap();
+                });
+            }
+        });
+        let concurrent = t.elapsed();
+
+        let db_size = std::fs::metadata(&storage.database_path)
+            .map(|m| m.len() as f64 / (1024.0 * 1024.0))
+            .unwrap_or(0.0);
+        println!(
+            "prod dump: migrated {events} events in {migrate_time:?} ({db_size:.1}MB db), \
+             dashboard cold {cold:?} / warm {warm:?}, 8 concurrent in {concurrent:?}, \
+             peak RSS {:.1} MB, steady RSS {:.1} MB",
+            rss_stat_mb("VmHWM:"),
+            rss_stat_mb("VmRSS:")
+        );
+
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&work);
     }
 }

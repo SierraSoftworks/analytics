@@ -116,10 +116,46 @@ jobs:
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
 
+      # Tests link DuckDB from the prebuilt library that libduckdb-sys
+      # downloads for its exact crate version, instead of compiling DuckDB from
+      # source via the default `bundled-duckdb` feature — cutting many minutes
+      # off cold builds. Cargo puts the library on the test binaries' load path
+      # itself.
+      #
+      # The download must be cached separately: rust-cache prunes directories
+      # it doesn't recognise inside target/ when saving, which would strand a
+      # warm build — the cached build-script fingerprint still points at
+      # target/duckdb-download, but the library would be gone.
+      - name: Cache downloaded libduckdb
+        uses: actions/cache@v4
+        with:
+          path: target/duckdb-download
+          key: libduckdb-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      # Self-heal: if the library itself is missing (a pruned or evicted cache
+      # can leave the directory behind without it) while rust-cache holds a
+      # fresh libduckdb-sys fingerprint, cargo would skip the build script and
+      # the link would fail — drop the fingerprint so the script (and its
+      # download) runs again.
+      - name: Ensure libduckdb download can rerun
+        shell: bash
+        run: |
+          if find target/duckdb-download \( -name 'libduckdb.so' -o -name 'libduckdb.dylib' -o -name 'duckdb.dll' \) 2>/dev/null | grep -q .; then
+            echo "prebuilt libduckdb present:"
+            find target/duckdb-download -type f | sed 's/^/  /'
+          else
+            echo "prebuilt libduckdb missing; forcing the libduckdb-sys build script to rerun"
+            rm -rf target/*/.fingerprint/libduckdb-sys-* \
+                   target/*/*/.fingerprint/libduckdb-sys-* \
+                   target/*/build/libduckdb-sys-* \
+                   target/*/*/build/libduckdb-sys-*
+          fi
+
       - name: Run tests
-        run: cargo test --no-fail-fast
+        run: cargo test --no-fail-fast --no-default-features
         env:
             RUSTFLAGS: -Cinstrument-coverage
+            DUCKDB_DOWNLOAD_LIB: "1"
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: grcov
@@ -158,11 +194,16 @@ jobs:
             target: x86_64-unknown-linux-gnu
             test: true
             builder: cargo
+          # Built natively on GitHub's ARM runners rather than cross-compiled:
+          # the cross containers' old sysroot can neither link the prebuilt
+          # libduckdb (needs GLIBC_2.25/GLIBCXX_3.4.22) nor compile bundled
+          # DuckDB's C++17. 22.04's glibc (2.35) predates Debian bookworm's
+          # (2.36), so the binary is guaranteed to run in the Docker image.
           - arch: "arm64"
             os: linux
-            run_on: ubuntu-latest
+            run_on: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-            builder: cross
+            builder: cargo
 
           # Apple MacOS builds
           - arch: amd64
@@ -206,33 +247,57 @@ jobs:
           name: tracker-dist
           path: tracker/dist
 
-      - name: Install Cross
-        if: matrix.builder == 'cross'
-        shell: bash
-        run: |
-          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-          cargo binstall --no-confirm cross
-
-      # Set up the cache only after all tooling (e.g. cross) is installed, and
-      # after checkout so it can key on Cargo.lock. Restoring it before the
-      # tools were installed left cross off the PATH for the build.
       - name: Setup Cache
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
-      - name: cargo build
-        run: ${{ matrix.builder }} build --release --target ${{ matrix.target }}
+      # Per-push builds link DuckDB from the prebuilt library that libduckdb-sys
+      # downloads for its exact crate version (DUCKDB_DOWNLOAD_LIB=1), skipping
+      # the multi-minute bundled C++ build. These binaries need libduckdb on
+      # the library path at runtime and exist only to validate the build.
+      # Release builds keep the default `bundled-duckdb` feature so the
+      # published artifacts and Docker image stay fully self-contained.
+      - name: Select DuckDB linkage
+        if: github.event_name != 'release'
+        shell: bash
+        run: |
+          echo "CARGO_FLAGS=--no-default-features" >> "$GITHUB_ENV"
+          echo "DUCKDB_DOWNLOAD_LIB=1" >> "$GITHUB_ENV"
 
-      # cross runs the compiler inside a Docker container as root, so the
-      # registry downloads and build artifacts it writes into the cached
-      # directories end up owned by root. Swatinem/rust-cache's save step runs
-      # as the unprivileged runner user and cannot prune root-owned files,
-      # which causes the cache save to fail and the cross build to never be
-      # cached. Reclaim ownership so the cache can be persisted.
-      - name: Reclaim cache ownership from cross
-        if: matrix.builder == 'cross'
-        run: sudo chown -R "$(id -u):$(id -g)" "$HOME/.cargo" target
+      # The download must be cached separately: rust-cache prunes directories
+      # it doesn't recognise inside target/ when saving, which would strand a
+      # warm build — the cached build-script fingerprint still points at
+      # target/duckdb-download, but the library would be gone.
+      - name: Cache downloaded libduckdb
+        if: github.event_name != 'release'
+        uses: actions/cache@v4
+        with:
+          path: target/duckdb-download
+          key: libduckdb-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      # Self-heal: if the library itself is missing (a pruned or evicted cache
+      # can leave the directory behind without it) while rust-cache holds a
+      # fresh libduckdb-sys fingerprint, cargo would skip the build script and
+      # the link would fail — drop the fingerprint so the script (and its
+      # download) runs again.
+      - name: Ensure libduckdb download can rerun
+        if: github.event_name != 'release'
+        shell: bash
+        run: |
+          if find target/duckdb-download \( -name 'libduckdb.so' -o -name 'libduckdb.dylib' -o -name 'duckdb.dll' \) 2>/dev/null | grep -q .; then
+            echo "prebuilt libduckdb present:"
+            find target/duckdb-download -type f | sed 's/^/  /'
+          else
+            echo "prebuilt libduckdb missing; forcing the libduckdb-sys build script to rerun"
+            rm -rf target/*/.fingerprint/libduckdb-sys-* \
+                   target/*/*/.fingerprint/libduckdb-sys-* \
+                   target/*/build/libduckdb-sys-* \
+                   target/*/*/build/libduckdb-sys-*
+          fi
+
+      - name: cargo build
+        run: ${{ matrix.builder }} build --release --target ${{ matrix.target }} ${{ env.CARGO_FLAGS }}
 
       - name: Upload GitHub Release Artifacts
         uses: SierraSoftworks/gh-releases@v1.0.10

@@ -46,7 +46,6 @@ pub async fn list_all(
 ) -> HttpResponse {
     let query = query.into_inner();
     let store = state.store.clone();
-    let parquet_dir = state.config.storage.parquet_dir.clone();
 
     let filter = match query.q.as_deref() {
         Some(q) => match analytics::filter::compile_query(q, FieldSet::Exceptions, &store) {
@@ -60,12 +59,11 @@ pub async fn list_all(
         // `from=0` means "all time": anchor at the earliest stored event so the
         // per-group trend buckets cover the data, not decades of empty space.
         let from = match query.from {
-            Some(f) if f <= 0 => analytics::earliest_event_ms(&store, &parquet_dir)?,
+            Some(f) if f <= 0 => analytics::earliest_event_ms(&store)?,
             other => other,
         };
         let (from, to, _) = resolve_range(from, query.to, None);
-        let per_source =
-            analytics::exception_groups_by_source(&store, &parquet_dir, from, to, filter.as_ref())?;
+        let per_source = analytics::exception_groups_by_source(&store, from, to, filter.as_ref())?;
 
         // Resolve a source URI to its owning project, and project ids to names.
         let mut uri_project: HashMap<String, String> = HashMap::new();
@@ -161,20 +159,12 @@ pub async fn detail(
         .clamp(1, super::query::MAX_INSTANT_MS);
     let from = query.from.unwrap_or(0).clamp(0, to - 1);
     let store = state.store.clone();
-    let parquet_dir = state.config.storage.parquet_dir.clone();
 
     let result = web::block(
         move || -> crate::errors::Result<Option<ExceptionGroupDetail>> {
             let sources = [source.clone()];
-            let Some(mut detail) = analytics::exception_detail(
-                &store,
-                &parquet_dir,
-                &sources,
-                &group_id,
-                from,
-                to,
-                VARIANT_LIMIT,
-            )?
+            let Some(mut detail) =
+                analytics::exception_detail(&store, &sources, &group_id, from, to, VARIANT_LIMIT)?
             else {
                 return Ok(None);
             };

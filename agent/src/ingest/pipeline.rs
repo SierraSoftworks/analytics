@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 use tracing_batteries::prelude::*;
 
-use super::compactor;
+use super::maintenance;
 use crate::config::StorageConfig;
 use crate::store::{Store, StoredEvent};
 
@@ -33,12 +33,12 @@ impl Ingest {
     }
 }
 
-/// Spawn the background writer + compactor and return the submit handle.
+/// Spawn the background writer + maintenance tasks and return the submit handle.
 pub fn spawn(store: Arc<Store>, storage: StorageConfig) -> Ingest {
     let (tx, rx) = mpsc::channel(QUEUE_CAPACITY);
     let max_sources = storage.max_auto_sources;
     tokio::spawn(writer_loop(store.clone(), rx, max_sources));
-    tokio::spawn(compactor::run(store, storage));
+    tokio::spawn(maintenance::run(store, storage));
     Ingest { tx }
 }
 

@@ -23,9 +23,22 @@ impl EventKind {
             EventKind::Exception => "exception",
         }
     }
+
+    /// Parse a stored kind string; unknown values (which the ingest pipeline
+    /// never writes) fall back to the default rather than failing a whole read.
+    pub(crate) fn parse(value: &str) -> Self {
+        match value {
+            "page_load" => EventKind::PageLoad,
+            "page_unload" => EventKind::PageUnload,
+            "custom" => EventKind::Custom,
+            "pixel" => EventKind::Pixel,
+            "exception" => EventKind::Exception,
+            _ => EventKind::default(),
+        }
+    }
 }
 
-/// A fully enriched, anonymized event as persisted to redb and Parquet.
+/// A fully enriched, anonymized event as persisted to the events table.
 ///
 /// Attribution is a single canonical `source` URI (`https://<hostname>`,
 /// `app://<appname>`, `pixel://<id>`, extensible to future schemes); the owning
@@ -38,10 +51,9 @@ pub struct StoredEvent {
     pub created_ms: i64,
     /// Server receive time (epoch millis); also the basis for the storage key.
     pub received_ms: i64,
-    /// Monotonic per-event sequence (the low half of the redb key), unique forever.
-    /// Carried into Parquet so the hot∪cold union can be de-duplicated if a crash
-    /// causes a compaction window to be archived twice. Assigned by the store on
-    /// append; ignore the value before then.
+    /// Monotonic per-event sequence, unique forever; breaks same-millisecond
+    /// ties in arrival order. Assigned by the store on append; ignore the
+    /// value before then.
     #[serde(default)]
     pub seq: u64,
     /// Per-page-load beacon id linking the events of a single page view.
@@ -50,7 +62,7 @@ pub struct StoredEvent {
     /// tracker keeps it tab-scoped in `sessionStorage` — navigations within a
     /// tab share it, closing the tab ends it). Absent on pixel hits and on
     /// events from trackers predating sessions. `serde(default)` keeps
-    /// pre-existing redb rows readable.
+    /// events stored before the field existed readable.
     #[serde(default)]
     pub sid: Option<String>,
     pub kind: EventKind,
@@ -69,7 +81,7 @@ pub struct StoredEvent {
     pub ua_browser: Option<String>,
     /// The client's version as derived from the User-Agent (browser version,
     /// or an application's reported version). `serde(default)` keeps
-    /// pre-existing redb rows readable.
+    /// events stored before the field existed readable.
     #[serde(default)]
     pub ua_version: Option<String>,
     pub ua_os: Option<String>,
@@ -86,8 +98,8 @@ pub struct StoredEvent {
 
     /// The reporting application's version, for attributing failures to a
     /// specific release (exception events; the application itself is the
-    /// event's `source`). `serde(default)` keeps pre-attribution redb rows
-    /// readable.
+    /// event's `source`). `serde(default)` keeps events stored before
+    /// attribution existed readable.
     #[serde(default)]
     pub app_version: Option<String>,
 

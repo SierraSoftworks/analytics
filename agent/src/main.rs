@@ -86,15 +86,24 @@ async fn main() -> ExitCode {
 
 /// Open storage, start the ingest pipeline, and run the web server.
 async fn serve(config: Config, demo: bool) -> errors::Result<()> {
-    let store = Arc::new(Store::open(&config.storage.redb_path)?);
+    // Opening migrates any legacy redb/Parquet stores into the database on
+    // first start after an upgrade; that can take a moment, and must finish
+    // before anything serves.
+    let store = {
+        let storage = config.storage.clone();
+        Arc::new(
+            tokio::task::spawn_blocking(move || Store::open_with_migration(&storage))
+                .await
+                .or_system_err(&["The storage migration task panicked; check the logs."])??,
+        )
+    };
 
-    // Re-group archived exceptions if the fingerprinting rules changed since the
+    // Re-group stored exceptions if the fingerprinting rules changed since the
     // data was last processed. Runs to completion before serving; a no-op when the
     // stored rules version already matches this build.
     {
         let store = store.clone();
-        let storage = config.storage.clone();
-        tokio::task::spawn_blocking(move || ingest::regroup_if_needed(&store, &storage))
+        tokio::task::spawn_blocking(move || ingest::regroup_if_needed(&store))
             .await
             .or_system_err(&["The exception re-grouping task panicked; check the logs."])??;
     }
