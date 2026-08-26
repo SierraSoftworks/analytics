@@ -132,23 +132,48 @@ jobs:
           path: target/duckdb-download
           key: libduckdb-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
-      # Self-heal: if the library itself is missing (a pruned or evicted cache
-      # can leave the directory behind without it) while rust-cache holds a
-      # fresh libduckdb-sys fingerprint, cargo would skip the build script and
-      # the link would fail — drop the fingerprint so the script (and its
-      # download) runs again.
-      - name: Ensure libduckdb download can rerun
+      # Installing libduckdb is the build script's job, and it has to happen on
+      # every build rather than only when something looks broken. Alongside the
+      # link flags, the script copies the library into target/<profile>/deps so
+      # binaries and test executables can load it at runtime — but rust-cache
+      # deletes anything in deps/ that isn't a recognised cargo artifact when it
+      # saves, and `libduckdb.so` isn't one. Restoring such a cache leaves the
+      # build script's fingerprint intact and the library gone, so cargo skips
+      # the script, nothing re-copies it, and the binaries die with
+      # "libduckdb.so: cannot open shared object file". Conditioning the rerun on
+      # the download directory (which lives in its own cache and survives) misses
+      # this entirely.
+      #
+      # Dropping the build-script fingerprint makes cargo rerun it every time.
+      # The download itself stays cached, so the script just reuses
+      # target/duckdb-download and re-does its side effects in a second or two.
+      - name: Reinstall libduckdb on every build
         shell: bash
         run: |
-          if find target/duckdb-download \( -name 'libduckdb.so' -o -name 'libduckdb.dylib' -o -name 'duckdb.dll' \) 2>/dev/null | grep -q .; then
-            echo "prebuilt libduckdb present:"
-            find target/duckdb-download -type f | sed 's/^/  /'
+          shopt -s nullglob
+          fingerprints=(
+            target/*/.fingerprint/libduckdb-sys-*/run-build-script-*
+            target/*/*/.fingerprint/libduckdb-sys-*/run-build-script-*
+          )
+          if [ ${#fingerprints[@]} -gt 0 ]; then
+            printf 'invalidating %s\n' "${fingerprints[@]}"
+            rm -f "${fingerprints[@]}"
+            exit 0
+          fi
+
+          # The glob also comes up empty if cargo ever renames these files, which
+          # would quietly put us back to a warm cache that fails at runtime — so
+          # when a libduckdb-sys fingerprint exists but didn't match, drop all of
+          # it rather than assuming there was nothing to do.
+          stale=(
+            target/*/.fingerprint/libduckdb-sys-*
+            target/*/*/.fingerprint/libduckdb-sys-*
+          )
+          if [ ${#stale[@]} -gt 0 ]; then
+            printf 'build-script fingerprint not where expected; clearing %s\n' "${stale[@]}"
+            rm -rf "${stale[@]}"
           else
-            echo "prebuilt libduckdb missing; forcing the libduckdb-sys build script to rerun"
-            rm -rf target/*/.fingerprint/libduckdb-sys-* \
-                   target/*/*/.fingerprint/libduckdb-sys-* \
-                   target/*/build/libduckdb-sys-* \
-                   target/*/*/build/libduckdb-sys-*
+            echo "no cached libduckdb-sys fingerprint; the build script will run anyway"
           fi
 
       - name: Run tests
@@ -283,24 +308,49 @@ jobs:
           path: target/duckdb-download
           key: libduckdb-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
 
-      # Self-heal: if the library itself is missing (a pruned or evicted cache
-      # can leave the directory behind without it) while rust-cache holds a
-      # fresh libduckdb-sys fingerprint, cargo would skip the build script and
-      # the link would fail — drop the fingerprint so the script (and its
-      # download) runs again.
-      - name: Ensure libduckdb download can rerun
+      # Installing libduckdb is the build script's job, and it has to happen on
+      # every build rather than only when something looks broken. Alongside the
+      # link flags, the script copies the library into target/<profile>/deps so
+      # binaries and test executables can load it at runtime — but rust-cache
+      # deletes anything in deps/ that isn't a recognised cargo artifact when it
+      # saves, and `libduckdb.so` isn't one. Restoring such a cache leaves the
+      # build script's fingerprint intact and the library gone, so cargo skips
+      # the script, nothing re-copies it, and the binaries die with
+      # "libduckdb.so: cannot open shared object file". Conditioning the rerun on
+      # the download directory (which lives in its own cache and survives) misses
+      # this entirely.
+      #
+      # Dropping the build-script fingerprint makes cargo rerun it every time.
+      # The download itself stays cached, so the script just reuses
+      # target/duckdb-download and re-does its side effects in a second or two.
+      - name: Reinstall libduckdb on every build
         if: github.event_name != 'release'
         shell: bash
         run: |
-          if find target/duckdb-download \( -name 'libduckdb.so' -o -name 'libduckdb.dylib' -o -name 'duckdb.dll' \) 2>/dev/null | grep -q .; then
-            echo "prebuilt libduckdb present:"
-            find target/duckdb-download -type f | sed 's/^/  /'
+          shopt -s nullglob
+          fingerprints=(
+            target/*/.fingerprint/libduckdb-sys-*/run-build-script-*
+            target/*/*/.fingerprint/libduckdb-sys-*/run-build-script-*
+          )
+          if [ ${#fingerprints[@]} -gt 0 ]; then
+            printf 'invalidating %s\n' "${fingerprints[@]}"
+            rm -f "${fingerprints[@]}"
+            exit 0
+          fi
+
+          # The glob also comes up empty if cargo ever renames these files, which
+          # would quietly put us back to a warm cache that fails at runtime — so
+          # when a libduckdb-sys fingerprint exists but didn't match, drop all of
+          # it rather than assuming there was nothing to do.
+          stale=(
+            target/*/.fingerprint/libduckdb-sys-*
+            target/*/*/.fingerprint/libduckdb-sys-*
+          )
+          if [ ${#stale[@]} -gt 0 ]; then
+            printf 'build-script fingerprint not where expected; clearing %s\n' "${stale[@]}"
+            rm -rf "${stale[@]}"
           else
-            echo "prebuilt libduckdb missing; forcing the libduckdb-sys build script to rerun"
-            rm -rf target/*/.fingerprint/libduckdb-sys-* \
-                   target/*/*/.fingerprint/libduckdb-sys-* \
-                   target/*/build/libduckdb-sys-* \
-                   target/*/*/build/libduckdb-sys-*
+            echo "no cached libduckdb-sys fingerprint; the build script will run anyway"
           fi
 
       - name: cargo build
