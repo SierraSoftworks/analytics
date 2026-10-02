@@ -114,7 +114,7 @@ async fn serve(config: Config, demo: bool) -> errors::Result<()> {
         let count = demo::seed(&store)?;
         info!(
             "demo mode: injected {count} events into {}",
-            config.storage.redb_path
+            config.storage.database_path().display()
         );
     }
     #[cfg(not(debug_assertions))]

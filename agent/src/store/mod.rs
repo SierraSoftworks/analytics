@@ -37,6 +37,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use duckdb::Connection;
+use tracing_batteries::prelude::*;
 
 use crate::config::StorageConfig;
 use crate::errors::{Result, ResultExt};
@@ -86,7 +87,9 @@ impl Store {
     /// run after an upgrade, import the legacy redb hot log and Parquet archive
     /// into the database.
     pub fn open_with_migration(storage: &StorageConfig) -> Result<Self> {
-        let store = Self::open(&storage.database_path)?;
+        let database_path = storage.database_path();
+        info!("opening the database at {}", database_path.display());
+        let store = Self::open(&database_path)?;
         // Migrate first: it applies its own tighter resource settings, and the
         // instance configuration afterwards leaves the configured limits in
         // force for serving.
