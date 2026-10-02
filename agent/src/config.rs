@@ -1,9 +1,12 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::errors::{Result, ResultExt};
+
+/// File name of the DuckDB database when `storage.database_path` is unset.
+const DEFAULT_DATABASE_FILE: &str = "analytics.duckdb";
 
 /// Top-level server configuration, loaded from a YAML file.
 ///
@@ -94,8 +97,8 @@ pub struct OidcConfig {
 #[serde(default)]
 pub struct StorageConfig {
     /// Path to the DuckDB database file holding events, entities, and serving
-    /// every query.
-    pub database_path: String,
+    /// every query. When unset it resolves through [`Self::database_path`].
+    pub database_path: Option<String>,
     /// Path of the legacy redb hot store (pre-DuckDB deployments). Imported
     /// into the database on first start after an upgrade, then unused.
     pub redb_path: String,
@@ -129,7 +132,7 @@ pub struct StorageConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            database_path: "analytics.duckdb".to_string(),
+            database_path: None,
             redb_path: "analytics.redb".to_string(),
             parquet_dir: "parquet-store".to_string(),
             hot_window: Duration::from_secs(48 * 60 * 60),
@@ -138,6 +141,26 @@ impl Default for StorageConfig {
             max_auto_sources: 10_000,
             memory_limit_mb: 512,
         }
+    }
+}
+
+impl StorageConfig {
+    /// Where the database lives: the configured path or, when unset, a file
+    /// next to the legacy redb store. A config written before the DuckDB
+    /// migration only names the legacy paths, and those are what the operator
+    /// placed on persistent storage — defaulting to the working directory
+    /// instead would put the database in a container's disposable layer.
+    pub fn database_path(&self) -> PathBuf {
+        if let Some(path) = &self.database_path {
+            return PathBuf::from(path);
+        }
+        // A database already in the working directory (where earlier builds
+        // defaulted to) keeps being used rather than silently replaced.
+        let in_working_dir = PathBuf::from(DEFAULT_DATABASE_FILE);
+        if in_working_dir.exists() {
+            return in_working_dir;
+        }
+        Path::new(&self.redb_path).with_file_name(DEFAULT_DATABASE_FILE)
     }
 }
 
@@ -384,6 +407,25 @@ mod tests {
             config.storage.retention,
             Duration::from_secs(30 * 24 * 3600)
         );
+    }
+
+    #[test]
+    fn database_path_defaults_next_to_the_legacy_store() {
+        let cases = [
+            ("{}", "analytics.duckdb"),
+            (
+                "storage:\n  redb_path: /data/analytics.redb\n",
+                "/data/analytics.duckdb",
+            ),
+            (
+                "storage:\n  redb_path: /data/analytics.redb\n  database_path: /db/events.duckdb\n",
+                "/db/events.duckdb",
+            ),
+        ];
+        for (doc, expected) in cases {
+            let config = Config::from_yaml_str(doc).unwrap();
+            assert_eq!(config.storage.database_path(), Path::new(expected), "{doc}");
+        }
     }
 
     #[test]

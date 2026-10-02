@@ -2079,7 +2079,7 @@ mod prod_dump_tests {
         let _ = std::fs::remove_dir_all(&work);
         std::fs::create_dir_all(&work).unwrap();
         let storage = StorageConfig {
-            database_path: work.join("analytics.duckdb").to_string_lossy().into_owned(),
+            database_path: Some(work.join("analytics.duckdb").to_string_lossy().into_owned()),
             parquet_dir: format!("{dump}/parquet"),
             redb_path: work.join("missing.redb").to_string_lossy().into_owned(),
             ..Default::default()
@@ -2121,7 +2121,7 @@ mod prod_dump_tests {
         });
         let concurrent = t.elapsed();
 
-        let db_size = std::fs::metadata(&storage.database_path)
+        let db_size = std::fs::metadata(storage.database_path())
             .map(|m| m.len() as f64 / (1024.0 * 1024.0))
             .unwrap_or(0.0);
         println!(

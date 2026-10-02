@@ -1,19 +1,27 @@
 //! One-time migration from the pre-DuckDB stores: the redb hot log + entity
 //! tables and the date-partitioned Parquet archive.
 //!
-//! Runs only when the DuckDB `events` table is empty (a fresh database) and a
-//! legacy store exists next to it. The Parquet archive is imported by DuckDB
+//! Runs only for a database that has not been migrated yet (a fresh one) while
+//! a legacy store exists next to it. The Parquet archive is imported by DuckDB
 //! itself (`read_parquet` over the whole tree, de-duplicated by the per-event
 //! `seq` since a legacy compactor crash could leave the same events in two
 //! files); the redb hot log and entities are read through redb and re-inserted.
 //! The legacy files are left in place for the operator to remove after
 //! verifying the migration — nothing here deletes user data.
+//!
+//! A completed migration is recorded twice: in the database's `meta` table and
+//! as a marker file beside the legacy redb store. A database carrying the
+//! record is never imported into again. A marker next to a database without
+//! it means the migrated database was lost (typically `storage.database_path`
+//! on non-persistent storage), so the re-import is reported as the data loss
+//! it is rather than passing for a first-time upgrade.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use redb::{ReadableDatabase, ReadableTable, TableDefinition};
 use tracing_batteries::prelude::*;
 
+use super::entities::META;
 use super::{STORAGE_ADVICE, Store, StoredEvent};
 use crate::config::StorageConfig;
 use crate::errors::{Result, ResultExt};
@@ -23,20 +31,49 @@ const LEGACY_META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 /// Legacy entity tables and their DuckDB counterparts (same names, same JSON).
 const LEGACY_JSON_TABLES: &[&str] = &["projects", "sources", "pixels", "exception_triage"];
 
-/// Import the legacy stores into an empty database, if any exist.
+/// Import the legacy stores into a database that has not taken them yet.
 pub(super) fn migrate_if_needed(store: &Store, storage: &StorageConfig) -> Result<()> {
+    // The database records its own migration, so an intact one is never
+    // re-imported or mistaken for a lost one — not even after retention has
+    // purged its last event.
+    if store.legacy_migrated()? {
+        return Ok(());
+    }
+    let parquet = has_parquet(Path::new(&storage.parquet_dir));
+    let redb = Path::new(&storage.redb_path).exists();
+    let previous = previous_migration(storage);
+
     if store.event_count()? > 0 {
+        // Populated by a build that predates the record: adopt it as migrated.
+        if parquet || redb {
+            store.set_legacy_migrated()?;
+            record_migration(storage);
+        }
+        return Ok(());
+    }
+    if !parquet && !redb && previous.is_none() {
         return Ok(());
     }
 
-    if has_parquet(Path::new(&storage.parquet_dir)) {
+    // The marker outlives the legacy stores, so the loss is reported even
+    // once the operator has removed them and nothing is left to re-import.
+    if let Some(previous) = previous {
+        error!(
+            "the database at {} is new, but the legacy stores were already migrated ({previous}): \
+             events recorded since then are missing; make sure `storage.database_path` is on \
+             persistent storage. Re-importing whatever legacy stores remain.",
+            storage.database_path().display()
+        );
+    }
+
+    if parquet {
         let imported = import_parquet(store, &storage.parquet_dir)?;
         info!(
             "migrated {imported} events from the legacy parquet archive at {}",
             storage.parquet_dir
         );
     }
-    if Path::new(&storage.redb_path).exists() {
+    if redb {
         let (events, entities) = import_redb(store, &storage.redb_path)?;
         info!(
             "migrated {events} hot events and {entities} entities from the legacy redb store at {}",
@@ -44,7 +81,52 @@ pub(super) fn migrate_if_needed(store: &Store, storage: &StorageConfig) -> Resul
         );
     }
     store.refresh_next_seq()?;
+    store.set_legacy_migrated()?;
+    record_migration(storage);
     Ok(())
+}
+
+impl Store {
+    /// Whether this database has already taken in the legacy stores.
+    fn legacy_migrated(&self) -> Result<bool> {
+        Ok(self.get_json(META, "legacy_migrated")?.unwrap_or(false))
+    }
+
+    fn set_legacy_migrated(&self) -> Result<()> {
+        self.put_json(META, "legacy_migrated", &true)
+    }
+}
+
+/// The marker a completed migration leaves beside the legacy redb store.
+fn marker_path(storage: &StorageConfig) -> PathBuf {
+    PathBuf::from(format!("{}.migrated", storage.redb_path))
+}
+
+/// When, and into which database, the legacy stores were last migrated.
+fn previous_migration(storage: &StorageConfig) -> Option<String> {
+    std::fs::read_to_string(marker_path(storage))
+        .ok()
+        .map(|marker| marker.trim().to_string())
+}
+
+/// Record the first completed migration. Best-effort: a read-only legacy
+/// volume only costs the lost-database warning, never the migration.
+fn record_migration(storage: &StorageConfig) {
+    let marker = marker_path(storage);
+    if marker.exists() {
+        return;
+    }
+    let note = format!(
+        "at {} into {}\n",
+        chrono::Utc::now().to_rfc3339(),
+        storage.database_path().display()
+    );
+    if let Err(err) = std::fs::write(&marker, note) {
+        debug!(
+            "could not record the legacy migration at {}: {err}",
+            marker.display()
+        );
+    }
 }
 
 /// Whether `dir` contains any `.parquet` file (recursively).
@@ -301,4 +383,108 @@ fn import_redb(store: &Store, redb_path: &str) -> Result<(usize, usize)> {
     }
 
     Ok((events.len(), entities))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::EventKind;
+
+    fn event(received_ms: i64) -> StoredEvent {
+        StoredEvent {
+            created_ms: received_ms,
+            received_ms,
+            bid: "b1".to_string(),
+            kind: EventKind::PageLoad,
+            source: "https://example.com".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// A scratch directory holding a legacy redb store with one hot event.
+    fn legacy_deployment(name: &str) -> (PathBuf, StorageConfig) {
+        let dir =
+            std::env::temp_dir().join(format!("analytics-legacy-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let redb_path = dir.join("analytics.redb");
+        let db = redb::Database::create(&redb_path).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(LEGACY_EVENTS).unwrap();
+            let json = serde_json::to_vec(&event(1000)).unwrap();
+            table.insert(&b"1"[..], json.as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+
+        let storage = StorageConfig {
+            redb_path: redb_path.to_string_lossy().into_owned(),
+            parquet_dir: dir.join("parquet-store").to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        (dir, storage)
+    }
+
+    #[test]
+    fn migrates_once_into_a_database_beside_the_legacy_store() {
+        let (dir, storage) = legacy_deployment("once");
+        assert!(previous_migration(&storage).is_none());
+
+        let store = Store::open_with_migration(&storage).unwrap();
+        assert_eq!(store.event_count().unwrap(), 1);
+        assert!(storage.database_path().starts_with(&dir));
+        assert!(previous_migration(&storage).is_some());
+        store.append_events(&[event(2000)]).unwrap();
+        drop(store);
+
+        // Reopening the intact database performs no second import.
+        let reopened = Store::open_with_migration(&storage).unwrap();
+        assert_eq!(reopened.event_count().unwrap(), 2);
+
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_emptied_database_is_not_reimported() {
+        let (dir, storage) = legacy_deployment("emptied");
+        let store = Store::open_with_migration(&storage).unwrap();
+        // Retention eventually purges every migrated event.
+        store
+            .with_conn(|conn| {
+                conn.execute("DELETE FROM events", [])
+                    .or_system_err(STORAGE_ADVICE)
+            })
+            .unwrap();
+        drop(store);
+
+        let reopened = Store::open_with_migration(&storage).unwrap();
+        assert_eq!(reopened.event_count().unwrap(), 0);
+
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_lost_database_falls_back_to_the_legacy_history() {
+        let (dir, storage) = legacy_deployment("lost");
+        let store = Store::open_with_migration(&storage).unwrap();
+        store.append_events(&[event(2000)]).unwrap();
+        drop(store);
+        let migrated = previous_migration(&storage).expect("migration is recorded");
+
+        let database = storage.database_path();
+        std::fs::remove_file(&database).unwrap();
+        let _ = std::fs::remove_file(database.with_extension("duckdb.wal"));
+
+        // Only the legacy event survives, and the original migration stays on
+        // record so every later start keeps reporting the loss.
+        let store = Store::open_with_migration(&storage).unwrap();
+        assert_eq!(store.event_count().unwrap(), 1);
+        assert_eq!(previous_migration(&storage), Some(migrated));
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

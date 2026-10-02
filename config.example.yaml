@@ -27,7 +27,9 @@ web:
 
 storage:
   # The embedded DuckDB database holding events, entities, and serving queries.
-  database_path: "analytics.duckdb"
+  # Keep it on persistent storage (in a container, a mounted volume). Defaults
+  # to `analytics.duckdb` next to `redb_path`.
+  # database_path: "analytics.duckdb"
   # Legacy pre-DuckDB stores; imported into the database on first start after an
   # upgrade, then unused (safe to delete once the migration is verified).
   redb_path: "analytics.redb"
