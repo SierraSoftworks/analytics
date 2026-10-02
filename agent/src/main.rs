@@ -39,7 +39,7 @@ struct Args {
     config: String,
 
     /// Path to an environment file to load (if it exists).
-    #[arg(short, long, default_value = ".env")]
+    #[arg(short, long, default_value = ".env", env = "ANALYTICS_ENV_FILE")]
     env: String,
 
     /// Seed the store with randomly-generated, representative demo data for local

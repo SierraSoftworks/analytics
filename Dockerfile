@@ -13,4 +13,15 @@ RUN apt-get update && apt-get install -y \
 
 ADD ./analytics /usr/local/bin/analytics
 
+# The storage defaults (`storage.database_path` and friends) are relative paths,
+# so run from a dedicated volume: the database then lands on persistent storage
+# instead of the container's writable layer, where a redeploy would discard it.
+WORKDIR /data
+VOLUME /data
+
+# The config and env files are looked up relative to the working directory by
+# default; pin them to the image root, where they resolved before it moved.
+ENV ANALYTICS_CONFIG=/config.yaml
+ENV ANALYTICS_ENV_FILE=/.env
+
 ENTRYPOINT ["/usr/local/bin/analytics"]
