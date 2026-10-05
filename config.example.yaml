@@ -65,4 +65,5 @@ telemetry:
   service_name: "analytics"
   # sentry_dsn: "https://...@sentry.io/..."
   # environment: "production"
+  # Traces and CPU profiles are exported to this OpenTelemetry collector.
   # otlp_endpoint: "http://localhost:4317"
