@@ -277,12 +277,12 @@ impl Config {
             return Ok(Config::default());
         }
 
-        let mut value: serde_yaml::Value = serde_yaml::from_str(raw).wrap_user_err(
+        let mut value: serde_norway::Value = serde_norway::from_str(raw).wrap_user_err(
             "The configuration file is not valid YAML.",
             &["Check the file for syntax errors such as bad indentation or quoting."],
         )?;
         interpolate_value(&mut value)?;
-        let config: Config = serde_yaml::from_value(value).wrap_user_err(
+        let config: Config = serde_norway::from_value(value).wrap_user_err(
             "The configuration file does not match the expected schema.",
             &["Compare your configuration against config.example.yaml."],
         )?;
@@ -295,15 +295,15 @@ impl Config {
 
 /// Recursively interpolate environment placeholders in every string value of a
 /// parsed YAML document.
-fn interpolate_value(value: &mut serde_yaml::Value) -> Result<()> {
+fn interpolate_value(value: &mut serde_norway::Value) -> Result<()> {
     match value {
-        serde_yaml::Value::String(s) => *s = interpolate(s)?,
-        serde_yaml::Value::Sequence(seq) => {
+        serde_norway::Value::String(s) => *s = interpolate(s)?,
+        serde_norway::Value::Sequence(seq) => {
             for item in seq {
                 interpolate_value(item)?;
             }
         }
-        serde_yaml::Value::Mapping(map) => {
+        serde_norway::Value::Mapping(map) => {
             for (_key, val) in map.iter_mut() {
                 interpolate_value(val)?;
             }
