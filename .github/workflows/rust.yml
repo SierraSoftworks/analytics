@@ -154,6 +154,10 @@ jobs:
           fingerprints=(
             target/*/.fingerprint/libduckdb-sys-*/run-build-script-*
             target/*/*/.fingerprint/libduckdb-sys-*/run-build-script-*
+            # Rust 1.100 moved fingerprints next to each unit's output, under
+            # target/[<triple>/]<profile>/build/<package>/<hash>/fingerprint.
+            target/*/build/libduckdb-sys/*/fingerprint/run-build-script-*
+            target/*/*/build/libduckdb-sys/*/fingerprint/run-build-script-*
           )
           if [ ${#fingerprints[@]} -gt 0 ]; then
             printf 'invalidating %s\n' "${fingerprints[@]}"
@@ -168,6 +172,8 @@ jobs:
           stale=(
             target/*/.fingerprint/libduckdb-sys-*
             target/*/*/.fingerprint/libduckdb-sys-*
+            target/*/build/libduckdb-sys/*/fingerprint
+            target/*/*/build/libduckdb-sys/*/fingerprint
           )
           if [ ${#stale[@]} -gt 0 ]; then
             printf 'build-script fingerprint not where expected; clearing %s\n' "${stale[@]}"
@@ -334,6 +340,10 @@ jobs:
           fingerprints=(
             target/*/.fingerprint/libduckdb-sys-*/run-build-script-*
             target/*/*/.fingerprint/libduckdb-sys-*/run-build-script-*
+            # Rust 1.100 moved fingerprints next to each unit's output, under
+            # target/[<triple>/]<profile>/build/<package>/<hash>/fingerprint.
+            target/*/build/libduckdb-sys/*/fingerprint/run-build-script-*
+            target/*/*/build/libduckdb-sys/*/fingerprint/run-build-script-*
           )
           if [ ${#fingerprints[@]} -gt 0 ]; then
             printf 'invalidating %s\n' "${fingerprints[@]}"
@@ -348,6 +358,8 @@ jobs:
           stale=(
             target/*/.fingerprint/libduckdb-sys-*
             target/*/*/.fingerprint/libduckdb-sys-*
+            target/*/build/libduckdb-sys/*/fingerprint
+            target/*/*/build/libduckdb-sys/*/fingerprint
           )
           if [ ${#stale[@]} -gt 0 ]; then
             printf 'build-script fingerprint not where expected; clearing %s\n' "${stale[@]}"
