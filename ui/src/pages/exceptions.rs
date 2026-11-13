@@ -11,8 +11,7 @@ use analytics_api::{ExceptionStatus, GlobalException};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 use yewi::prelude::{
-    EmptyState, PageHeader, Pill, Tab, Tabs, Text, TextColor, TextInput, TextInputKind, TextSize,
-    Tone, attrs, icons,
+    EmptyState, PageHeader, Pill, Tab, Tabs, Text, TextColor, TextSize, Tone, attrs, icons,
 };
 
 use crate::api::{self, ApiError};
@@ -26,10 +25,10 @@ use crate::filters::{Dim, use_filters, use_navigate_with_query};
 use crate::format::{ago, group_thousands};
 
 thread_local! {
-    /// The last-used status tab and text filter, so a detail round-trip (or any
+    /// The last-used status tab, so a detail round-trip (or any
     /// navigation) restores the inbox the way the operator left it.
-    static INBOX_VIEW: RefCell<(StatusTab, String)> =
-        const { RefCell::new((StatusTab::Unresolved, String::new())) };
+    static INBOX_VIEW: RefCell<StatusTab> =
+        const { RefCell::new(StatusTab::Unresolved) };
 }
 
 /// The status tabs across the top of the inbox.
@@ -86,8 +85,7 @@ pub fn exceptions() -> Html {
         .map(|c| c.projects.clone())
         .unwrap_or_default();
     let data = use_state(|| None::<Result<Vec<GlobalException>, ApiError>>);
-    let tab = use_state(|| INBOX_VIEW.with(|v| v.borrow().0));
-    let needle = use_state(|| INBOX_VIEW.with(|v| v.borrow().1.clone()));
+    let tab = use_state(|| INBOX_VIEW.with(|v| *v.borrow()));
     // Only the latest request may publish (out-of-order responses would show
     // data that disagrees with the active chips).
     let fetch_seq = use_mut_ref(|| 0u64);
@@ -111,14 +109,6 @@ pub fn exceptions() -> Html {
             || ()
         });
     }
-
-    let on_needle = {
-        let needle = needle.clone();
-        Callback::from(move |value: String| {
-            INBOX_VIEW.with(|v| v.borrow_mut().1 = value.clone());
-            needle.set(value);
-        })
-    };
 
     // Suggestions for the (restricted) filter chips on this page: the full
     // project list (filters address projects by name) and the sources seen in
@@ -155,7 +145,6 @@ pub fn exceptions() -> Html {
         None => loading(),
         Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
         Some(Ok(list)) => {
-            let text = needle.to_lowercase();
             let mut counts = [0usize; 4];
             for e in list {
                 for (i, t) in StatusTab::ALL.into_iter().enumerate() {
@@ -168,16 +157,6 @@ pub fn exceptions() -> Html {
             let visible: Vec<&GlobalException> = list
                 .iter()
                 .filter(|e| tab.matches(e.group.status))
-                .filter(|e| {
-                    text.is_empty()
-                        || e.group.exc_type.to_lowercase().contains(&text)
-                        || e.group.sample_message.to_lowercase().contains(&text)
-                        || e.project_name
-                            .as_deref()
-                            .unwrap_or("")
-                            .to_lowercase()
-                            .contains(&text)
-                })
                 .collect();
 
             // The list is the page's content, so it sits flat under the tabs
@@ -208,7 +187,7 @@ pub fn exceptions() -> Html {
                         .into_iter()
                         .find(|t| t.token() == value.as_str())
                     {
-                        INBOX_VIEW.with(|v| v.borrow_mut().0 = t);
+                        INBOX_VIEW.with(|v| *v.borrow_mut() = t);
                         tab.set(t);
                     }
                 })
@@ -220,14 +199,7 @@ pub fn exceptions() -> Html {
         }
     };
 
-    let actions = html! {
-        <>
-            <TextInput kind={TextInputKind::Search} placeholder="Filter by type, message, project…"
-                value={(*needle).clone()} on_input={on_needle} class="page-search"
-                attrs={attrs! { "aria-label" => "Filter exceptions" }} />
-            <RangeSelect />
-        </>
-    };
+    let actions = html! { <RangeSelect /> };
 
     html! {
         <div class="page">

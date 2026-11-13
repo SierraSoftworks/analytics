@@ -395,6 +395,15 @@ fn query_bar(props: &QueryBarProps) -> Html {
                 .description(dim.label())
                 .values(values.into_iter().filter(|v| !v.is_empty()))
         })
+        // Exception-only fields have no chip, so the query bar is where they
+        // are filtered: `type == "panic"`, `message like "*refused*"`.
+        .chain([
+            QueryField::new("type").description("Exception type"),
+            QueryField::new("message").description("Exception message"),
+            QueryField::new("handled")
+                .description("Handled exception")
+                .values(["true", "false"].map(String::from)),
+        ])
         .collect();
 
     html! {

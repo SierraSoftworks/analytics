@@ -456,23 +456,23 @@
 // What a detail page says about its subject before the breakdowns start.
 .detail-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: var(--yi-space-sm) var(--yi-space-2xl);
+  flex-direction: column;
+  gap: var(--yi-space-sm);
 
   p {
     margin: 0;
   }
 
+  // The trend runs the full width of the page, above the summary line.
   &__trend {
+    order: -1;
     display: flex;
-    align-items: center;
-    gap: var(--yi-space-md);
+    flex-direction: column;
+    gap: var(--yi-space-xs);
 
     .yi-sparkline {
-      width: 14rem;
-      height: 2rem;
+      width: 100%;
+      height: 4.5rem;
     }
   }
 }
