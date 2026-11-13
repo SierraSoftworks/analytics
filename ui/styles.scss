@@ -282,16 +282,21 @@
   }
 }
 
-// The breakdowns: two to a row, each its own tabbed list, flat on the page.
+// The breakdowns: two to a row, each its own tabbed list on a card.
 .panel-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--yi-space-2xl) var(--yi-space-3xl);
+  gap: var(--yi-space-lg);
   align-items: start;
 }
 
 .breakdown {
   min-width: 0;
+  padding: var(--yi-space-md);
+  background: var(--yi-surface);
+  border: 1px solid var(--yi-card-line);
+  border-radius: var(--yi-radius-card);
+  box-shadow: var(--yi-shadow-card);
   // Enough room that a short tab does not pull the row below it up.
   min-height: 14rem;
 
