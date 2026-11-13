@@ -8,21 +8,22 @@
 //! seen on — carried as a `?source=` query parameter alongside the filter
 //! state.
 
-use analytics_api::{
-    ExceptionGroupDetail, ExceptionVariant, TriageInput, source_label,
-};
+use analytics_api::{ExceptionGroupDetail, ExceptionVariant, TriageInput, source_label};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 use yew_router::prelude::use_location;
+use yewi::prelude::{
+    Button, ButtonGroup, CodeBlock, Heading, HeadingLevel, InlineCode, NavTarget, PageHeader, Pill,
+    Size, Text, TextColor, TextSize, TextTag, Tone, icons,
+};
 
 use crate::api::{self, ApiError};
 use crate::app::Route;
 use crate::components::metadata::Metadata;
-use crate::components::status::{status_class, status_label};
-use crate::components::{
-    ApiErrorAlert, Crumb, PageHeader, Sparkline, TraceList, distribution, icons,
-};
-use crate::filters::{query_param, use_filters, use_navigate_with_filters};
+use crate::components::page::{crumbs, loading};
+use crate::components::status::status_pill;
+use crate::components::{ApiErrorAlert, Scrubber, Sparkline, TraceList, distribution};
+use crate::filters::{query_param, use_filters};
 use crate::format::{ago, group_thousands, short_session_id};
 
 #[derive(Properties, PartialEq)]
@@ -100,90 +101,49 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
         }
     };
 
-    let header_actions = match (&source, &*detail) {
+    let actions = match (&source, &*detail) {
         (Some(_), Some(Ok(detail))) => {
-            let status = detail.group.status;
-            let button = |class: &'static str, label: &'static str, icon: Html, onclick| {
-                html! {
-                    <button
-                        class={classes!("exc-action", class)}
-                        title={label}
-                        aria-label={label}
-                        onclick={onclick}
-                    >
-                        { icon }
-                    </button>
-                }
-            };
             // Two independent controls: resolution and suppression. Each reflects
             // its own axis, so a group can be (e.g.) resolved *and* muted at once.
             let resolution = if detail.group.resolved {
-                button(
-                    "exc-action--reopen",
-                    "Reopen",
-                    icons::check_struck(),
-                    set_axis(Some(false), None),
-                )
+                html! { <Button icon={icons::UNDO_2} on_click={set_axis(Some(false), None)}>{ "Reopen" }</Button> }
             } else {
-                button(
-                    "exc-action--resolve",
-                    "Mark resolved",
-                    icons::check(),
-                    set_axis(Some(true), None),
-                )
+                html! { <Button icon={icons::CHECK} on_click={set_axis(Some(true), None)}>{ "Resolve" }</Button> }
             };
             let suppression = if detail.group.muted {
-                button(
-                    "exc-action--ignore",
-                    "Unmute",
-                    icons::bell(),
-                    set_axis(None, Some(false)),
-                )
+                html! { <Button icon={icons::BELL} on_click={set_axis(None, Some(false))}>{ "Unmute" }</Button> }
             } else {
-                button(
-                    "exc-action--ignore",
-                    "Mute",
-                    icons::mute(),
-                    set_axis(None, Some(true)),
-                )
+                html! { <Button icon={icons::BELL_OFF} on_click={set_axis(None, Some(true))}>{ "Mute" }</Button> }
             };
-            html! {
-                <>
-                    <span class={status_class(status)}>{ status_label(status) }</span>
-                    <div class="exc-head__actions" role="group" aria-label="Triage">
-                        { resolution }
-                        { suppression }
-                    </div>
-                </>
-            }
+            html! { <ButtonGroup label="Triage">{ resolution }{ suppression }</ButtonGroup> }
         }
         _ => html! {},
     };
 
-    
     let title = match &*detail {
         Some(Ok(d)) => d.group.exc_type.clone(),
         _ => "Exception".to_string(),
     };
     let subtitle = match &*detail {
-        Some(Ok(d)) => Some(d.group.sample_message.clone()),
-        _ => None,
+        Some(Ok(d)) => html! { { d.group.sample_message.clone() } },
+        _ => html! {},
     };
-    let crumbs = vec![
-        Crumb::link_with_query("Exceptions", Route::Exceptions, filters.to_pairs()),
-        Crumb::current(title.clone()),
-    ];
+    let meta = match &*detail {
+        Some(Ok(d)) => status_pill(d.group.status),
+        _ => html! {},
+    };
+    let breadcrumbs = crumbs("Exceptions", Route::Exceptions, &filters, &title);
 
     let body = match (&source, &*detail) {
         (None, _) => html! {
             <ApiErrorAlert error={ApiError::Server(
-                "This exception link is missing its source — open the group from the Exceptions inbox.".into()
+                "This exception link is missing its source. Open the group from the Exceptions inbox.".into()
             )} />
         },
-        (Some(_), None) => html! { <div class="page-loading">{ "Loading…" }</div> },
-        (Some(_), Some(Err(err))) => html! {  <ApiErrorAlert error={err.clone()} /> },
+        (Some(_), None) => loading(),
+        (Some(_), Some(Err(err))) => html! { <ApiErrorAlert error={err.clone()} /> },
         (Some(source), Some(Ok(detail))) => {
-            let meta = format!(
+            let summary = format!(
                 "{} · {} occurrences · first seen {} · last seen {}",
                 source_label(source),
                 group_thousands(detail.group.count),
@@ -192,32 +152,29 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
             );
             html! {
                 <>
-                    <div class="exc-head panel">
+                    <section class="detail-head">
+                        <Text tag={TextTag::P} color={TextColor::Muted}>{ summary }</Text>
                         if !detail.group.trend.is_empty() {
-                            <div class="exc-head__trend">
-                                <span class="stat__label">{ range_label.clone() }</span>
-                                <Sparkline points={detail.group.trend.clone()} class={classes!("exc-head__spark")} />
+                            <div class="detail-head__trend">
+                                <Text size={TextSize::Xs} color={TextColor::Subtle} class="eyebrow">
+                                    { range_label.clone() }
+                                </Text>
+                                <Sparkline points={detail.group.trend.clone()} tone={Tone::Danger} />
                             </div>
                         }
-                        <div class="exc-head__meta muted">{ meta }</div>
+                    </section>
 
-                        /*
-                        <div class="exc-head__top">
-                            <span class="exc-head__title">
-                                <b class="exc-head__type">{ &detail.group.exc_type }</b>
-                                <code class="exc-head__message">{ &detail.group.sample_message }</code>
-                            </span>
+                    <section class="section">
+                        <header class="section__head">
+                            <Heading level={HeadingLevel::H2} size={TextSize::Md}>{ "Distribution" }</Heading>
+                        </header>
+                        <div class="dist-grid">
+                            { distribution("App versions", &detail.breakdowns.app_versions, detail.group.count, Tone::Danger) }
+                            { distribution("Applications", &detail.breakdowns.browsers, detail.group.count, Tone::Danger) }
+                            { distribution("Operating systems", &detail.breakdowns.operating_systems, detail.group.count, Tone::Danger) }
+                            { distribution("Devices", &detail.breakdowns.devices, detail.group.count, Tone::Danger) }
                         </div>
-                         */
-                    </div>
-
-                    <h2 class="section__title">{ "Distribution" }</h2>
-                    <div class="dist-grid">
-                        { distribution("App versions", &detail.breakdowns.app_versions, detail.group.count) }
-                        { distribution("Applications", &detail.breakdowns.browsers, detail.group.count) }
-                        { distribution("Operating systems", &detail.breakdowns.operating_systems, detail.group.count) }
-                        { distribution("Devices", &detail.breakdowns.devices, detail.group.count) }
-                    </div>
+                    </section>
 
                     <VariantScrubber
                         variants={detail.variants.clone()}
@@ -235,9 +192,7 @@ pub fn exception_detail(props: &ExceptionDetailProps) -> Html {
 
     html! {
         <div class="page">
-            <PageHeader crumbs={crumbs} title={title} subtitle={subtitle}>
-                { header_actions }
-            </PageHeader>
+            <PageHeader {title} {subtitle} {breadcrumbs} {meta} {actions} />
             { body }
         </div>
     }
@@ -248,26 +203,21 @@ struct VariantScrubberProps {
     variants: Vec<ExceptionVariant>,
 }
 
-/// Scrub through a group's distinct examples with ‹ › navigation; each shows
+/// Scrub through a group's distinct examples; each shows
 /// how many identical occurrences it represents.
 #[function_component(VariantScrubber)]
 fn variant_scrubber(props: &VariantScrubberProps) -> Html {
     let index = use_state(|| 0usize);
     let filters = use_filters();
-    let navigate = use_navigate_with_filters();
     let count = props.variants.len();
     if count == 0 {
         return html! {};
     }
     let i = (*index).min(count - 1);
     let variant = &props.variants[i];
-
-    let go = |delta: i64| {
+    let on_change = {
         let index = index.clone();
-        Callback::from(move |_: MouseEvent| {
-            let next = (i as i64 + delta).rem_euclid(count as i64) as usize;
-            index.set(next);
-        })
+        Callback::from(move |next: usize| index.set(next))
     };
 
     let ua = match (&variant.ua_browser, &variant.ua_os) {
@@ -285,62 +235,41 @@ fn variant_scrubber(props: &VariantScrubberProps) -> Html {
 
     // Jump to the session this exemplar occurred in, when it reported one.
     let trace_link = variant.session_id.as_ref().map(|sid| {
-        let onclick = {
-            let (navigate, filters) = (navigate.clone(), filters.clone());
-            let id = sid.clone();
-            Callback::from(move |_: MouseEvent| {
-                navigate.emit((Route::Trace { id: id.clone() }, filters.clone()));
-            })
-        };
+        let href = NavTarget::route(Route::Trace { id: sid.clone() }).query(filters.to_pairs());
         html! {
-            <button class="btn btn--small" onclick={onclick}
-                title={format!("Open session {}", short_session_id(sid))}>
+            <Button size={Size::Small} {href}
+                attrs={yewi::attrs! { "title" => format!("Open session {}", short_session_id(sid)) }}>
                 { "View session trace" }
-            </button>
+            </Button>
         }
     });
 
     html! {
-        <>
-            <div class="section__title exc-variants__head">
-                <h2 class="section__title">{ "Distinct examples" }</h2>
-                <div class="exc-variants__nav">
-                    <button class="btn btn--small" onclick={go(-1)} disabled={count <= 1}
-                        aria-label="Previous example">
-                        { icons::chevron_left() }
-                    </button>
-                    <span class="exc-variants__pos">{ format!("{} of {}", i + 1, count) }</span>
-                    <button class="btn btn--small" onclick={go(1)} disabled={count <= 1}
-                        aria-label="Next example">
-                        { icons::chevron_right() }
-                    </button>
-                </div>
-            </div>
-            <div class="occurrence exc-variant">
-                <div class="occurrence__meta">
-                    <span class="badge badge--brand" title="Occurrences sharing this exact message and stack trace">
-                        { format!("×{} occurrence{}", group_thousands(variant.count), if variant.count == 1 { "" } else { "s" }) }
-                    </span>
-                    <span>{ ua }</span>
-                    if let Some(app) = app {
-                        <span class="exc-variant__app"><code>{ app }</code></span>
-                    }
-                    <span class={classes!("badge", if variant.handled { "badge--muted" } else { "badge--warn" })}>
-                        { if variant.handled { "handled" } else { "unhandled" } }
-                    </span>
-                    <span class="muted">{ format!("last seen {}", ago(variant.last_seen_ms)) }</span>
-                    // Set apart from the descriptive metadata, at the row's end.
-                    <span class="occurrence__actions">{ trace_link }</span>
-                </div>
-                <div class="occurrence__body">{ &variant.message }</div>
-                if !metadata.tags.is_empty() {
-                    <div class="occurrence__message">{ metadata.tag_pills() }</div>
+        <Scrubber {count} index={i} {on_change}>
+            <div class="example__meta">
+                <Pill dot=false tone={Tone::Info}
+                    attrs={yewi::attrs! { "title" => "Occurrences sharing this exact message and stack trace" }}>
+                    { format!("×{} occurrence{}", group_thousands(variant.count), if variant.count == 1 { "" } else { "s" }) }
+                </Pill>
+                <span>{ ua }</span>
+                if let Some(app) = app {
+                    <InlineCode>{ app }</InlineCode>
                 }
-                { metadata.context_list() }
-                if let Some(stack) = &variant.stack {
-                    <pre class="stack">{ stack }</pre>
-                }
+                <Pill dot=false tone={if variant.handled { Tone::Neutral } else { Tone::Warn }}>
+                    { if variant.handled { "handled" } else { "unhandled" } }
+                </Pill>
+                <Text color={TextColor::Subtle}>{ format!("last seen {}", ago(variant.last_seen_ms)) }</Text>
+                // Set apart from the descriptive metadata, at the row's end.
+                <span class="example__actions">{ trace_link }</span>
             </div>
-        </>
+            <p class="example__message">{ &variant.message }</p>
+            if !metadata.tags.is_empty() {
+                <div class="example__tags">{ metadata.tag_pills() }</div>
+            }
+            { metadata.context_list() }
+            if let Some(stack) = &variant.stack {
+                <CodeBlock code={stack.clone()} wrap=true copy_label="Copy stack trace" />
+            }
+        </Scrubber>
     }
 }

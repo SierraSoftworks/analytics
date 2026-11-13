@@ -14,20 +14,6 @@ pub fn group_thousands(n: i64) -> String {
     if n < 0 { format!("-{out}") } else { out }
 }
 
-/// A compact count for dense panels: `982`, `12.3k`, `4.1M`.
-pub fn compact(n: i64) -> String {
-    let abs = n.abs() as f64;
-    if abs >= 1_000_000.0 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if abs >= 10_000.0 {
-        format!("{:.0}k", n as f64 / 1_000.0)
-    } else if abs >= 1_000.0 {
-        format!("{:.1}k", n as f64 / 1_000.0)
-    } else {
-        n.to_string()
-    }
-}
-
 pub fn format_duration(ms: i64) -> String {
     if ms >= 60_000 {
         format!("{}m {}s", ms / 60_000, (ms % 60_000) / 1000)
@@ -58,15 +44,16 @@ pub fn delta_percent(current: f64, previous: f64) -> Option<f64> {
     (previous.abs() > f64::EPSILON).then(|| (current - previous) / previous * 100.0)
 }
 
-/// Format an epoch-millis instant for an axis label, sized to the bucket width:
-/// time-of-day for hourly (and finer) buckets, a date otherwise — a 6-hour or
-/// daily series labelled by time-of-day would repeat the same few times.
-pub fn axis_label(ms: i64, bucket_ms: i64) -> String {
+/// Format an epoch-millis instant for a chart position (its axis label and
+/// its tooltip heading): the date, plus the time of day when buckets are
+/// sub-day — a 6-hour series labelled by date alone would repeat itself.
+pub fn chart_label(ms: i64, bucket_ms: i64) -> String {
     let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms as f64));
-    if bucket_ms <= 3_600_000 {
-        format!("{:02}:{:02}", date.get_hours(), date.get_minutes())
+    let day = format!("{} {}", month_short(date.get_month()), date.get_date());
+    if bucket_ms < 86_400_000 {
+        format!("{day}, {:02}:{:02}", date.get_hours(), date.get_minutes())
     } else {
-        format!("{} {}", month_short(date.get_month()), date.get_date())
+        day
     }
 }
 

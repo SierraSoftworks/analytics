@@ -1,9 +1,13 @@
-//! The minimal public chrome (brand header) wrapping the signed-out screens:
-//! the sign-in page and the 404. The signed-in app uses [`AppShell`] instead.
+//! The minimal public chrome (brand bar, no navigation) wrapping the
+//! signed-out screens: loading, sign-in, and session errors. The signed-in app
+//! uses [`AppShell`] instead.
 //!
 //! [`AppShell`]: crate::components::AppShell
 
 use yew::prelude::*;
+use yewi::prelude::{AppBar, AppShell as Shell, ThemeToggle};
+
+use crate::components::shell::{brand, footer};
 
 #[derive(Properties, PartialEq)]
 pub struct PublicLayoutProps {
@@ -13,13 +17,11 @@ pub struct PublicLayoutProps {
 
 #[function_component(PublicLayout)]
 pub fn public_layout(props: &PublicLayoutProps) -> Html {
+    let bar = html! { <AppBar brand={brand()} actions={html! { <ThemeToggle /> }} /> };
     html! {
-        <div class="public-shell">
-            <div class="public-header">
-                <img src="https://cdn.sierrasoftworks.com/logos/icon.svg" alt="Sierra Softworks" />
-                <span>{ "Analytics" }</span>
-            </div>
-            { props.children.clone() }
-        </div>
+        <Shell {bar} class="app-shell app-shell--bare">
+            <div class="center-screen">{ props.children.clone() }</div>
+            { footer() }
+        </Shell>
     }
 }

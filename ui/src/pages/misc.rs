@@ -1,6 +1,7 @@
 use yew::prelude::*;
+use yewi::prelude::{Button, ButtonVariant, EmptyState, InlineCode, NavTarget, icons};
 
-use crate::app::AuthHandle;
+use crate::app::{AuthHandle, Route};
 
 /// True if the URL carries `?auth_error=oidc_disabled`, set by the server when a
 /// sign-in is attempted with no identity provider configured.
@@ -19,47 +20,41 @@ pub fn login() -> Html {
     // the configuration requirement instead of offering a dead-end button.
     if oidc_disabled() {
         return html! {
-            <div class="center-screen">
-                <div class="auth-card">
-                    <h1>{ "Sign-in unavailable" }</h1>
-                    <p>{ "This server has no identity provider configured, so it cannot sign you in." }</p>
-                    <p>
-                        { "To run without OIDC, set an allow-all admin ACL (" }
-                        <code>{ "acl: \"true\"" }</code>
-                        { ") so the dashboard is reachable without authentication." }
-                    </p>
-                </div>
-            </div>
+            <EmptyState title="Sign-in unavailable" icon={icons::LOCK}>
+                <p>{ "This server has no identity provider configured, so it cannot sign you in." }</p>
+                <p>
+                    { "To run without OIDC, set an allow-all admin ACL (" }
+                    <InlineCode>{ "acl: \"true\"" }</InlineCode>
+                    { ") so the dashboard is reachable without authentication." }
+                </p>
+            </EmptyState>
         };
     }
 
-    let onclick = {
+    let on_click = {
         let login = auth.as_ref().map(|a| a.login.clone());
-        Callback::from(move |_| {
+        Callback::from(move |_: MouseEvent| {
             if let Some(login) = &login {
                 login.emit(());
             }
         })
     };
+    let actions = html! {
+        <Button variant={ButtonVariant::Primary} {on_click}>{ "Sign in with your identity provider" }</Button>
+    };
     html! {
-        <div class="center-screen">
-            <div class="auth-card">
-                <h1>{ "Sign in" }</h1>
-                <p>{ "Authentication is required to view the dashboard." }</p>
-                <button class="btn btn--primary" {onclick}>{ "Sign in with your identity provider" }</button>
-            </div>
-        </div>
+        <EmptyState title="Sign in" icon={icons::LOCK} {actions}>
+            { "Authentication is required to view the dashboard." }
+        </EmptyState>
     }
 }
 
 #[function_component(NotFound)]
 pub fn not_found() -> Html {
+    let actions = html! { <Button href={NavTarget::route(Route::Overview)}>{ "Back to the dashboard" }</Button> };
     html! {
-        <div class="center-screen">
-            <div class="auth-card">
-                <h1>{ "404" }</h1>
-                <p>{ "That page could not be found." }</p>
-            </div>
-        </div>
+        <EmptyState title="Page not found" icon={icons::SEARCH_X} {actions}>
+            { "That page could not be found." }
+        </EmptyState>
     }
 }

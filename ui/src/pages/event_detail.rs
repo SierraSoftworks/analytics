@@ -13,14 +13,17 @@ use analytics_api::{CountRow, EventDetail as EventDetailData, EventVariant, sour
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 use yew_router::prelude::use_location;
+use yewi::prelude::{
+    Button, Heading, HeadingLevel, InlineCode, NavTarget, PageHeader, Pill, Size, Text, TextColor,
+    TextSize, TextTag, Tone,
+};
 
 use crate::api::{self, ApiError};
 use crate::app::Route;
 use crate::components::metadata::Metadata;
-use crate::components::{
-    ApiErrorAlert, Crumb, PageHeader, Sparkline, TraceList, distribution, icons,
-};
-use crate::filters::{query_param, use_filters, use_navigate_with_filters};
+use crate::components::page::{crumbs, loading};
+use crate::components::{ApiErrorAlert, Scrubber, Sparkline, TraceList, distribution};
+use crate::filters::{query_param, use_filters};
 use crate::format::{
     ago, country_flag, country_name, group_thousands, language_name, short_session_id,
 };
@@ -58,57 +61,55 @@ pub fn event_detail() -> Html {
     } else {
         name.clone()
     };
-    let crumbs = vec![
-        Crumb::link_with_query("Dashboard", Route::Overview, filters.to_pairs()),
-        Crumb::current(title.clone()),
-    ];
+    let breadcrumbs = crumbs("Dashboard", Route::Overview, &filters, &title);
 
     let body = if name.is_empty() {
         html! {
             <ApiErrorAlert error={ApiError::Server(
-                "No event was specified — open this page from the dashboard's Events panel.".into()
+                "No event was specified. Open this page from the dashboard's Events panel.".into()
             )} />
         }
     } else {
         match &*detail {
-            None => html! { <div class="page-loading">{ "Loading…" }</div> },
+            None => loading(),
             Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
             Some(Ok(detail)) => {
-                let meta = format!(
+                let summary = format!(
                     "{} occurrences · first seen {} · last seen {}",
                     group_thousands(detail.count),
                     ago(detail.first_seen_ms),
                     ago(detail.last_seen_ms),
                 );
+                // Accent-coloured bars: event volume is traffic, not trouble.
+                let tone = Tone::Neutral;
                 html! {
                     <>
-                        <div class="exc-head panel">
-                            <div class="exc-head__top">
-                                <span class="badge badge--brand">{ "Event" }</span>
-                                <span class="exc-head__title">
-                                    <b class="exc-head__type">{ &detail.name }</b>
-                                </span>
-                            </div>
-                            <div class="exc-head__meta muted">{ meta }</div>
+                        <section class="detail-head">
+                            <Text tag={TextTag::P} color={TextColor::Muted}>{ summary }</Text>
                             if !detail.trend.is_empty() {
-                                <div class="exc-head__trend">
-                                    <span class="stat__label">{ range_label.clone() }</span>
-                                    <Sparkline points={detail.trend.clone()} class={classes!("exc-head__spark", "exc-head__spark--brand")} />
+                                <div class="detail-head__trend">
+                                    <Text size={TextSize::Xs} color={TextColor::Subtle} class="eyebrow">
+                                        { range_label.clone() }
+                                    </Text>
+                                    <Sparkline points={detail.trend.clone()} />
                                 </div>
                             }
-                        </div>
+                        </section>
 
-                        <h2 class="section__title">{ "Distribution" }</h2>
-                        // Brand-tinted bars: event volume is traffic, not trouble.
-                        <div class="dist-grid dist-grid--brand">
-                            { distribution("Apps / sources", &sources_named(&detail.breakdowns.sources), detail.count) }
-                            { distribution("Pages", &detail.breakdowns.pages, detail.count) }
-                            { distribution("Applications", &detail.breakdowns.browsers, detail.count) }
-                            { distribution("Operating systems", &detail.breakdowns.operating_systems, detail.count) }
-                            { distribution("Devices", &detail.breakdowns.devices, detail.count) }
-                            { distribution("Countries", &countries_named(&detail.breakdowns.countries), detail.count) }
-                            { distribution("Languages", &languages_named(&detail.breakdowns.languages), detail.count) }
-                        </div>
+                        <section class="section">
+                            <header class="section__head">
+                                <Heading level={HeadingLevel::H2} size={TextSize::Md}>{ "Distribution" }</Heading>
+                            </header>
+                            <div class="dist-grid">
+                                { distribution("Apps / sources", &sources_named(&detail.breakdowns.sources), detail.count, tone) }
+                                { distribution("Pages", &detail.breakdowns.pages, detail.count, tone) }
+                                { distribution("Applications", &detail.breakdowns.browsers, detail.count, tone) }
+                                { distribution("Operating systems", &detail.breakdowns.operating_systems, detail.count, tone) }
+                                { distribution("Devices", &detail.breakdowns.devices, detail.count, tone) }
+                                { distribution("Countries", &countries_named(&detail.breakdowns.countries), detail.count, tone) }
+                                { distribution("Languages", &languages_named(&detail.breakdowns.languages), detail.count, tone) }
+                            </div>
+                        </section>
 
                         <VariantScrubber variants={detail.variants.clone()} key={detail.name.clone()} />
                         // Pick which of the event's sessions to inspect.
@@ -124,7 +125,7 @@ pub fn event_detail() -> Html {
 
     html! {
         <div class="page">
-            <PageHeader crumbs={crumbs} title={title} />
+            <PageHeader {title} {breadcrumbs} meta={html! { <Pill dot=false tone={Tone::Info}>{ "Event" }</Pill> }} />
             { body }
         </div>
     }
@@ -181,26 +182,21 @@ struct VariantScrubberProps {
     variants: Vec<EventVariant>,
 }
 
-/// Scrub through the event's distinct examples with ‹ › navigation; each shows
+/// Scrub through the event's distinct examples; each shows
 /// how many occurrences share its exact metadata.
 #[function_component(VariantScrubber)]
 fn variant_scrubber(props: &VariantScrubberProps) -> Html {
     let index = use_state(|| 0usize);
     let filters = use_filters();
-    let navigate = use_navigate_with_filters();
     let count = props.variants.len();
     if count == 0 {
         return html! {};
     }
     let i = (*index).min(count - 1);
     let variant = &props.variants[i];
-
-    let go = |delta: i64| {
+    let on_change = {
         let index = index.clone();
-        Callback::from(move |_: MouseEvent| {
-            let next = (i as i64 + delta).rem_euclid(count as i64) as usize;
-            index.set(next);
-        })
+        Callback::from(move |next: usize| index.set(next))
     };
 
     let ua = match (&variant.ua_browser, &variant.ua_os) {
@@ -221,60 +217,37 @@ fn variant_scrubber(props: &VariantScrubberProps) -> Html {
 
     // Jump to the session this exemplar occurred in, when it reported one.
     let trace_link = variant.session_id.as_ref().map(|sid| {
-        let onclick = {
-            let (navigate, filters) = (navigate.clone(), filters.clone());
-            let id = sid.clone();
-            Callback::from(move |_: MouseEvent| {
-                navigate.emit((Route::Trace { id: id.clone() }, filters.clone()));
-            })
-        };
+        let href = NavTarget::route(Route::Trace { id: sid.clone() }).query(filters.to_pairs());
         html! {
-            <button class="btn btn--small" onclick={onclick}
-                title={format!("Open session {}", short_session_id(sid))}>
+            <Button size={Size::Small} {href}
+                attrs={yewi::attrs! { "title" => format!("Open session {}", short_session_id(sid)) }}>
                 { "View session trace" }
-            </button>
+            </Button>
         }
     });
 
     html! {
-        <>
-            <div class="section__title exc-variants__head">
-                <h2 class="section__title">{ "Distinct examples" }</h2>
-                <div class="exc-variants__nav">
-                    <button class="btn btn--small" onclick={go(-1)} disabled={count <= 1}
-                        aria-label="Previous example">
-                        { icons::chevron_left() }
-                    </button>
-                    <span class="exc-variants__pos">{ format!("{} of {}", i + 1, count) }</span>
-                    <button class="btn btn--small" onclick={go(1)} disabled={count <= 1}
-                        aria-label="Next example">
-                        { icons::chevron_right() }
-                    </button>
-                </div>
-            </div>
-            <div class="occurrence exc-variant">
-                <div class="occurrence__meta">
-                    <span class="badge badge--brand" title="Occurrences sharing this exact metadata">
-                        { format!("×{} occurrence{}", group_thousands(variant.count), if variant.count == 1 { "" } else { "s" }) }
-                    </span>
-                    <span>{ ua }</span>
-                    if let Some(fired_at) = fired_at {
-                        <span class="exc-variant__app"><code>{ fired_at }</code></span>
-                    }
-                    <span class="muted">{ format!("last seen {}", ago(variant.last_seen_ms)) }</span>
-                    // Set apart from the descriptive metadata, at the row's end.
-                    <span class="occurrence__actions">{ trace_link }</span>
-                </div>
-                if !metadata.tags.is_empty() {
-                    <div class="occurrence__message">
-                        { metadata.tag_pills() }
-                    </div>
+        <Scrubber {count} index={i} {on_change}>
+            <div class="example__meta">
+                <Pill dot=false tone={Tone::Info}
+                    attrs={yewi::attrs! { "title" => "Occurrences sharing this exact metadata" }}>
+                    { format!("×{} occurrence{}", group_thousands(variant.count), if variant.count == 1 { "" } else { "s" }) }
+                </Pill>
+                <span>{ ua }</span>
+                if let Some(fired_at) = fired_at {
+                    <InlineCode>{ fired_at }</InlineCode>
                 }
-                { metadata.context_list() }
-                if metadata.tags.is_empty() && metadata.context.is_empty() && metadata.raw.is_none() {
-                    <div class="occurrence__message muted">{ "No metadata reported." }</div>
-                }
+                <Text color={TextColor::Subtle}>{ format!("last seen {}", ago(variant.last_seen_ms)) }</Text>
+                // Set apart from the descriptive metadata, at the row's end.
+                <span class="example__actions">{ trace_link }</span>
             </div>
-        </>
+            if !metadata.tags.is_empty() {
+                <div class="example__tags">{ metadata.tag_pills() }</div>
+            }
+            { metadata.context_list() }
+            if metadata.is_empty() {
+                <Text tag={TextTag::P} color={TextColor::Subtle}>{ "No metadata reported." }</Text>
+            }
+        </Scrubber>
     }
 }

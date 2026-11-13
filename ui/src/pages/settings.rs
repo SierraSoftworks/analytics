@@ -5,34 +5,43 @@
 use analytics_api::{Instance, Source, SourceInput, SourceKind, source_label};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
+use yewi::prelude::{
+    Button, ButtonVariant, Card, CodeBlock, ConfirmDialog, DescriptionItem, DescriptionList,
+    InlineCode, PageHeader, Select, SelectOption, SimpleTable, Size, Text, TextColor, TextTag,
+    attrs, icons,
+};
 
 use crate::api::{self, ApiError};
 use crate::app::AuthHandle;
-use crate::components::{
-    ApiErrorAlert, Dropdown, DropdownItem, PageHeader, ProjectDrawer, ProjectsContext, icons,
-};
+use crate::components::page::{Section, loading};
+use crate::components::{ApiErrorAlert, ProjectDrawer, ProjectsContext};
+
+/// The option standing for "no project" in the per-source project picker.
+const UNASSIGNED: &str = "";
 
 #[function_component(Settings)]
 pub fn settings() -> Html {
     html! {
-        <div class="page">
-            <PageHeader title="Settings" subtitle="Your account, this instance, projects, and onboarding." />
-            <div class="settings">
-                <AccountCard />
-                <InstanceCard />
-                <ProjectsCard />
-                <SourcesCard />
-                <TrackerCard />
-                <DangerZone />
-            </div>
+        <div class="page page--narrow">
+            <PageHeader title="Settings" />
+            <AccountSection />
+            <InstanceSection />
+            <ProjectsSection />
+            <SourcesSection />
+            <TrackerSection />
+            <DangerZone />
         </div>
     }
 }
 
+fn muted(text: &'static str) -> Html {
+    html! { <Text tag={TextTag::P} color={TextColor::Subtle}>{ text }</Text> }
+}
+
 /// Project management: the project list with per-project management (rename,
 /// membership, delete via the shared drawer) and project creation.
-#[function_component(ProjectsCard)]
-fn projects_card() -> Html {
+#[function_component(ProjectsSection)]
+fn projects_section() -> Html {
     let projects_ctx = use_context::<ProjectsContext>();
     let manage = use_state(|| None::<String>);
     let projects = projects_ctx
@@ -62,40 +71,40 @@ fn projects_card() -> Html {
     };
 
     let body = if projects.is_empty() {
-        html! { <p class="muted">{ "No projects yet — create one to group your reporting sources." }</p> }
+        muted("No projects yet. Create one to group your reporting sources.")
     } else {
         let rows = projects
             .iter()
             .map(|p| {
-                let onclick = {
+                let on_click = {
                     let (manage, id) = (manage.clone(), p.id.clone());
                     Callback::from(move |_: MouseEvent| manage.set(Some(id.clone())))
                 };
                 html! {
-                    <div class="toggle-row" key={p.id.clone()}>
-                        <span class="toggle-row__label">{ &p.name }</span>
-                        <button class="btn btn--small btn--ghost" onclick={onclick}>
-                            <span class="menu__icon">{ icons::gear() }</span>{ "Manage" }
-                        </button>
-                    </div>
+                    <li class="choice-row" key={p.id.clone()}>
+                        <span class="choice-row__label">{ &p.name }</span>
+                        <Button size={Size::Small} variant={ButtonVariant::Subtle} icon={icons::SETTINGS} {on_click}>
+                            { "Manage" }
+                        </Button>
+                    </li>
                 }
             })
             .collect::<Html>();
-        html! { <div class="settings-card__list">{ rows }</div> }
+        html! { <ul class="choice-rows">{ rows }</ul> }
+    };
+
+    let actions = html! {
+        <Button variant={ButtonVariant::Primary} size={Size::Small} icon={icons::PLUS} on_click={on_new}>
+            { "New project" }
+        </Button>
     };
 
     html! {
-        <div class="settings-card">
-            <div class="settings-card__head">
-                <h2 class="settings-card__title">{ "Projects" }</h2>
-                <button class="btn btn--primary btn--small" onclick={on_new}>
-                    <span class="menu__icon">{ icons::plus() }</span>{ "New project" }
-                </button>
-            </div>
-            <p class="settings-card__desc">{ "Group reporting sources into projects to view them in aggregate." }</p>
+        <Section title="Projects" {actions}
+            description="Group reporting sources into projects to view them in aggregate.">
             { body }
             <ProjectDrawer project_id={(*manage).clone()} on_close={close_manage} on_changed={on_changed} />
-        </div>
+        </Section>
     }
 }
 
@@ -109,8 +118,8 @@ fn kind_label(kind: &SourceKind) -> &'static str {
 
 /// Every reporting source and its project assignment — the management home for
 /// the dashboard's "unassigned sources" inbox.
-#[function_component(SourcesCard)]
-fn sources_card() -> Html {
+#[function_component(SourcesSection)]
+fn sources_section() -> Html {
     let sources = use_state(|| None::<Result<Vec<Source>, ApiError>>);
     let reload = use_state(|| 0u32);
     let projects = use_context::<ProjectsContext>()
@@ -144,90 +153,86 @@ fn sources_card() -> Html {
     };
 
     let body = match &*sources {
-        None => html! { <p class="muted">{ "Loading…" }</p> },
+        None => loading(),
         Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
-        Some(Ok(list)) if list.is_empty() => {
-            html! { <p class="muted">{ "No sources have reported yet — they register automatically once a site or application starts reporting." }</p> }
-        }
+        Some(Ok(list)) if list.is_empty() => muted(
+            "No sources have reported yet. They register automatically once a site or application starts reporting.",
+        ),
         Some(Ok(list)) => {
-            let mut items: Vec<DropdownItem> = vec![DropdownItem::new("", "Unassigned")];
-            items.extend(
+            let mut options = vec![SelectOption::new(UNASSIGNED, "Unassigned")];
+            options.extend(
                 projects
                     .iter()
-                    .map(|p| DropdownItem::new(p.id.clone(), p.name.clone())),
+                    .map(|p| SelectOption::new(p.id.clone(), p.name.clone())),
             );
             let rows = list
                 .iter()
                 .map(|s| {
-                    let on_select = {
+                    let on_change = {
                         let (assign, uri) = (assign.clone(), s.uri.clone());
-                        Callback::from(move |project_id: String| {
-                            assign.emit((uri.clone(), project_id))
+                        Callback::from(move |project_id: AttrValue| {
+                            assign.emit((uri.clone(), project_id.to_string()))
                         })
                     };
                     html! {
                         <tr key={s.uri.clone()}>
-                            <td><code title={s.uri.clone()}>{ source_label(&s.uri) }</code></td>
+                            <th scope="row">
+                                <InlineCode attrs={attrs! { "title" => s.uri.clone() }}>{ source_label(&s.uri) }</InlineCode>
+                            </th>
                             <td>{ kind_label(&s.kind) }</td>
                             <td>
-                                <Dropdown items={items.clone()}
-                                    value={s.project_id.clone().unwrap_or_default()}
-                                    placeholder="Unassigned" on_select={on_select} />
+                                <Select options={options.clone()} size={Size::Small} {on_change}
+                                    value={AttrValue::from(s.project_id.clone().unwrap_or_default())}
+                                    label={format!("Project for {}", source_label(&s.uri))} />
                             </td>
                         </tr>
                     }
                 })
                 .collect::<Html>();
             html! {
-                <div class="card-table">
-                    <table class="list">
-                        <thead><tr><th>{ "Source" }</th><th>{ "Kind" }</th><th>{ "Project" }</th></tr></thead>
-                        <tbody>{ rows }</tbody>
-                    </table>
-                </div>
+                <SimpleTable label="Reporting sources">
+                    <thead>
+                        <tr>
+                            <th scope="col">{ "Source" }</th>
+                            <th scope="col">{ "Kind" }</th>
+                            <th scope="col">{ "Project" }</th>
+                        </tr>
+                    </thead>
+                    <tbody>{ rows }</tbody>
+                </SimpleTable>
             }
         }
     };
 
     html! {
-        <div class="settings-card">
-            <h2 class="settings-card__title">{ "Reporting sources" }</h2>
-            <p class="settings-card__desc">{ "Every hostname and application that has reported events, and the project each belongs to." }</p>
+        <Section title="Reporting sources"
+            description="Every hostname and application that has reported events, and the project each belongs to.">
             { body }
-        </div>
+        </Section>
     }
 }
 
-#[function_component(AccountCard)]
-fn account_card() -> Html {
+#[function_component(AccountSection)]
+fn account_section() -> Html {
     let auth = use_context::<AuthHandle>();
     let body = match auth.as_ref().and_then(|a| a.user.clone()) {
-        Some(user) => {
-            let email = user
-                .email
-                .map(|e| html! { <><span class="kv__key">{ "Email" }</span><span class="kv__val">{ e }</span></> });
-            html! {
-                <div class="kv">
-                    <span class="kv__key">{ "Name" }</span>
-                    <span class="kv__val">{ user.name }</span>
-                    { email }
-                </div>
-            }
-        }
-        None => {
-            html! { <p class="muted">{ "Authentication is disabled on this server; no account is associated with this session." }</p> }
-        }
+        Some(user) => html! {
+            <DescriptionList>
+                <DescriptionItem term="Name">{ user.name }</DescriptionItem>
+                if let Some(email) = user.email {
+                    <DescriptionItem term="Email">{ email }</DescriptionItem>
+                }
+            </DescriptionList>
+        },
+        None => muted(
+            "Authentication is disabled on this server; no account is associated with this session.",
+        ),
     };
-    html! {
-        <div class="settings-card">
-            <h2 class="settings-card__title">{ "Account" }</h2>
-            { body }
-        </div>
-    }
+    html! { <Section title="Account">{ body }</Section> }
 }
 
-#[function_component(InstanceCard)]
-fn instance_card() -> Html {
+#[function_component(InstanceSection)]
+fn instance_section() -> Html {
     let instance = use_state(|| None::<Result<Instance, ApiError>>);
     {
         let instance = instance.clone();
@@ -240,7 +245,7 @@ fn instance_card() -> Html {
     }
 
     let body = match &*instance {
-        None => html! { <p class="muted">{ "Loading…" }</p> },
+        None => loading(),
         Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
         Some(Ok(i)) => {
             let rate = if i.rate_limiting {
@@ -252,34 +257,26 @@ fn instance_card() -> Html {
                 "Disabled".to_string()
             };
             html! {
-                <div class="kv">
-                    <span class="kv__key">{ "Version" }</span>
-                    <span class="kv__val">{ &i.version }</span>
-                    <span class="kv__key">{ "Data retention" }</span>
-                    <span class="kv__val">{ format!("{} days", i.retention_days) }</span>
-                    <span class="kv__key">{ "Hot window" }</span>
-                    <span class="kv__val">{ format!("{} hours", i.hot_window_hours) }</span>
-                    <span class="kv__key">{ "Honour DNT / GPC" }</span>
-                    <span class="kv__val">{ if i.honor_dnt { "Yes" } else { "No" } }</span>
-                    <span class="kv__key">{ "Rate limiting" }</span>
-                    <span class="kv__val">{ rate }</span>
-                    <span class="kv__key">{ "Max auto-sources" }</span>
-                    <span class="kv__val">{ i.max_auto_sources }</span>
-                </div>
+                <DescriptionList>
+                    <DescriptionItem term="Version" mono=true>{ &i.version }</DescriptionItem>
+                    <DescriptionItem term="Data retention">{ format!("{} days", i.retention_days) }</DescriptionItem>
+                    <DescriptionItem term="Hot window">{ format!("{} hours", i.hot_window_hours) }</DescriptionItem>
+                    <DescriptionItem term="Honour DNT / GPC">{ if i.honor_dnt { "Yes" } else { "No" } }</DescriptionItem>
+                    <DescriptionItem term="Rate limiting">{ rate }</DescriptionItem>
+                    <DescriptionItem term="Max auto-sources">{ i.max_auto_sources }</DescriptionItem>
+                </DescriptionList>
             }
         }
     };
     html! {
-        <div class="settings-card">
-            <h2 class="settings-card__title">{ "Instance" }</h2>
-            <p class="settings-card__desc">{ "Runtime configuration of this analytics server." }</p>
+        <Section title="Instance" description="Runtime configuration of this analytics server.">
             { body }
-        </div>
+        </Section>
     }
 }
 
-#[function_component(TrackerCard)]
-fn tracker_card() -> Html {
+#[function_component(TrackerSection)]
+fn tracker_section() -> Html {
     let origin = web_sys::window()
         .and_then(|w| w.location().origin().ok())
         .unwrap_or_else(|| "https://analytics.example.com".to_string());
@@ -289,79 +286,63 @@ fn tracker_card() -> Html {
     );
 
     // navigator.clipboard only exists in secure contexts; on a plain-HTTP LAN
-    // deployment the getter is undefined and calling it throws, so the button
-    // is only offered where it can work (the snippet is selectable regardless).
+    // deployment the copy button could not work, so it is only offered where
+    // it can (the snippet is selectable regardless).
     let can_copy = web_sys::window().is_some_and(|w| w.is_secure_context());
-    let on_copy = {
-        let snippet = snippet.clone();
-        Callback::from(move |_| {
-            if let Some(win) = web_sys::window()
-                && win.is_secure_context()
-            {
-                let _ = win.navigator().clipboard().write_text(&snippet);
-            }
-        })
-    };
 
     html! {
-        <div class="settings-card">
-            <h2 class="settings-card__title">{ "Install the tracker" }</h2>
-            <p class="settings-card__desc">
-                { "Add this snippet to your site. Sources are identified by hostname — no per-site key to embed." }
-            </p>
-            <pre class="snippet">
-                if can_copy {
-                    <button class="btn btn--small snippet__copy" onclick={on_copy}>
-                        <span class="menu__icon">{ icons::copy() }</span>{ "Copy" }
-                    </button>
-                }
-                { snippet }
-            </pre>
-        </div>
+        <Section title="Install the tracker"
+            description="Add this snippet to your site. Sources are identified by hostname, so there is no per-site key to embed.">
+            <CodeBlock code={snippet} language="html" copy={can_copy} copy_label="Copy snippet" />
+        </Section>
     }
 }
 
+/// Deleting a project is the one thing here that cannot be taken back, so it
+/// is set apart from the settings around it on a surface of its own.
 #[function_component(DangerZone)]
 fn danger_zone() -> Html {
     let projects_ctx = use_context::<ProjectsContext>();
-    let selected = use_state(String::new);
+    let selected = use_state(|| None::<AttrValue>);
+    let confirming = use_state(|| false);
     let projects = projects_ctx
         .as_ref()
         .map(|c| c.projects.clone())
         .unwrap_or_default();
 
-    let on_select = {
+    let on_change = {
         let selected = selected.clone();
-        Callback::from(move |value: String| selected.set(value))
+        Callback::from(move |value: AttrValue| selected.set(Some(value)))
     };
-    let items: Vec<DropdownItem> = projects
+    let options: Vec<SelectOption> = projects
         .iter()
-        .map(|p| DropdownItem::new(p.id.clone(), p.name.clone()))
+        .map(|p| SelectOption::new(p.id.clone(), p.name.clone()))
         .collect();
+    let name = selected
+        .as_ref()
+        .and_then(|id| projects.iter().find(|p| p.id == id.as_str()))
+        .map(|p| p.name.clone());
 
-    let on_delete = {
-        let selected = selected.clone();
+    let ask = {
+        let confirming = confirming.clone();
+        Callback::from(move |_: MouseEvent| confirming.set(true))
+    };
+    let on_cancel = {
+        let confirming = confirming.clone();
+        Callback::from(move |_: ()| confirming.set(false))
+    };
+    let on_confirm = {
+        let (selected, confirming) = (selected.clone(), confirming.clone());
         let reload = projects_ctx.as_ref().map(|c| c.reload.clone());
-        Callback::from(move |_| {
-            let id = (*selected).clone();
-            if id.is_empty() {
+        Callback::from(move |_: ()| {
+            confirming.set(false);
+            let Some(id) = (*selected).clone() else {
                 return;
-            }
-            let confirmed = web_sys::window()
-                .and_then(|w| {
-                    w.confirm_with_message(
-                        "Delete this project? Its pixels are removed and its sources become unassigned. This cannot be undone.",
-                    )
-                    .ok()
-                })
-                .unwrap_or(false);
-            if !confirmed {
-                return;
-            }
+            };
             let (selected, reload) = (selected.clone(), reload.clone());
             spawn_local(async move {
                 if api::delete_project(&id).await.is_ok() {
-                    selected.set(String::new());
+                    selected.set(None);
                     if let Some(reload) = &reload {
                         reload.emit(());
                     }
@@ -371,18 +352,20 @@ fn danger_zone() -> Html {
     };
 
     html! {
-        <div class="settings-card settings-card--danger">
-            <h2 class="settings-card__title">{ "Danger zone" }</h2>
-            <p class="settings-card__desc">
-                { "Deleting a project removes its tracking pixels and unassigns its sources. Historical events are retained under those sources." }
-            </p>
-            <div class="form-row">
-                <Dropdown items={items} value={(*selected).clone()}
-                    placeholder="Select a project…" on_select={on_select} />
-                <button class="btn btn--danger" onclick={on_delete} disabled={(*selected).is_empty()}>
+        <Card class="danger-zone" title="Danger zone"
+            subtitle="Deleting a project removes its tracking pixels and unassigns its sources. Historical events are retained under those sources.">
+            <div class="form__row">
+                <Select {options} value={(*selected).clone()} placeholder="Select a project…"
+                    {on_change} label="Project to delete" fit=true />
+                <Button variant={ButtonVariant::Danger} on_click={ask} disabled={selected.is_none()}>
                     { "Delete project" }
-                </button>
+                </Button>
             </div>
-        </div>
+            <ConfirmDialog open={*confirming} danger=true confirm_label="Delete project"
+                title={format!("Delete {}?", name.as_deref().unwrap_or("this project"))}
+                {on_confirm} {on_cancel}>
+                { "Its pixels are removed and its sources become unassigned. This cannot be undone." }
+            </ConfirmDialog>
+        </Card>
     }
 }

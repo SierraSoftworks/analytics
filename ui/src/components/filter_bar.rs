@@ -1,19 +1,20 @@
 //! The persistent filter bar: active filter chips (removable, one per
-//! dimension), the time-range picker, and the add-filter popover. All state
-//! lives in the URL via [`crate::filters`]; this component only renders it and
-//! pushes changes.
+//! dimension) and the add-filter popover, plus the time-range picker pages put
+//! in their header. All state lives in the URL via [`crate::filters`]; these
+//! components only render it and push changes.
 
-use std::rc::Rc;
-
-use web_sys::HtmlInputElement;
 use yew::prelude::*;
+use yewi::prelude::{
+    Button, ButtonVariant, IconButton, Menu, MenuItem, Placement, Popover, Select, SelectOption,
+    Size, Tag, Text, TextColor, TextInput, TextSize, TextTag, attrs, icons,
+};
 
-use crate::components::icons;
-use crate::components::{Dropdown, DropdownItem, ProjectsContext};
+use crate::components::ProjectsContext;
+use crate::components::shell::{Suggestions, SuggestionsContext};
 use crate::filters::{Dim, FilterSet, RangePreset, TimeRange, use_apply_filters, use_filters};
 use crate::format::{country_flag, country_name, language_name, short_date};
 
-/// One suggested value for the add-filter popover.
+/// One suggested value for the add-filter popover and the query bar.
 #[derive(Clone, PartialEq)]
 pub struct SuggestOption {
     pub value: String,
@@ -24,7 +25,7 @@ pub struct SuggestOption {
 pub struct FilterBarProps {
     /// Per-dimension value suggestions (typically the current breakdown rows).
     #[prop_or_default]
-    pub suggestions: Rc<Vec<(Dim, Vec<SuggestOption>)>>,
+    pub suggestions: Suggestions,
     /// Exceptions mode: dimensions exception events don't carry render as
     /// inert chips ("not applied here") and are hidden from the add menu.
     #[prop_or(false)]
@@ -37,7 +38,21 @@ pub fn filter_bar(props: &FilterBarProps) -> Html {
     let apply = use_apply_filters();
     let projects = use_context::<ProjectsContext>();
 
-    // ---------------------------------------------------------------- chips
+    // The query bar in the app bar completes the same values.
+    {
+        let publish = use_context::<SuggestionsContext>();
+        use_effect_with(props.suggestions.clone(), move |suggestions| {
+            if let Some(ctx) = &publish {
+                ctx.set.emit(suggestions.clone());
+            }
+            move || {
+                if let Some(ctx) = publish {
+                    ctx.set.emit(Suggestions::default());
+                }
+            }
+        });
+    }
+
     // Project filter values are names (matched case-insensitively, like the
     // server); ids are still resolved so pre-rename links display properly.
     let project_name = |value: &str| -> String {
@@ -64,23 +79,21 @@ pub fn filter_bar(props: &FilterBarProps) -> Html {
     let chips = filters.query.terms.iter().map(|(dim, value)| {
         let display = display_value(*dim, value, &project_name);
         let inert = !dim_applies(*dim);
-        let onremove = {
+        let on_remove = {
             let (apply, filters, dim) = (apply.clone(), filters.clone(), *dim);
             Callback::from(move |_: MouseEvent| apply.emit(filters.without(dim)))
         };
         let title = if inert {
-            format!("{}: {display} — this page's events don't carry this dimension, so it is not applied here", dim.label())
+            format!("{}: {display}. This page's events don't carry this dimension, so it is not applied here.", dim.label())
         } else {
             format!("{}: {display}", dim.label())
         };
         html! {
-            <span key={dim.param()} class={classes!("chip", inert.then_some("chip--inert"))} title={title}>
-                <span class="chip__dim">{ dim.label() }</span>
-                <span class="chip__value">{ display }</span>
-                <button class="chip__remove" aria-label={format!("Remove {} filter", dim.label())} onclick={onremove}>
-                    { icons::close() }
-                </button>
-            </span>
+            <Tag key={dim.param()} name={dim.label()} {on_remove}
+                remove_label={format!("Remove {} filter", dim.label())}
+                class={classes!(inert.then_some("chip--inert"))} attrs={attrs! { "title" => title }}>
+                { display }
+            </Tag>
         }
     });
 
@@ -92,78 +105,77 @@ pub fn filter_bar(props: &FilterBarProps) -> Html {
         } else {
             !filters.advanced_applies_to_dashboard()
         };
-        let onremove = {
+        let on_remove = {
             let (apply, filters) = (apply.clone(), filters.clone());
             Callback::from(move |_: MouseEvent| apply.emit(filters.without_advanced()))
         };
         let title = if inert {
-            format!("{advanced} — references fields this page's events don't carry, so it is not applied here")
+            format!("{advanced}. References fields this page's events don't carry, so it is not applied here.")
         } else {
-            format!("{advanced} — edit in the query bar above")
+            format!("{advanced}. Edit it in the query bar above.")
         };
         html! {
-            <span class={classes!("chip", "chip--advanced", inert.then_some("chip--inert"))} title={title}>
-                <span class="chip__dim">{ "Query" }</span>
-                <span class="chip__value"><code>{ advanced.clone() }</code></span>
-                <button class="chip__remove" aria-label="Remove query expression" onclick={onremove}>
-                    { icons::close() }
-                </button>
-            </span>
+            <Tag name="Query" mono=true {on_remove} remove_label="Remove query expression"
+                class={classes!("chip--advanced", inert.then_some("chip--inert"))}
+                attrs={attrs! { "title" => title }}>
+                { advanced.clone() }
+            </Tag>
         }
     });
 
     let clear_all = (!filters.query.is_empty()).then(|| {
         let (apply, filters) = (apply.clone(), filters.clone());
-        let onclick = Callback::from(move |_: MouseEvent| {
+        let on_click = Callback::from(move |_: MouseEvent| {
             apply.emit(FilterSet {
                 range: filters.range,
                 query: Default::default(),
             })
         });
-        html! { <button class="filter-bar__clear" onclick={onclick}>{ "Clear" }</button> }
+        html! { <Button variant={ButtonVariant::Subtle} size={Size::Small} {on_click}>{ "Clear" }</Button> }
     });
 
-    // ---------------------------------------------------------------- range
-    let mut range_items: Vec<DropdownItem> = RangePreset::ALL
+    html! {
+        <div class="filter-bar">
+            { for chips }
+            { advanced_chip }
+            <AddFilter
+                filters={filters.clone()}
+                suggestions={props.suggestions.clone()}
+                restricted={props.restricted}
+            />
+            { clear_all }
+        </div>
+    }
+}
+
+/// The time-range picker: the presets, plus the custom range a chart zoom
+/// produced while one is active.
+#[function_component(RangeSelect)]
+pub fn range_select() -> Html {
+    let filters = use_filters();
+    let apply = use_apply_filters();
+
+    let mut options: Vec<SelectOption> = RangePreset::ALL
         .iter()
-        .map(|p| DropdownItem::new(p.token(), p.label()))
+        .map(|p| SelectOption::new(p.token(), p.label()))
         .collect();
-    let range_value = match filters.range {
+    let value = match filters.range {
         TimeRange::Preset(preset) => preset.token().to_string(),
         TimeRange::Custom { from, to } => {
-            range_items.push(DropdownItem::new(
+            options.push(SelectOption::new(
                 "custom",
                 format!("{} – {}", short_date(from), short_date(to)),
             ));
             "custom".to_string()
         }
     };
-    let on_range = {
-        let (apply, filters) = (apply.clone(), filters.clone());
-        Callback::from(move |token: String| {
-            if let Some(preset) = RangePreset::from_token(&token) {
-                apply.emit(filters.with_range(TimeRange::Preset(preset)));
-            }
-        })
-    };
+    let on_change = Callback::from(move |token: AttrValue| {
+        if let Some(preset) = RangePreset::from_token(&token) {
+            apply.emit(filters.with_range(TimeRange::Preset(preset)));
+        }
+    });
 
-    html! {
-        <div class="filter-bar">
-            <div class="filter-bar__chips">
-                { for chips }
-                { advanced_chip }
-                <AddFilter
-                    filters={filters.clone()}
-                    suggestions={props.suggestions.clone()}
-                    restricted={props.restricted}
-                />
-                { clear_all }
-            </div>
-            <div class="filter-bar__range">
-                <Dropdown items={range_items} value={range_value} on_select={on_range} />
-            </div>
-        </div>
-    }
+    html! { <Select {options} value={AttrValue::from(value)} {on_change} label="Time range" fit=true /> }
 }
 
 /// The human form of a filter value for its chip (and panel labels).
@@ -186,7 +198,7 @@ pub fn display_value(dim: Dim, value: &str, project_name: &impl Fn(&str) -> Stri
 #[derive(Properties, PartialEq)]
 struct AddFilterProps {
     filters: FilterSet,
-    suggestions: Rc<Vec<(Dim, Vec<SuggestOption>)>>,
+    suggestions: Suggestions,
     restricted: bool,
 }
 
@@ -200,22 +212,12 @@ fn add_filter(props: &AddFilterProps) -> Html {
     let apply = use_apply_filters();
     let input_ref = use_node_ref();
 
-    let close = {
+    let on_open_change = {
         let (open, picked, text) = (open.clone(), picked.clone(), text.clone());
-        Callback::from(move |_: MouseEvent| {
-            open.set(false);
+        Callback::from(move |next: bool| {
             picked.set(None);
             text.set(String::new());
-        })
-    };
-    let toggle = {
-        let (open, picked, text) = (open.clone(), picked.clone(), text.clone());
-        Callback::from(move |_: MouseEvent| {
-            if !*open {
-                picked.set(None);
-                text.set(String::new());
-            }
-            open.set(!*open);
+            open.set(next);
         })
     };
 
@@ -224,7 +226,7 @@ fn add_filter(props: &AddFilterProps) -> Html {
         let input_ref = input_ref.clone();
         use_effect_with(*picked, move |picked| {
             if picked.is_some()
-                && let Some(input) = input_ref.cast::<HtmlInputElement>()
+                && let Some(input) = input_ref.cast::<web_sys::HtmlElement>()
             {
                 let _ = input.focus();
             }
@@ -250,23 +252,16 @@ fn add_filter(props: &AddFilterProps) -> Html {
         }
     });
 
-    let body = match *picked {
+    let content = match *picked {
         None => {
             let items = dims.map(|dim| {
-                let onclick = {
+                let on_select = {
                     let picked = picked.clone();
                     Callback::from(move |_: MouseEvent| picked.set(Some(dim)))
                 };
-                html! {
-                    <li key={dim.param()}>
-                        <button class="add-filter__dim" onclick={onclick}>
-                            { dim.label() }
-                            <span class="add-filter__chev">{ icons::chevron_right() }</span>
-                        </button>
-                    </li>
-                }
+                html! { <MenuItem key={dim.param()} {on_select}>{ dim.label() }</MenuItem> }
             });
-            html! { <ul class="add-filter__list">{ for items }</ul> }
+            html! { <Menu label="Filter by">{ for items }</Menu> }
         }
         Some(dim) => {
             let needle = text.to_lowercase();
@@ -285,13 +280,11 @@ fn add_filter(props: &AddFilterProps) -> Html {
                 .take(8)
                 .collect();
 
-            let oninput = {
+            let on_input = {
                 let text = text.clone();
-                Callback::from(move |e: InputEvent| {
-                    text.set(e.target_unchecked_into::<HtmlInputElement>().value());
-                })
+                Callback::from(move |value: String| text.set(value))
             };
-            let onkeydown = {
+            let on_keydown = {
                 let submit = submit.clone();
                 let (text, options) = (text.clone(), options.clone());
                 Callback::from(move |e: KeyboardEvent| {
@@ -312,42 +305,36 @@ fn add_filter(props: &AddFilterProps) -> Html {
             };
 
             let option_items = options.iter().enumerate().map(|(i, option)| {
-                let onclick = {
+                let on_select = {
                     let submit = submit.clone();
                     let value = option.value.clone();
                     Callback::from(move |_: MouseEvent| submit(dim, value.clone()))
                 };
-                html! {
-                    <li key={i.to_string()}>
-                        <button class="add-filter__option" onclick={onclick}>
-                            <span class={classes!(option.value.is_empty().then_some("brow__text--absent"))}>
-                                { option.label.clone() }
-                            </span>
-                        </button>
-                    </li>
-                }
+                html! { <MenuItem key={i.to_string()} {on_select}>{ option.label.clone() }</MenuItem> }
             });
 
             html! {
-                <div class="add-filter__values">
+                <div class="add-filter">
                     <div class="add-filter__picked">
-                        <button class="add-filter__back" onclick={back} aria-label="Back">
-                            { icons::chevron_left() }
-                        </button>
-                        <span>{ dim.label() }</span>
+                        <IconButton icon={icons::CHEVRON_LEFT} label="Back" size={Size::Small}
+                            variant={ButtonVariant::Subtle} on_click={back} />
+                        <Text weight={yewi::TextWeight::Semibold}>{ dim.label() }</Text>
                     </div>
-                    <input
-                        ref={input_ref.clone()}
-                        class="input add-filter__input"
+                    <TextInput
+                        input_ref={input_ref.clone()}
+                        size={Size::Small}
                         placeholder={format!("Filter by {}…", dim.label().to_lowercase())}
                         value={(*text).clone()}
-                        oninput={oninput}
-                        onkeydown={onkeydown}
+                        {on_input}
+                        {on_keydown}
+                        attrs={attrs! { "aria-label" => format!("{} value", dim.label()) }}
                     />
-                    if options.is_empty() && text.is_empty() {
-                        <p class="add-filter__hint">{ "Type a value and press Enter." }</p>
+                    if options.is_empty() {
+                        <Text tag={TextTag::P} size={TextSize::Sm} color={TextColor::Subtle}>
+                            { "Type a value and press Enter." }
+                        </Text>
                     } else {
-                        <ul class="add-filter__list">{ for option_items }</ul>
+                        <Menu label={format!("{} values", dim.label())}>{ for option_items }</Menu>
                     }
                 </div>
             }
@@ -355,15 +342,9 @@ fn add_filter(props: &AddFilterProps) -> Html {
     };
 
     html! {
-        <div class="add-filter">
-            <button class="chip chip--add" onclick={toggle} aria-expanded={open.to_string()}>
-                { icons::plus() }
-                { "Filter" }
-            </button>
-            if *open {
-                <div class="add-filter__backdrop" onclick={close} />
-                <div class="add-filter__pop">{ body }</div>
-            }
-        </div>
+        <Popover open={*open} {on_open_change} {content} placement={Placement::BottomStart}
+            arrow=false flush=true label="Add a filter">
+            <Button size={Size::Small} icon={icons::PLUS}>{ "Filter" }</Button>
+        </Popover>
     }
 }

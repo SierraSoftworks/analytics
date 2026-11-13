@@ -1,11 +1,12 @@
 //! Reporter-supplied metadata, classified for display: short entries render as
-//! inline **tag** pills, longer ones as a **context** definition list (shown
+//! inline **tags**, longer ones as a **context** definition list (shown
 //! above stack traces). Shared by the trace timeline and the exception detail
 //! exemplars so metadata reads the same everywhere.
 
 use std::collections::BTreeMap;
 
 use yew::prelude::*;
+use yewi::prelude::{CodeBlock, DescriptionItem, DescriptionList, Tag, Text, TextColor, TextSize};
 
 /// A key/value entry is a tag when both halves are short enough to scan inline;
 /// anything longer (ids, paths, component stacks) reads better as context.
@@ -49,13 +50,15 @@ impl Metadata {
         split
     }
 
-    /// The tag entries as inline `key: value` pills.
+    /// Whether the reporter sent nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.tags.is_empty() && self.context.is_empty() && self.raw.is_none()
+    }
+
+    /// The tag entries as inline `key value` tags.
     pub fn tag_pills(&self) -> Html {
         let pills = self.tags.iter().map(|(key, value)| {
-            let text = format!("{key}: {value}");
-            html! {
-                <code class="meta-tag" key={key.clone()} title={text.clone()}>{ text }</code>
-            }
+            html! { <Tag key={key.clone()} name={key.clone()} mono=true>{ value.clone() }</Tag> }
         });
         html! { <>{ for pills }</> }
     }
@@ -69,23 +72,22 @@ impl Metadata {
         if let Some(raw) = &self.raw {
             return html! {
                 <div class="meta-context">
-                    <span class="meta-context__title">{ "Context" }</span>
-                    <pre class="stack">{ raw.clone() }</pre>
+                    <Text size={TextSize::Xs} color={TextColor::Subtle} class="eyebrow">{ "Context" }</Text>
+                    <CodeBlock code={raw.clone()} wrap=true />
                 </div>
             };
         }
         let rows = self.context.iter().map(|(key, value)| {
             html! {
-                <div class="meta-context__row" key={key.clone()}>
-                    <dt>{ key.clone() }</dt>
-                    <dd title={value.clone()}>{ value.clone() }</dd>
-                </div>
+                <DescriptionItem key={key.clone()} term={key.clone()} mono=true>
+                    { value.clone() }
+                </DescriptionItem>
             }
         });
         html! {
             <div class="meta-context">
-                <span class="meta-context__title">{ "Context" }</span>
-                <dl class="meta-context__list">{ for rows }</dl>
+                <Text size={TextSize::Xs} color={TextColor::Subtle} class="eyebrow">{ "Context" }</Text>
+                <DescriptionList>{ for rows }</DescriptionList>
             </div>
         }
     }

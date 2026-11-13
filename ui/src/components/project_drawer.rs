@@ -4,11 +4,13 @@
 
 use analytics_api::{Project, ProjectInput, Source, SourceInput, source_label};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlInputElement;
 use yew::prelude::*;
+use yewi::prelude::{
+    Alert, Button, ButtonVariant, ConfirmDialog, Drawer, Field, Pill, Size, TextInput, Tone,
+};
 
 use crate::api;
-use crate::components::{Drawer, ProjectsContext};
+use crate::components::ProjectsContext;
 use crate::filters::{Dim, use_apply_filters, use_filters};
 
 #[derive(Properties, PartialEq)]
@@ -28,6 +30,7 @@ pub fn project_drawer(props: &ProjectDrawerProps) -> Html {
     let name = use_state(String::new);
     let error = use_state(|| None::<String>);
     let busy = use_state(|| false);
+    let confirming = use_state(|| false);
 
     let filters = use_filters();
     let apply_filters = use_apply_filters();
@@ -44,7 +47,9 @@ pub fn project_drawer(props: &ProjectDrawerProps) -> Html {
             error.clone(),
             load_seq.clone(),
         );
+        let confirming = confirming.clone();
         use_effect_with(props.project_id.clone(), move |id| {
+            confirming.set(false);
             let seq = {
                 let mut current = load_seq.borrow_mut();
                 *current += 1;
@@ -93,9 +98,7 @@ pub fn project_drawer(props: &ProjectDrawerProps) -> Html {
 
     let on_name = {
         let name = name.clone();
-        Callback::from(move |e: InputEvent| {
-            name.set(e.target_unchecked_into::<HtmlInputElement>().value());
-        })
+        Callback::from(move |value: String| name.set(value))
     };
 
     let on_rename = {
@@ -163,19 +166,9 @@ pub fn project_drawer(props: &ProjectDrawerProps) -> Html {
             props.on_close.clone(),
         );
         let (filters, apply_filters) = (filters.clone(), apply_filters.clone());
-        let project = project.clone();
-        Callback::from(move |_: MouseEvent| {
-            let confirmed = web_sys::window()
-                .and_then(|w| {
-                    w.confirm_with_message(
-                        "Delete this project? Its pixels are removed and its sources become unassigned. This cannot be undone.",
-                    )
-                    .ok()
-                })
-                .unwrap_or(false);
-            if !confirmed {
-                return;
-            }
+        let (project, confirming) = (project.clone(), confirming.clone());
+        Callback::from(move |_: ()| {
+            confirming.set(false);
             let (id, error, busy, notify, on_close) = (
                 id.clone(),
                 error.clone(),
@@ -221,57 +214,66 @@ pub fn project_drawer(props: &ProjectDrawerProps) -> Html {
     let source_rows = sources.iter().map(|s| {
         let member = s.project_id.as_deref() == Some(id.as_str());
         let elsewhere = s.project_id.is_some() && !member;
-        let onclick = {
+        let on_click = {
             let (toggle, uri) = (toggle_source.clone(), s.uri.clone());
             Callback::from(move |_: MouseEvent| toggle.emit((uri.clone(), member)))
         };
-        let (label, class) = if member {
-            ("Remove", "btn btn--small btn--ghost")
-        } else {
-            ("Add", "btn btn--small")
-        };
         html! {
-            <div class="toggle-row" key={s.uri.clone()}>
-                <span class="toggle-row__label" title={s.uri.clone()}>{ source_label(&s.uri) }</span>
+            <li class="choice-row" key={s.uri.clone()}>
+                <span class="choice-row__label" title={s.uri.clone()}>{ source_label(&s.uri) }</span>
                 if elsewhere {
-                    <span class="badge badge--muted">{ "Assigned elsewhere" }</span>
+                    <Pill dot=false>{ "Assigned elsewhere" }</Pill>
                 }
-                <button class={class} {onclick}>{ label }</button>
-            </div>
+                <Button size={Size::Small} {on_click}
+                    variant={if member { ButtonVariant::Subtle } else { ButtonVariant::Default }}>
+                    { if member { "Remove" } else { "Add" } }
+                </Button>
+            </li>
         }
     });
 
+    let ask_delete = {
+        let confirming = confirming.clone();
+        Callback::from(move |_: MouseEvent| confirming.set(true))
+    };
+    let cancel_delete = {
+        let confirming = confirming.clone();
+        Callback::from(move |_: ()| confirming.set(false))
+    };
+
     html! {
-        <Drawer open={true} title={title} on_close={on_close}>
-            if let Some(error) = &*error {
-                <p class="drawer__hint" style="color: var(--danger);">{ error.clone() }</p>
-            }
-            <div class="field">
-                <label class="field__label">{ "Project name" }</label>
-                <div class="form-row" style="margin: 0;">
-                    <input class="input" style="flex: 1;" value={(*name).clone()} oninput={on_name} />
-                    <button class="btn" onclick={on_rename} disabled={*busy}>{ "Rename" }</button>
+        <>
+            <Drawer open=true {title} {on_close}>
+                <div class="form">
+                    if let Some(error) = &*error {
+                        <Alert tone={Tone::Danger}>{ error.clone() }</Alert>
+                    }
+                    <Field label="Project name">
+                        <div class="form__row">
+                            <TextInput value={(*name).clone()} on_input={on_name} />
+                            <Button on_click={on_rename} disabled={*busy}>{ "Rename" }</Button>
+                        </div>
+                    </Field>
+                    <Field label="Sources" group=true
+                        hint={sources.is_empty().then_some(
+                            "No reporting sources yet. They appear here once a site starts reporting."
+                        )}>
+                        <ul class="choice-rows">{ for source_rows }</ul>
+                    </Field>
+                    <Field label="Danger zone" group=true
+                        hint="Deleting a project removes its tracking pixels and unassigns its sources. Historical events are retained under those sources.">
+                        <div>
+                            <Button variant={ButtonVariant::Danger} on_click={ask_delete} disabled={*busy}>
+                                { "Delete project" }
+                            </Button>
+                        </div>
+                    </Field>
                 </div>
-            </div>
-            <div class="field">
-                <label class="field__label">{ "Sources" }</label>
-                if sources.is_empty() {
-                    <p class="drawer__hint">{ "No reporting sources yet — they appear here once a site starts reporting." }</p>
-                } else {
-                    { for source_rows }
-                }
-            </div>
-            <div class="field">
-                <label class="field__label">{ "Danger zone" }</label>
-                <p class="drawer__hint">
-                    { "Deleting a project removes its tracking pixels and unassigns its sources. Historical events are retained under those sources." }
-                </p>
-                <div>
-                    <button class="btn btn--danger" onclick={on_delete} disabled={*busy}>
-                        { "Delete project" }
-                    </button>
-                </div>
-            </div>
-        </Drawer>
+            </Drawer>
+            <ConfirmDialog open={*confirming} title="Delete this project?" confirm_label="Delete project"
+                danger=true busy={*busy} on_confirm={on_delete} on_cancel={cancel_delete}>
+                { "Its pixels are removed and its sources become unassigned. This cannot be undone." }
+            </ConfirmDialog>
+        </>
     }
 }
