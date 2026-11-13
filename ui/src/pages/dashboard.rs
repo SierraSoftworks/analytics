@@ -8,14 +8,18 @@ use std::rc::Rc;
 use analytics_api::{Dashboard as DashboardData, SourceInput, source_label};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
+use yewi::prelude::{
+    Button, ButtonVariant, Card, Heading, HeadingLevel, PageHeader, Select, SelectOption, Size,
+    Text, TextColor, TextSize, ToggleSwitch,
+};
 
 use crate::api::{self, ApiError};
 use crate::app::Route;
 use crate::components::charts::Metric;
+use crate::components::page::loading;
 use crate::components::{
-    ActionIcon, ApiErrorAlert, BreakdownPanel, Dropdown, DropdownItem, FilterBar, MetricCards,
-    PageHeader, PanelRow, PanelTab, ProjectDrawer, ProjectsContext, SuggestOption, TimeSeriesChart,
-    TraceList,
+    ActionIcon, ApiErrorAlert, BreakdownPanel, FilterBar, MetricCards, PanelRow, PanelTab,
+    ProjectDrawer, ProjectsContext, RangeSelect, SuggestOption, TimeSeriesChart, TraceList,
 };
 use crate::filters::{Dim, TimeRange, use_apply_filters, use_filters, use_navigate_with_query};
 use crate::format::{country_flag, country_name, group_thousands, language_name};
@@ -94,9 +98,9 @@ pub fn dashboard() -> Html {
         let metric = metric.clone();
         Callback::from(move |m: Metric| metric.set(m))
     };
-    let toggle_compare = {
+    let set_compare = {
         let compare = compare.clone();
-        Callback::from(move |_: MouseEvent| compare.set(!*compare))
+        Callback::from(move |on: bool| compare.set(on))
     };
 
     let projects = projects_ctx
@@ -168,7 +172,7 @@ pub fn dashboard() -> Html {
     };
 
     let body = match &*data {
-        None => html! { <div class="page-loading">{ "Loading…" }</div> },
+        None => loading(),
         Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
         Some(Ok(dash)) => {
             let active = filters.query.terms.clone();
@@ -187,7 +191,6 @@ pub fn dashboard() -> Html {
                         visitors: r.visitors,
                         pageviews: r.pageviews,
                         events: r.events,
-                        title: (!r.key.is_empty()).then(|| r.key.clone()),
                         extra: None,
                     })
                     .collect()
@@ -203,7 +206,6 @@ pub fn dashboard() -> Html {
                     visitors: r.visitors,
                     pageviews: r.pageviews,
                     events: r.events,
-                    title: (!r.app.is_empty() || !r.version.is_empty()).then(|| version_label(r)),
                     // The version alone would also match other applications'
                     // releases, so clicking pins the application with it.
                     extra: Some((Dim::Browser, r.app.clone())),
@@ -224,7 +226,6 @@ pub fn dashboard() -> Html {
                     visitors: r.visitors,
                     pageviews: r.pageviews,
                     events: r.events,
-                    title: None,
                     extra: None,
                 })
                 .collect::<Vec<_>>();
@@ -243,7 +244,6 @@ pub fn dashboard() -> Html {
                     visitors: r.visitors,
                     pageviews: r.pageviews,
                     events: r.events,
-                    title: (!r.key.is_empty()).then(|| r.key.clone()),
                     extra: None,
                 })
                 .collect::<Vec<_>>();
@@ -260,7 +260,6 @@ pub fn dashboard() -> Html {
                     visitors: r.visitors,
                     pageviews: r.pageviews,
                     events: r.events,
-                    title: None,
                     extra: None,
                 })
                 .collect::<Vec<_>>();
@@ -275,7 +274,6 @@ pub fn dashboard() -> Html {
                     visitors: r.visitors,
                     pageviews: r.pageviews,
                     events: r.events,
-                    title: Some(r.key.clone()),
                     extra: None,
                 })
                 .collect::<Vec<_>>();
@@ -356,24 +354,16 @@ pub fn dashboard() -> Html {
                         metric={*metric}
                         on_metric={on_metric.clone()}
                     />
-                    <div class="panel panel--chart">
-                        <div class="panel__head">
-                            <h2 class="panel__title">{ metric.label() }</h2>
-                            <div class="panel__actions">
-                                if dash.timeseries.iter().any(|p| p.exceptions > 0) {
-                                    <span class="panel__legend panel__legend--exceptions">{ "Exceptions" }</span>
-                                }
-                                <span class="panel__hint">{ "Drag to zoom" }</span>
-                                <button
-                                    class={classes!("toggle", compare.then_some("toggle--on"))}
-                                    onclick={toggle_compare.clone()}
-                                    aria-pressed={compare.to_string()}
-                                >
-                                    <span class="toggle__track"><span class="toggle__knob" /></span>
+                    <section class="section">
+                        <header class="section__head">
+                            <Heading level={HeadingLevel::H2} size={TextSize::Md}>{ metric.label() }</Heading>
+                            <div class="section__actions">
+                                <Text size={TextSize::Sm} color={TextColor::Subtle}>{ "Drag to zoom" }</Text>
+                                <ToggleSwitch checked={*compare} on_change={set_compare.clone()} size={Size::Small}>
                                     { "Compare" }
-                                </button>
+                                </ToggleSwitch>
                             </div>
-                        </div>
+                        </header>
                         <TimeSeriesChart
                             points={dash.timeseries.clone()}
                             previous={dash.previous_timeseries.clone()}
@@ -381,7 +371,7 @@ pub fn dashboard() -> Html {
                             compare={*compare}
                             on_zoom={Some(on_zoom.clone())}
                         />
-                    </div>
+                    </section>
                     <div class="panel-grid">
                         <BreakdownPanel tabs={source_tabs} metric={*metric} on_filter={on_filter.clone()} active={active.clone()} />
                         // Follows the metric: Events mode surfaces the event-name
@@ -408,14 +398,10 @@ pub fn dashboard() -> Html {
         .as_deref()
         .map(&project_name)
         .unwrap_or_else(|| "Dashboard".to_string());
-    let subtitle = if project_filter.is_some() {
-        "Traffic for this project — click any value to filter, remove the chip to zoom back out."
-    } else {
-        "Traffic across every project — click any value to filter."
-    };
     html! {
         <div class="page">
-            <PageHeader title={heading} subtitle={subtitle} />
+            <PageHeader title={heading} subtitle="Click any value to filter by it."
+                actions={html! { <RangeSelect /> }} />
             <FilterBar suggestions={Rc::new(suggestions)} />
             { body }
             <ProjectDrawer
@@ -604,23 +590,24 @@ fn unassigned_banner(props: &UnassignedBannerProps) -> Html {
         })
     };
 
+    let options: Vec<SelectOption> = projects
+        .iter()
+        .map(|p| SelectOption::new(p.id.clone(), p.name.clone()))
+        .collect();
     let rows = unassigned.iter().take(shown).map(|row| {
-        let items: Vec<DropdownItem> = projects
-            .iter()
-            .map(|p| DropdownItem::new(p.id.clone(), p.name.clone()))
-            .collect();
-        let on_select = {
+        let on_change = {
             let (assign, uri) = (assign.clone(), row.key.clone());
-            Callback::from(move |project_id: String| assign.emit((uri.clone(), project_id)))
+            Callback::from(move |project_id: AttrValue| assign.emit((uri.clone(), project_id.to_string())))
         };
         html! {
-            <div class="unassigned__row" key={row.key.clone()}>
+            <li class="unassigned__row" key={row.key.clone()}>
                 <code class="unassigned__source" title={row.key.clone()}>{ source_label(&row.key) }</code>
-                <span class="unassigned__count">
+                <Text size={TextSize::Sm} color={TextColor::Subtle} tabular=true>
                     { format!("{} views · {} visitors", group_thousands(row.pageviews + row.events), group_thousands(row.visitors)) }
-                </span>
-                <Dropdown items={items} value="" placeholder="Assign to project…" on_select={on_select} />
-            </div>
+                </Text>
+                <Select options={options.clone()} placeholder="Assign to project…" {on_change}
+                    size={Size::Small} fit=true label={format!("Project for {}", source_label(&row.key))} />
+            </li>
         }
     });
 
@@ -630,22 +617,25 @@ fn unassigned_banner(props: &UnassignedBannerProps) -> Html {
         Callback::from(move |_: MouseEvent| expanded.set(!*expanded))
     };
 
+    // A call-out set apart from the traffic below it: new sources must not be
+    // missable.
     html! {
-        <div class="unassigned">
-            <div class="unassigned__head">
-                <strong>
-                    { format!("{} unassigned source{}", unassigned.len(), if unassigned.len() == 1 { "" } else { "s" }) }
-                </strong>
-                <span class="muted">{ format!("{} views this period", group_thousands(total_views)) }</span>
-                <span class="unassigned__spacer" />
-                <button class="btn btn--small" onclick={open_new}>{ "New project" }</button>
-            </div>
-            { for rows }
+        <Card
+            class="unassigned"
+            title={format!("{} unassigned source{}", unassigned.len(), if unassigned.len() == 1 { "" } else { "s" })}
+            subtitle={format!("{} views this period", group_thousands(total_views))}
+            actions={html! { <Button size={Size::Small} on_click={open_new}>{ "New project" }</Button> }}
+        >
+            <ul class="unassigned__rows">{ for rows }</ul>
             if more > 0 {
-                <button class="unassigned__more" onclick={toggle}>{ format!("Show {more} more") }</button>
+                <Button variant={ButtonVariant::Subtle} size={Size::Small} on_click={toggle}>
+                    { format!("Show {more} more") }
+                </Button>
             } else if *expanded && unassigned.len() > 3 {
-                <button class="unassigned__more" onclick={toggle}>{ "Show fewer" }</button>
+                <Button variant={ButtonVariant::Subtle} size={Size::Small} on_click={toggle}>
+                    { "Show fewer" }
+                </Button>
             }
-        </div>
+        </Card>
     }
 }

@@ -1,8 +1,9 @@
-//! The headline metric cards: value, delta vs the previous window, and (for the
+//! The headline metric tiles: value, delta vs the previous window, and (for the
 //! countable metrics) selection of which metric the chart and panels display.
 
 use analytics_api::MetricSummary;
 use yew::prelude::*;
+use yewi::prelude::{StatTile, StatTrend};
 
 use crate::components::charts::Metric;
 use crate::format::{delta_percent, format_duration, group_thousands};
@@ -30,45 +31,39 @@ pub fn metric_cards(props: &MetricCardsProps) -> Html {
         .unwrap_or_else(|| "—".to_string());
 
     let selectable = |metric: Metric, value: i64, previous: i64| {
-        let active = props.metric == metric;
-        let onclick = {
+        let on_click = {
             let on_metric = props.on_metric.clone();
             Callback::from(move |_: MouseEvent| on_metric.emit(metric))
         };
-        let delta = delta_percent(value as f64, previous as f64);
+        let (delta, trend) = delta_parts(delta_percent(value as f64, previous as f64));
         html! {
-            <button
-                class={classes!("stat", "stat--selectable", active.then_some("stat--active"))}
-                onclick={onclick}
-                aria-pressed={active.to_string()}
-            >
-                <span class="stat__label">{ metric.label() }</span>
-                <span class="stat__value">{ group_thousands(value) }</span>
-                { delta_badge(delta, false) }
-            </button>
+            <StatTile
+                label={metric.label()}
+                value={group_thousands(value)}
+                {delta} {trend}
+                detail="vs. previous period"
+                selected={props.metric == metric}
+                {on_click}
+            />
         }
     };
 
-    // Only surface the events card when pixels/custom events exist at all.
+    // Only surface the events tile when pixels/custom events exist at all.
     let show_events = s.events > 0 || p.events > 0 || props.metric == Metric::Events;
+    let (bounce_delta, bounce_trend) = delta_parts(bounce_delta(s, p));
+    let (duration_delta, duration_trend) = delta_parts(duration_delta(s, p));
 
     html! {
-        <div class={classes!("stats", show_events.then_some("stats--five"))}>
+        <div class="stats">
             { selectable(Metric::Visitors, s.visitors, p.visitors) }
             { selectable(Metric::Pageviews, s.pageviews, p.pageviews) }
             if show_events {
                 { selectable(Metric::Events, s.events, p.events) }
             }
-            <div class="stat">
-                <span class="stat__label">{ "Bounce rate" }</span>
-                <span class="stat__value">{ bounce }</span>
-                { delta_badge(bounce_delta(s, p), true) }
-            </div>
-            <div class="stat">
-                <span class="stat__label">{ "Median time" }</span>
-                <span class="stat__value">{ duration }</span>
-                { delta_badge(duration_delta(s, p), false) }
-            </div>
+            <StatTile label="Bounce rate" value={bounce} delta={bounce_delta} trend={bounce_trend}
+                lower_is_better=true detail="vs. previous period" />
+            <StatTile label="Median time" value={duration} delta={duration_delta} trend={duration_trend}
+                detail="vs. previous period" />
         </div>
     }
 }
@@ -87,29 +82,14 @@ fn duration_delta(s: &MetricSummary, p: &MetricSummary) -> Option<f64> {
     }
 }
 
-/// The small ▲/▼ percentage badge. `invert` flips the good/bad colouring for
-/// metrics where up is worse (bounce rate).
-fn delta_badge(delta: Option<f64>, invert: bool) -> Html {
-    let Some(delta) = delta else {
-        return html! { <span class="stat__delta stat__delta--none">{ "—" }</span> };
-    };
-    if delta.abs() < 0.05 {
-        return html! { <span class="stat__delta stat__delta--none">{ "±0%" }</span> };
-    }
-    let up = delta > 0.0;
-    let good = up != invert;
-    let class = classes!(
-        "stat__delta",
-        if good {
-            "stat__delta--good"
-        } else {
-            "stat__delta--bad"
-        }
-    );
-    let arrow = if up { "▲" } else { "▼" };
-    html! {
-        <span class={class} title="vs. previous period">
-            { format!("{arrow} {:.0}%", delta.abs()) }
-        </span>
+/// The change since the previous window as StatTile's `delta` text and
+/// `trend` direction. Changes under 0.05% read as flat.
+fn delta_parts(delta: Option<f64>) -> (Option<AttrValue>, Option<StatTrend>) {
+    match delta {
+        None => (None, None),
+        Some(delta) => (
+            Some(format!("{:.0}%", delta.abs()).into()),
+            Some(StatTrend::of(delta, 0.05)),
+        ),
     }
 }

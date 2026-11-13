@@ -9,14 +9,18 @@ use std::rc::Rc;
 
 use analytics_api::{ExceptionStatus, GlobalException};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlInputElement;
 use yew::prelude::*;
+use yewi::prelude::{
+    EmptyState, PageHeader, Pill, Tab, Tabs, Text, TextColor, TextInput, TextInputKind, TextSize,
+    Tone, attrs, icons,
+};
 
 use crate::api::{self, ApiError};
 use crate::app::Route;
-use crate::components::status::{status_class, status_label};
+use crate::components::page::loading;
+use crate::components::status::status_pill;
 use crate::components::{
-    ApiErrorAlert, FilterBar, PageHeader, ProjectsContext, Sparkline, SuggestOption,
+    ApiErrorAlert, FilterBar, ProjectsContext, RangeSelect, Sparkline, SuggestOption,
 };
 use crate::filters::{Dim, use_filters, use_navigate_with_query};
 use crate::format::{ago, group_thousands};
@@ -45,6 +49,16 @@ impl StatusTab {
         StatusTab::Ignored,
         StatusTab::All,
     ];
+
+    /// The tab's value in `Tabs`.
+    fn token(self) -> &'static str {
+        match self {
+            StatusTab::Unresolved => "unresolved",
+            StatusTab::Resolved => "resolved",
+            StatusTab::Ignored => "muted",
+            StatusTab::All => "all",
+        }
+    }
 
     fn label(self) -> &'static str {
         match self {
@@ -100,8 +114,7 @@ pub fn exceptions() -> Html {
 
     let on_needle = {
         let needle = needle.clone();
-        Callback::from(move |e: InputEvent| {
-            let value = e.target_unchecked_into::<HtmlInputElement>().value();
+        Callback::from(move |value: String| {
             INBOX_VIEW.with(|v| v.borrow_mut().1 = value.clone());
             needle.set(value);
         })
@@ -139,7 +152,7 @@ pub fn exceptions() -> Html {
     };
 
     let body = match &*data {
-        None => html! { <div class="page-loading">{ "Loading…" }</div> },
+        None => loading(),
         Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
         Some(Ok(list)) => {
             let text = needle.to_lowercase();
@@ -167,52 +180,58 @@ pub fn exceptions() -> Html {
                 })
                 .collect();
 
-            let tabs = StatusTab::ALL.into_iter().enumerate().map(|(i, t)| {
-                let active = *tab == t;
-                let onclick = {
-                    let tab = tab.clone();
-                    Callback::from(move |_: MouseEvent| {
-                        INBOX_VIEW.with(|v| v.borrow_mut().0 = t);
-                        tab.set(t);
-                    })
-                };
+            // The list is the page's content, so it sits flat under the tabs
+            // with a rule between groups.
+            let list = if visible.is_empty() {
                 html! {
-                    <button key={i.to_string()}
-                        class={classes!("panel-tab", active.then_some("panel-tab--active"))}
-                        onclick={onclick}>
-                        { t.label() }
-                        <span class="panel-tab__count">{ counts[i] }</span>
-                    </button>
+                    <EmptyState icon={icons::SEARCH_X} title={
+                        if list.is_empty() { "No exceptions reported in this period." }
+                        else { "No exceptions match the current filters." }
+                    } />
+                }
+            } else {
+                html! { <div class="exc-list">{ for visible.iter().map(|e| exception_row(e)) }</div> }
+            };
+            let tabs = StatusTab::ALL.into_iter().enumerate().map(|(i, t)| {
+                html_nested! {
+                    <Tab key={t.token()} value={t.token()} label={t.label()} count={counts[i].to_string()}>
+                        if *tab == t {
+                            { list.clone() }
+                        }
+                    </Tab>
                 }
             });
+            let on_change = {
+                let tab = tab.clone();
+                Callback::from(move |value: AttrValue| {
+                    if let Some(t) = StatusTab::ALL
+                        .into_iter()
+                        .find(|t| t.token() == value.as_str())
+                    {
+                        INBOX_VIEW.with(|v| v.borrow_mut().0 = t);
+                        tab.set(t);
+                    }
+                })
+            };
 
             html! {
-                <>
-                    <div class="exc-toolbar">
-                        <div class="panel-card__tabs">{ for tabs }</div>
-                        <input class="input exc-toolbar__search" type="search"
-                            placeholder="Filter by type, message, project…"
-                            value={(*needle).clone()} oninput={on_needle} />
-                    </div>
-                    if visible.is_empty() {
-                        <div class="empty">
-                            { if list.is_empty() { "No exceptions reported in this period." }
-                              else { "No exceptions match the current filters." } }
-                        </div>
-                    } else {
-                        <div class="exc-list">
-                            { for visible.iter().map(|e| exception_row(e)) }
-                        </div>
-                    }
-                </>
+                <Tabs selected={tab.token()} {on_change} label="Triage status">{ for tabs }</Tabs>
             }
         }
     };
 
+    let actions = html! {
+        <>
+            <TextInput kind={TextInputKind::Search} placeholder="Filter by type, message, project…"
+                value={(*needle).clone()} on_input={on_needle} class="page-search"
+                attrs={attrs! { "aria-label" => "Filter exceptions" }} />
+            <RangeSelect />
+        </>
+    };
+
     html! {
         <div class="page">
-            <PageHeader title="Exceptions"
-                subtitle="Crashes and errors across every project, grouped by fingerprint." />
+            <PageHeader title="Exceptions" subtitle="Crashes and errors, grouped by fingerprint." {actions} />
             <FilterBar suggestions={Rc::new(suggestions)} restricted={true} />
             { body }
         </div>
@@ -230,34 +249,31 @@ fn exception_row(e: &GlobalException) -> Html {
                     </span>
                 </div>
                 <div class="exc-row__meta">
-                    <span class={status_class(e.group.status)}>{ status_label(e.group.status) }</span>
+                    { status_pill(e.group.status) }
                     {
                         // Groups are per source, so the row names the application
                         // it failed on alongside its owning project.
                         match &e.project_name {
                             Some(name) => html! {
                                 <>
-                                    <span class="exc-row__project">{ name.clone() }</span>
-                                    <code class="exc-row__source" title={e.source.clone()}>
-                                        { analytics_api::source_label(&e.source) }
-                                    </code>
+                                    <span>{ name.clone() }</span>
+                                    <code title={e.source.clone()}>{ analytics_api::source_label(&e.source) }</code>
                                 </>
                             },
                             None => html! {
-                                <span class="badge badge--muted"
-                                    title="This source is not assigned to a project — assign it to enable triage and detail.">
+                                <Pill dot=false attrs={attrs! { "title" => "This source is not assigned to a project. Assign it to enable triage and detail." }}>
                                     { format!("Unassigned · {}", analytics_api::source_label(&e.source)) }
-                                </span>
+                                </Pill>
                             },
                         }
                     }
-                    <span class="muted">{ format!("first seen {}", ago(e.group.first_seen_ms)) }</span>
+                    <span>{ format!("first seen {}", ago(e.group.first_seen_ms)) }</span>
                 </div>
             </div>
-            <Sparkline points={e.group.trend.clone()} class={classes!("exc-row__trend")} />
+            <Sparkline points={e.group.trend.clone()} tone={Tone::Danger} class={classes!("exc-row__trend")} />
             <div class="exc-row__count">
-                <strong>{ group_thousands(e.group.count) }</strong>
-                <span class="muted">{ ago(e.group.last_seen_ms) }</span>
+                <Text weight={yewi::TextWeight::Semibold} tabular=true>{ group_thousands(e.group.count) }</Text>
+                <Text size={TextSize::Sm} color={TextColor::Subtle}>{ ago(e.group.last_seen_ms) }</Text>
             </div>
         </>
     };

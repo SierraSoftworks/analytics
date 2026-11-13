@@ -1,33 +1,613 @@
 // =============================================================================
 // Analytics dashboard stylesheet
 //
-// A dark, typography-centric theme: the Element Plus palette and component shapes
-// remapped onto a dark canvas, with the restrained colour and generous whitespace
-// of tools like Linear. The styles are decomposed into per-component partials (see
-// SierraSoftworks/grey): design tokens + foundation under `src/styles/`, one
-// partial per component/area under `src/components/`, all assembled here.
+// The look comes from yewi, whose stylesheet `main` installs: every control,
+// the app bar, the sidebar, drawers, charts and typography are its components,
+// and every colour, space and radius below is one of its `--yi-*` tokens. yewi
+// keeps its rules in `@layer yewi.*`, so the unlayered rules here win without
+// specificity games.
+//
+// What is left for this file is what yewi cannot know about: the accent, the
+// page frame, and the layouts of the rows that are Analytics' own.
+//   1. Theme
+//   2. Page frame
+//   3. Sections, forms and filters
+//   4. Dashboard
+//   5. Exceptions, events and sessions
+//   6. Pixels and settings
+//   7. Responsive
 // =============================================================================
 
-// Foundation — tokens, reset, structural layout.
-@use 'src/styles/variables';
-@use 'src/styles/base';
-@use 'src/styles/layout';
+// A bare list: the rows bring their own shape.
+@mixin rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
 
-// Components & page areas.
-@use 'src/components/controls';
-@use 'src/components/alert';
-@use 'src/components/app_bar';
-@use 'src/components/sidebar';
-@use 'src/components/page_header';
-@use 'src/components/filter_bar';
-@use 'src/components/stats';
-@use 'src/components/charts';
-@use 'src/components/breakdown';
-@use 'src/components/dashboard';
-@use 'src/components/tables';
-@use 'src/components/drawer';
-@use 'src/components/dropdown';
-@use 'src/components/settings';
-@use 'src/components/exceptions';
-@use 'src/components/traces';
-@use 'src/components/auth';
+// One line, cut short with an ellipsis.
+@mixin truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// -----------------------------------------------------------------------------
+// 1. Theme
+// -----------------------------------------------------------------------------
+
+:root {
+  // The Sierra Softworks blue Analytics has always worn: darkened where it
+  // sits on a light page, as it always was on the dark one.
+  --yi-accent: light-dark(#1c7aac, #3da4dc);
+}
+
+// -----------------------------------------------------------------------------
+// 2. Page frame
+// -----------------------------------------------------------------------------
+
+.yi-app-bar__brand img {
+  height: 26px;
+  width: auto;
+}
+
+// The filter query takes the middle of the app bar, the way a browser's
+// address bar does.
+.app-query {
+  flex: 1;
+  min-width: 0;
+  max-width: 56rem;
+  margin-inline: auto;
+}
+
+// The signed-out screens give AppShell no sidebar. yewi 0.2 keeps the
+// sidebar's column regardless, which would squeeze the page into it, so the
+// page takes the whole row there.
+.app-shell--bare > .yi-app-shell__body {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+// The page is a column the height of the window, so that a short page still
+// has its footer at the bottom.
+.app-shell > .yi-app-shell__body > .yi-app-shell__main {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+}
+
+// Fluid width: the dashboard grid fills the viewport instead of pooling
+// whitespace to the right of a capped column.
+.app-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.app-footer {
+  margin-top: var(--yi-space-3xl);
+  padding-top: var(--yi-space-md);
+  border-top: 1px solid var(--yi-line);
+}
+
+// Loading, sign-in and session errors: one message, centred in the page.
+.center-screen {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 50vh;
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--yi-space-xl);
+
+  // Reading pages (settings) hold a comfortable measure.
+  &--narrow {
+    max-width: 56rem;
+  }
+}
+
+// A search field in a page header.
+.page-search {
+  width: 18rem;
+  max-width: 100%;
+}
+
+// -----------------------------------------------------------------------------
+// 3. Sections, forms and filters
+// -----------------------------------------------------------------------------
+
+// A titled stretch of a page. Sections sit flat on the page: they are its
+// content, told apart by their headings and the space between them.
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--yi-space-md);
+  min-width: 0;
+
+  &__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--yi-space-sm) var(--yi-space-lg);
+  }
+
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: var(--yi-space-lg);
+  }
+
+  // The description belongs to the heading above it.
+  &__description {
+    margin-top: calc(-1 * var(--yi-space-sm));
+  }
+}
+
+// A small label over a figure or a block.
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+// A drawer's fields.
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--yi-space-lg);
+
+  // A control with the button that acts on it.
+  &__row {
+    display: flex;
+    align-items: center;
+    gap: var(--yi-space-sm);
+
+    > :first-child {
+      flex: 1;
+      min-width: 0;
+    }
+  }
+}
+
+// A list of things with one action each: sources to add, projects to manage.
+.choice-rows {
+  @include rows;
+}
+
+.choice-row {
+  display: flex;
+  align-items: center;
+  gap: var(--yi-space-sm);
+  padding: var(--yi-space-xs) 0;
+
+  & + & {
+    border-top: 1px solid var(--yi-line);
+  }
+
+  &__label {
+    @include truncate;
+    flex: 1;
+  }
+}
+
+// The active filters, and the way to add one.
+.filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--yi-space-xs);
+  // The header above owns the space between them.
+  margin-top: calc(-1 * var(--yi-space-sm));
+}
+
+// A filter this page cannot honour: kept, so it is not silently dropped on the
+// way to a page that can, but visibly not in effect.
+.chip--inert {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+.chip--advanced {
+  max-width: 28rem;
+}
+
+// The value step of the add-filter popover.
+.add-filter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--yi-space-xs);
+  padding: var(--yi-space-xs);
+  min-width: 15rem;
+
+  &__picked {
+    display: flex;
+    align-items: center;
+    gap: var(--yi-space-xs);
+  }
+
+  > .yi-text {
+    padding: var(--yi-space-xs);
+    margin: 0;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 4. Dashboard
+// -----------------------------------------------------------------------------
+
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--yi-space-2xl);
+  transition: opacity var(--yi-duration) var(--yi-ease);
+
+  // The previous answer stays readable while the next one loads.
+  &--refreshing {
+    opacity: 0.6;
+  }
+}
+
+// The headline figures: as many columns as there are tiles.
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--yi-space-md);
+}
+
+// The traffic chart, with the exception strip tucked under it.
+.traffic-chart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--yi-space-xs);
+  // Both plots start at the same place, so a position lines up down the page.
+  --yi-chart-axis-width: 3.25rem;
+
+  &__caption {
+    margin-block-start: var(--yi-space-xs);
+    color: var(--yi-fg-subtle);
+    font-size: var(--yi-text-xs);
+  }
+
+  &__exceptions {
+    --yi-chart-height: 3.5rem;
+
+    // The traffic plot above already carries the time axis.
+    .yi-chart__x {
+      display: none;
+    }
+  }
+}
+
+// The breakdowns: two to a row, each its own tabbed list, flat on the page.
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--yi-space-2xl) var(--yi-space-3xl);
+  align-items: start;
+}
+
+.breakdown {
+  min-width: 0;
+  // Enough room that a short tab does not pull the row below it up.
+  min-height: 14rem;
+
+  &__empty {
+    padding: var(--yi-space-xl) 0;
+  }
+}
+
+// Sources that belong to no project yet.
+.unassigned {
+  &__rows {
+    @include rows;
+    margin-bottom: var(--yi-space-sm);
+  }
+
+  &__row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--yi-space-xs) var(--yi-space-md);
+    padding: var(--yi-space-xs) 0;
+
+    & + & {
+      border-top: 1px solid var(--yi-line);
+    }
+  }
+
+  &__source {
+    @include truncate;
+    flex: 1 1 12rem;
+    font-family: var(--yi-font-mono);
+    font-size: var(--yi-text-sm);
+  }
+}
+
+// One session in a list of them.
+.trace-row {
+  &__id {
+    font-family: var(--yi-font-mono);
+    font-size: var(--yi-text-sm);
+    color: var(--yi-fg-muted);
+    margin-right: var(--yi-space-sm);
+  }
+
+  &__location {
+    font-family: var(--yi-font-mono);
+    font-size: var(--yi-text-sm);
+  }
+
+  &__meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--yi-space-xs) var(--yi-space-md);
+  }
+
+  &__aside {
+    display: flex;
+    align-items: center;
+    gap: var(--yi-space-xs);
+    color: var(--yi-fg-subtle);
+    white-space: nowrap;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 5. Exceptions, events and sessions
+// -----------------------------------------------------------------------------
+
+// The inbox: one row per group, with a rule between them.
+.exc-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.exc-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 9rem 6rem;
+  align-items: center;
+  gap: var(--yi-space-lg);
+  padding: var(--yi-space-md) var(--yi-space-sm);
+  border-bottom: 1px solid var(--yi-line);
+  cursor: pointer;
+  transition: background var(--yi-duration-fast) var(--yi-ease);
+
+  &:hover {
+    background: var(--yi-tone-2);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--yi-focus);
+    outline-offset: -2px;
+    border-radius: var(--yi-radius-sm);
+  }
+
+  // A group no project owns has nowhere to open.
+  &--inert {
+    cursor: default;
+
+    &:hover {
+      background: none;
+    }
+  }
+
+  &__main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--yi-space-xs);
+  }
+
+  &__title {
+    display: flex;
+    align-items: baseline;
+    gap: var(--yi-space-sm);
+    min-width: 0;
+  }
+
+  &__type {
+    flex: none;
+    font-family: var(--yi-font-mono);
+    font-weight: 600;
+    color: var(--yi-danger);
+  }
+
+  &__message {
+    @include truncate;
+    color: var(--yi-fg-muted);
+  }
+
+  &__meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--yi-space-xs) var(--yi-space-md);
+    font-size: var(--yi-text-sm);
+    color: var(--yi-fg-subtle);
+
+    code {
+      font-family: var(--yi-font-mono);
+    }
+  }
+
+  &__trend {
+    width: 100%;
+    height: 1.75rem;
+  }
+
+  &__count {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    white-space: nowrap;
+  }
+}
+
+// What a detail page says about its subject before the breakdowns start.
+.detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--yi-space-sm) var(--yi-space-2xl);
+
+  p {
+    margin: 0;
+  }
+
+  &__trend {
+    display: flex;
+    align-items: center;
+    gap: var(--yi-space-md);
+
+    .yi-sparkline {
+      width: 14rem;
+      height: 2rem;
+    }
+  }
+}
+
+// How occurrences spread over each dimension.
+.dist-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: var(--yi-space-xl) var(--yi-space-3xl);
+  align-items: start;
+}
+
+.dist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--yi-space-sm);
+  min-width: 0;
+}
+
+// One example of an exception or event: who reported it, and what they sent.
+.example {
+  display: flex;
+  flex-direction: column;
+  gap: var(--yi-space-md);
+  min-width: 0;
+
+  &__meta,
+  &__tags {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--yi-space-xs) var(--yi-space-md);
+  }
+
+  &__actions {
+    margin-left: auto;
+  }
+
+  &__message {
+    margin: 0;
+    font-family: var(--yi-font-mono);
+    font-size: var(--yi-text-sm);
+    overflow-wrap: anywhere;
+  }
+}
+
+// The longer metadata a reporter sent with an event.
+.meta-context {
+  display: flex;
+  flex-direction: column;
+  gap: var(--yi-space-xs);
+  min-width: 0;
+}
+
+// The facts of one session.
+.trace-facts {
+  padding-bottom: var(--yi-space-lg);
+  border-bottom: 1px solid var(--yi-line);
+}
+
+// When a timeline entry happened: the time, then how far into the session.
+.trace-when {
+  display: inline-flex;
+  gap: var(--yi-space-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+// What a timeline entry carries sits under it with room to breathe.
+.yi-timeline__detail > .example__tags,
+.yi-timeline__detail > .meta-context,
+.yi-timeline__detail > .yi-code-block {
+  margin-top: var(--yi-space-sm);
+}
+
+// -----------------------------------------------------------------------------
+// 6. Pixels and settings
+// -----------------------------------------------------------------------------
+
+// A pixel's embed URL: as much of it as fits, and a button for the rest.
+.pixel-url {
+  max-width: 24rem;
+}
+
+.row-actions {
+  white-space: nowrap;
+  text-align: end;
+}
+
+// The key/value pairs a pixel reports with each hit.
+.kv-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--yi-space-sm);
+
+  &__row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+    gap: var(--yi-space-sm);
+    align-items: center;
+  }
+}
+
+// The one part of settings that cannot be taken back.
+.danger-zone {
+  border-color: color-mix(in oklch, var(--yi-danger) 45%, var(--yi-card-line));
+
+  .form__row > :first-child {
+    flex: 0 1 18rem;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 7. Responsive
+// -----------------------------------------------------------------------------
+
+@media (max-width: 60rem) {
+  .panel-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 40rem) {
+  // Date-and-time labels are long: a phone has room for two of them.
+  .traffic-chart .yi-chart__x .yi-chart__tick:not(:nth-child(4n + 1)) {
+    display: none;
+  }
+
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .exc-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+
+    &__trend {
+      display: none;
+    }
+  }
+
+  .page-search {
+    width: 100%;
+  }
+}

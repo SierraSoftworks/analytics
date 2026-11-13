@@ -3,10 +3,10 @@
 //! navigation), it flips the auth state back to the sign-in screen.
 
 use yew::prelude::*;
+use yewi::prelude::{Alert, Tone};
 
 use crate::api::ApiError;
 use crate::app::AuthHandle;
-use crate::components::{Alert, AlertKind};
 
 #[derive(Properties, PartialEq)]
 pub struct ApiErrorAlertProps {
@@ -30,13 +30,15 @@ pub fn api_error_alert(props: &ApiErrorAlertProps) -> Html {
 
     if unauthorized {
         html! {
-            <Alert kind={AlertKind::Info} title="Your session expired"
-                message="Returning you to sign in…" />
+            <Alert tone={Tone::Info} title="Your session expired">
+                { "Returning you to sign in…" }
+            </Alert>
         }
     } else {
         html! {
-            <Alert kind={AlertKind::Error} title="Something went wrong"
-                message={AttrValue::from(props.error.to_string())} />
+            <Alert tone={Tone::Danger} title="Something went wrong">
+                { props.error.to_string() }
+            </Alert>
         }
     }
 }

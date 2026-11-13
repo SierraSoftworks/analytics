@@ -9,11 +9,17 @@ use std::collections::{HashMap, HashSet};
 use analytics_api::{SessionTrace as SessionTraceData, TraceEvent, TraceEventKind, source_label};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
+use yewi::prelude::{
+    CodeBlock, DescriptionItem, DescriptionLayout, DescriptionList, Heading, HeadingLevel,
+    InlineCode, PageHeader, Pill, Text, TextColor, TextSize, Timeline, TimelineItem,
+    TimelineRunOff, Tone, attrs, icons,
+};
 
 use crate::api::{self, ApiError};
 use crate::app::Route;
+use crate::components::ApiErrorAlert;
 use crate::components::metadata::Metadata;
-use crate::components::{ApiErrorAlert, Crumb, PageHeader};
+use crate::components::page::{crumbs, loading};
 use crate::filters::use_filters;
 use crate::format::{
     clock_time, country_flag, country_name, format_duration, language_name, short_session_id,
@@ -43,18 +49,15 @@ pub fn trace(props: &TraceProps) -> Html {
     // hands it back so the dashboard reopens the way the operator left it.
     let filters = use_filters();
     let title = format!("Session {}", short_session_id(&props.id));
-    let crumbs = vec![
-        Crumb::link_with_query("Dashboard", Route::Overview, filters.to_pairs()),
-        Crumb::current(title.clone()),
-    ];
+    let breadcrumbs = crumbs("Dashboard", Route::Overview, &filters, &title);
 
     html! {
         <div class="page">
-            <PageHeader crumbs={crumbs} title={title}
+            <PageHeader {title} {breadcrumbs}
                 subtitle="Everything this visit reported, in order: pages, events, and exceptions." />
             {
                 match &*data {
-                    None => html! { <div class="page-loading">{ "Loading…" }</div> },
+                    None => loading(),
                     Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
                     Some(Ok(trace)) => {
                         let count = |kind: TraceEventKind| {
@@ -63,17 +66,19 @@ pub fn trace(props: &TraceProps) -> Html {
                         html! {
                             <>
                                 { summary_panel(trace) }
-                                <div class="trace-timeline__head">
-                                    <h2 class="section__title">{ "Timeline" }</h2>
-                                    <span class="muted">
-                                        { trace_counts(
-                                            count(TraceEventKind::PageLoad),
-                                            count(TraceEventKind::Custom),
-                                            count(TraceEventKind::Exception),
-                                        ) }
-                                    </span>
-                                </div>
-                                { timeline(trace) }
+                                <section class="section">
+                                    <header class="section__head">
+                                        <Heading level={HeadingLevel::H2} size={TextSize::Md}>{ "Timeline" }</Heading>
+                                        <Text size={TextSize::Sm} color={TextColor::Subtle}>
+                                            { trace_counts(
+                                                count(TraceEventKind::PageLoad),
+                                                count(TraceEventKind::Custom),
+                                                count(TraceEventKind::Exception),
+                                            ) }
+                                        </Text>
+                                    </header>
+                                    { timeline(trace) }
+                                </section>
                             </>
                         }
                     }
@@ -83,7 +88,7 @@ pub fn trace(props: &TraceProps) -> Html {
     }
 }
 
-/// The visit's context card: one fact per cell, absent dimensions dropped.
+/// The visit's context: one fact per cell, absent dimensions dropped.
 fn summary_panel(trace: &SessionTraceData) -> Html {
     let client = match (&trace.ua_browser, &trace.ua_version) {
         (Some(browser), Some(version)) => Some(format!("{browser} {version}")),
@@ -108,17 +113,16 @@ fn summary_panel(trace: &SessionTraceData) -> Html {
     ];
 
     let cells = facts.into_iter().filter_map(|(label, value)| {
-        value.map(|value| {
-            html! {
-                <div class="trace-fact" key={label}>
-                    <span class="trace-fact__label">{ label }</span>
-                    <span class="trace-fact__value" title={value.clone()}>{ value }</span>
-                </div>
-            }
-        })
+        value.map(
+            |value| html! { <DescriptionItem key={label} term={label}>{ value }</DescriptionItem> },
+        )
     });
 
-    html! { <div class="panel trace-facts">{ for cells }</div> }
+    html! {
+        <DescriptionList layout={DescriptionLayout::Stacked} min="10rem" class="trace-facts">
+            { for cells }
+        </DescriptionList>
+    }
 }
 
 /// The vertical timeline. Page views form the parent spine: each spans from its
@@ -178,7 +182,36 @@ fn timeline(trace: &SessionTraceData) -> Html {
         }
     });
 
-    html! { <ol class="trace-timeline">{ for rows }</ol> }
+    html! { <Timeline label="Session timeline" run_off={TimelineRunOff::None}>{ for rows }</Timeline> }
+}
+
+/// When an entry happened: the wall-clock time, and how far into the session.
+fn when(event: &TraceEvent, started_ms: i64) -> Html {
+    html! {
+        <span class="trace-when">
+            <span title={tooltip_label(event.received_ms, 0)}>{ clock_time(event.received_ms) }</span>
+            <span title="Since the session started">
+                { format!("+{}", format_duration(event.received_ms - started_ms)) }
+            </span>
+        </span>
+    }
+}
+
+/// A page's path, with how long it stayed open when its unload was seen.
+fn page_line(event: &TraceEvent, duration: Option<i64>) -> (Html, Html) {
+    let title = html! {
+        <InlineCode>{ event.pathname.clone().unwrap_or_else(|| "/".into()) }</InlineCode>
+    };
+    let aside = duration
+        .map(|duration| {
+            html! {
+                <Pill dot=false attrs={attrs! { "title" => "Time on page" }}>
+                    { format!("{} on page", format_duration(duration)) }
+                </Pill>
+            }
+        })
+        .unwrap_or_default();
+    (title, aside)
 }
 
 /// A page view on the parent spine: its path and time-on-page span, with the
@@ -191,122 +224,77 @@ fn page_view(
     children: Option<&Vec<(usize, &TraceEvent)>>,
     index: usize,
 ) -> Html {
-    let offset = event.received_ms - started_ms;
     let nested = children.filter(|kids| !kids.is_empty()).map(|kids| {
         let rows = kids.iter().map(|(i, ev)| entry(ev, started_ms, None, *i));
         html! {
-            <div class="trace-span">
-                <ol class="trace-timeline trace-timeline--nested">{ for rows }</ol>
-            </div>
+            <Timeline label="During this page view" run_off={TimelineRunOff::None}>{ for rows }</Timeline>
         }
     });
+    let (title, aside) = page_line(event, duration);
 
     html! {
-        <li class={classes!("trace-entry", "trace-entry--page")} key={index.to_string()}>
-            <span class="trace-entry__marker" aria-hidden="true" />
-            <div class="trace-entry__body">
-                <div class="trace-entry__head">
-                    <span class="trace-entry__kind">{ "Page view" }</span>
-                    <span class="trace-entry__time" title={tooltip_label(event.received_ms, 0)}>
-                        { clock_time(event.received_ms) }
-                    </span>
-                    <span class="trace-entry__offset" title="Since the session started">
-                        { format!("+{}", format_duration(offset)) }
-                    </span>
-                </div>
-                <div class="trace-entry__line">
-                    <code class="trace-entry__path">
-                        { event.pathname.clone().unwrap_or_else(|| "/".into()) }
-                    </code>
-                    if let Some(duration) = duration {
-                        <span class="badge badge--muted" title="Time on page">
-                            { format!("{} on page", format_duration(duration)) }
-                        </span>
-                    }
-                </div>
-                { nested.unwrap_or_default() }
-            </div>
-        </li>
+        <TimelineItem key={index.to_string()} icon={icons::FILE_TEXT} {title} {aside}
+            meta={html! { <>{ "Page view · " }{ when(event, started_ms) }</> }}>
+            { nested.unwrap_or_default() }
+        </TimelineItem>
     }
 }
 
 fn entry(event: &TraceEvent, started_ms: i64, duration: Option<i64>, index: usize) -> Html {
-    let (modifier, label) = match event.kind {
-        TraceEventKind::PageLoad => ("page", "Page view"),
-        TraceEventKind::PageUnload => ("page", "Page exit"),
-        TraceEventKind::Custom => ("event", "Event"),
-        TraceEventKind::Exception => ("exception", "Exception"),
-    };
-    let offset = event.received_ms - started_ms;
-
-    let body = match event.kind {
-        TraceEventKind::PageLoad | TraceEventKind::PageUnload => html! {
-            <div class="trace-entry__line">
-                <code class="trace-entry__path">
-                    { event.pathname.clone().unwrap_or_else(|| "/".into()) }
-                </code>
-                if let Some(duration) = duration {
-                    <span class="badge badge--muted" title="Time on page">
-                        { format!("{} on page", format_duration(duration)) }
-                    </span>
-                }
-            </div>
-        },
+    let key = index.to_string();
+    match event.kind {
+        TraceEventKind::PageLoad | TraceEventKind::PageUnload => {
+            let label = if event.kind == TraceEventKind::PageLoad {
+                "Page view · "
+            } else {
+                "Page exit · "
+            };
+            let (title, aside) = page_line(event, duration);
+            html! {
+                <TimelineItem {key} icon={icons::FILE_TEXT} {title} {aside}
+                    meta={html! { <>{ label }{ when(event, started_ms) }</> }} />
+            }
+        }
         TraceEventKind::Custom => {
             let metadata = Metadata::parse(event.metadata.as_deref());
+            let title = html! { { event.event_name.clone().unwrap_or_else(|| "event".into()) } };
             html! {
-                <>
-                    <div class="trace-entry__line trace-entry__line--wrap">
-                        <strong class="trace-entry__name">
-                            { event.event_name.clone().unwrap_or_else(|| "event".into()) }
-                        </strong>
-                        { metadata.tag_pills() }
-                    </div>
+                <TimelineItem {key} icon={icons::ZAP} tone={Tone::Info} {title}
+                    meta={html! { <>{ "Event · " }{ when(event, started_ms) }</> }}>
+                    if !metadata.tags.is_empty() {
+                        <div class="example__tags">{ metadata.tag_pills() }</div>
+                    }
                     { metadata.context_list() }
-                </>
+                </TimelineItem>
             }
         }
         TraceEventKind::Exception => {
             let handled = event.exc_handled.unwrap_or(false);
             let metadata = Metadata::parse(event.metadata.as_deref());
-            html! {
+            let title = html! {
                 <>
-                    <div class="trace-entry__line trace-entry__line--wrap">
-                        <code class="trace-entry__exc-type">
-                            { event.exc_type.clone().unwrap_or_else(|| "Error".into()) }
-                        </code>
-                        <span class="trace-entry__exc-message">
-                            { event.exc_message.clone().unwrap_or_default() }
-                        </span>
-                        if !handled {
-                            <span class="badge badge--warn">{ "unhandled" }</span>
-                        }
-                        { metadata.tag_pills() }
-                    </div>
+                    <InlineCode>{ event.exc_type.clone().unwrap_or_else(|| "Error".into()) }</InlineCode>
+                    { " " }
+                    { event.exc_message.clone().unwrap_or_default() }
+                </>
+            };
+            let aside = if handled {
+                Html::default()
+            } else {
+                html! { <Pill dot=false tone={Tone::Warn}>{ "unhandled" }</Pill> }
+            };
+            html! {
+                <TimelineItem {key} icon={icons::BUG} tone={Tone::Danger} tone_label="exception" {title} {aside}
+                    meta={html! { <>{ "Exception · " }{ when(event, started_ms) }</> }}>
+                    if !metadata.tags.is_empty() {
+                        <div class="example__tags">{ metadata.tag_pills() }</div>
+                    }
                     { metadata.context_list() }
                     if let Some(stack) = &event.exc_stack {
-                        <pre class="stack">{ stack.clone() }</pre>
+                        <CodeBlock code={stack.clone()} wrap=true copy_label="Copy stack trace" />
                     }
-                </>
+                </TimelineItem>
             }
         }
-    };
-
-    html! {
-        <li class={classes!("trace-entry", format!("trace-entry--{modifier}"))} key={index.to_string()}>
-            <span class="trace-entry__marker" aria-hidden="true" />
-            <div class="trace-entry__body">
-                <div class="trace-entry__head">
-                    <span class="trace-entry__kind">{ label }</span>
-                    <span class="trace-entry__time" title={tooltip_label(event.received_ms, 0)}>
-                        { clock_time(event.received_ms) }
-                    </span>
-                    <span class="trace-entry__offset" title="Since the session started">
-                        { format!("+{}", format_duration(offset)) }
-                    </span>
-                </div>
-                { body }
-            </div>
-        </li>
     }
 }

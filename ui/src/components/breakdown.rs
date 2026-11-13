@@ -1,13 +1,19 @@
 //! Tabbed breakdown panels: every row is a click-to-filter control with a
-//! proportional bar behind it, a share percentage, and an explicit affordance
-//! (hover highlight + funnel icon), following the Plausible/Sentry convention.
+//! proportional bar behind it and a share percentage, following the
+//! Plausible/Sentry convention. The tabs and the ranked rows are yewi's `Tabs`
+//! and `BarList`; this module prepares the rows and maps a click back to the
+//! filter terms it stands for.
+
+use std::rc::Rc;
 
 use yew::prelude::*;
+use yewi::prelude::{
+    BarItem, BarList, BarListAction, BarListOverflow, IconData, Size, Tab, Tabs, TabsVariant, Text,
+    TextColor, TextSize, TextTag, icons,
+};
 
 use crate::components::charts::Metric;
-use crate::components::icons;
 use crate::filters::Dim;
-use crate::format::compact;
 
 /// One prepared row of a breakdown panel. Pages convert `BreakdownRow` API rows
 /// into these, resolving display labels (project names, country flags, sentinel
@@ -22,8 +28,6 @@ pub struct PanelRow {
     pub visitors: i64,
     pub pageviews: i64,
     pub events: i64,
-    /// Hovering the label shows this (defaults to the label).
-    pub title: Option<String>,
     /// An additional filter term applied (and toggled) together with the
     /// row's main value — e.g. a version row also pins its application.
     pub extra: Option<(Dim, String)>,
@@ -49,10 +53,10 @@ pub enum ActionIcon {
 }
 
 impl ActionIcon {
-    fn render(self) -> Html {
+    fn icon(self) -> IconData {
         match self {
-            ActionIcon::Gear => icons::gear(),
-            ActionIcon::Open => icons::chevron_right(),
+            ActionIcon::Gear => icons::SETTINGS,
+            ActionIcon::Open => icons::CHEVRON_RIGHT,
         }
     }
 }
@@ -120,45 +124,63 @@ const VISIBLE_ROWS: usize = 8;
 #[function_component(BreakdownPanel)]
 pub fn breakdown_panel(props: &BreakdownPanelProps) -> Html {
     let tab_index = use_state(|| props.select_tab.unwrap_or(0));
-    let expanded = use_state(|| false);
 
     // Follow externally-driven tab selection (fires only when the value
     // changes, so it never overrides a manual click in between).
     {
-        let (tab_index, expanded) = (tab_index.clone(), expanded.clone());
+        let tab_index = tab_index.clone();
         use_effect_with(props.select_tab, move |select| {
             if let Some(i) = *select
                 && *tab_index != i
             {
                 tab_index.set(i);
-                expanded.set(false);
             }
             || ()
         });
     }
 
     let index = (*tab_index).min(props.tabs.len().saturating_sub(1));
-    let Some(tab) = props.tabs.get(index) else {
-        return html! {};
+    let on_change = {
+        let tab_index = tab_index.clone();
+        Callback::from(move |value: AttrValue| tab_index.set(value.parse().unwrap_or(0)))
     };
 
-    let tabs = props.tabs.iter().enumerate().map(|(i, t)| {
-        let active = i == index;
-        let onclick = {
-            let (tab_index, expanded) = (tab_index.clone(), expanded.clone());
-            Callback::from(move |_: MouseEvent| {
-                tab_index.set(i);
-                expanded.set(false);
-            })
-        };
-        html! {
-            <button key={i.to_string()}
-                class={classes!("panel-tab", active.then_some("panel-tab--active"))}
-                onclick={onclick}>
-                { t.label }
-            </button>
+    let tabs = props.tabs.iter().enumerate().map(|(i, tab)| {
+        html_nested! {
+            <Tab key={i.to_string()} value={i.to_string()} label={tab.label}>
+                // Only the open tab's rows are worth preparing.
+                if i == index {
+                    <TabRows tab={tab.clone()} metric={props.metric}
+                        on_filter={props.on_filter.clone()} active={props.active.clone()} />
+                }
+            </Tab>
         }
     });
+
+    html! {
+        <section class="breakdown">
+            <Tabs selected={index.to_string()} {on_change} variant={TabsVariant::Pill}
+                size={Size::Small} label="Breakdown">
+                { for tabs }
+            </Tabs>
+        </section>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct TabRowsProps {
+    tab: PanelTab,
+    metric: Metric,
+    on_filter: Callback<Vec<(Dim, String)>>,
+    active: Vec<(Dim, String)>,
+}
+
+/// One tab's ranked rows. A row is addressed by its position in the tab,
+/// because a filter value alone need not be unique (two applications can share
+/// a version number).
+#[function_component(TabRows)]
+fn tab_rows(props: &TabRowsProps) -> Html {
+    let tab = &props.tab;
 
     // Most dimension tabs carry no events at all; when the Events metric is
     // active there, fall back to page views for the *whole tab* (mixing real
@@ -172,119 +194,100 @@ pub fn breakdown_panel(props: &BreakdownPanelProps) -> Html {
         m if m != Metric::Events && !tab_has_views && tab_has_events => Metric::Events,
         m => m,
     };
-    // The API orders rows by pageviews; re-rank by whichever metric is displayed.
-    let mut ranked: Vec<&PanelRow> = tab.rows.iter().collect();
-    ranked.sort_by_key(|r| std::cmp::Reverse(r.value_for(metric)));
-    let total: i64 = ranked.iter().map(|r| r.value_for(metric)).sum();
-    let max: i64 = ranked
+
+    // The API orders rows by pageviews; BarList re-ranks by the amount shown.
+    let items: Rc<[BarItem]> = tab
+        .rows
         .iter()
-        .map(|r| r.value_for(metric))
-        .max()
-        .unwrap_or(1)
-        .max(1);
+        .enumerate()
+        .map(|(i, row)| {
+            let item = BarItem::new(
+                i.to_string(),
+                row.label.clone(),
+                row.value_for(metric) as f64,
+            );
+            let item = match &row.icon {
+                Some(glyph) => item.glyph(glyph.clone()),
+                None => item,
+            };
+            // The "absent" sentinel reads as a gap, not a value.
+            if row.value.is_empty() {
+                item.muted()
+            } else {
+                item
+            }
+        })
+        .collect();
+
     // Case-insensitive, like the server's string comparisons, so a hand-typed
     // `project == "apps"` still highlights the "Apps" row.
-    let selected = props
-        .active
-        .iter()
-        .find(|(d, _)| *d == tab.dim)
-        .map(|(_, v)| v.to_lowercase());
-
-    let hidden = ranked.len().saturating_sub(VISIBLE_ROWS);
-    let shown = if *expanded || hidden == 0 {
-        ranked.len()
-    } else {
-        VISIBLE_ROWS
+    let is_active = |dim: Dim, value: &str| {
+        props
+            .active
+            .iter()
+            .any(|(d, v)| *d == dim && v.to_lowercase() == value.to_lowercase())
     };
+    let selected = tab
+        .rows
+        .iter()
+        .position(|row| {
+            is_active(tab.dim, &row.value)
+                && row
+                    .extra
+                    .as_ref()
+                    .is_none_or(|(dim, value)| is_active(*dim, value))
+        })
+        .map(|i| AttrValue::from(i.to_string()));
 
-    let rows = ranked.iter().take(shown).enumerate().map(|(i, row)| {
-        let value = row.value_for(metric);
-        let share = if total > 0 { value as f64 / total as f64 * 100.0 } else { 0.0 };
-        let bar = if max > 0 { value as f64 / max as f64 * 100.0 } else { 0.0 };
-        let is_selected = selected.as_deref() == Some(row.value.to_lowercase().as_str())
-            && row.extra.as_ref().is_none_or(|(dim, value)| {
-                props
-                    .active
-                    .iter()
-                    .any(|(d, v)| d == dim && v.to_lowercase() == value.to_lowercase())
-            });
-
-        let onclick = {
-            let on_filter = props.on_filter.clone();
-            let mut terms = vec![(tab.dim, row.value.clone())];
-            terms.extend(row.extra.clone());
-            Callback::from(move |_: MouseEvent| on_filter.emit(terms.clone()))
-        };
-        // The action is a sibling of the row button (never a child — nested
-        // interactive elements are invalid HTML and confuse assistive tech),
-        // absolutely positioned over the row's end on hover. Sentinel rows
-        // aggregate absent values, which no detail page can address.
-        let action = tab.action.as_ref().filter(|_| !row.value.is_empty()).map(|action| {
-            let (action, value) = (action.clone(), row.value.clone());
-            let onclick = Callback::from(move |_: MouseEvent| action.emit(value.clone()));
-            html! {
-                <button class="brow__action" title={tab.action_title} onclick={onclick}>
-                    { tab.action_icon.render() }
-                </button>
+    let rows = Rc::new(tab.rows.clone());
+    let on_select = {
+        let (rows, on_filter, dim) = (rows.clone(), props.on_filter.clone(), tab.dim);
+        Callback::from(move |key: AttrValue| {
+            if let Some(row) = key.parse::<usize>().ok().and_then(|i| rows.get(i)) {
+                let mut terms = vec![(dim, row.value.clone())];
+                terms.extend(row.extra.clone());
+                on_filter.emit(terms);
+            }
+        })
+    };
+    // Sentinel rows aggregate absent values, which no detail page can address.
+    let action = tab.action.clone().map(|action| {
+        let rows = rows.clone();
+        let on_click = Callback::from(move |key: AttrValue| {
+            if let Some(row) = key.parse::<usize>().ok().and_then(|i| rows.get(i))
+                && !row.value.is_empty()
+            {
+                action.emit(row.value.clone());
             }
         });
-
-        html! {
-            <li class="brow-item" key={i.to_string()}>
-                <button
-                    class={classes!("brow", is_selected.then_some("brow--selected"))}
-                    onclick={onclick}
-                    title={format!("Filter: {} is {}", tab.dim.label(), row.title.clone().unwrap_or_else(|| row.label.clone()))}
-                >
-                    <span class="brow__bar" style={format!("width: {bar:.1}%")} />
-                    <span class="brow__label">
-                        if let Some(icon) = &row.icon {
-                            <span class="brow__icon">{ icon.clone() }</span>
-                        }
-                        <span class={classes!("brow__text", row.value.is_empty().then_some("brow__text--absent"))}>
-                            { row.label.clone() }
-                        </span>
-                        <span class="brow__filter-hint">{ icons::filter() }</span>
-                    </span>
-                    <span class="brow__share">{ format!("{share:.0}%") }</span>
-                    <span class="brow__count">{ compact(value) }</span>
-                </button>
-                { action }
-            </li>
-        }
+        BarListAction::new(tab.action_icon.icon(), tab.action_title, on_click)
     });
 
+    let empty = html! {
+        <Text tag={TextTag::P} size={TextSize::Sm} color={TextColor::Subtle} class="breakdown__empty">
+            { "No data in this period." }
+        </Text>
+    };
+
     html! {
-        <section class="panel-card">
-            <header class="panel-card__head">
-                <div class="panel-card__tabs">{ for tabs }</div>
-                <span class="panel-card__metric">{ metric_note(metric, tab) }</span>
-            </header>
-            if tab.rows.is_empty() {
-                <div class="panel-card__empty">{ "No data in this period." }</div>
-            } else {
-                <ul class="panel-card__rows">{ for rows }</ul>
-                if hidden > 0 {
-                    <button class="panel-card__more" onclick={{
-                        let expanded = expanded.clone();
-                        Callback::from(move |_: MouseEvent| expanded.set(!*expanded))
-                    }}>
-                        { if *expanded {
-                            "Show fewer".to_string()
-                        } else {
-                            format!("Show all {}", ranked.len())
-                        } }
-                    </button>
-                }
-            }
-        </section>
+        <BarList
+            {items}
+            label={tab.label}
+            value_heading={metric_note(metric)}
+            overflow={BarListOverflow::Expand(VISIBLE_ROWS)}
+            show_share=true
+            {selected}
+            {on_select}
+            {action}
+            {empty}
+        />
     }
 }
 
-fn metric_note(metric: Metric, _tab: &PanelTab) -> &'static str {
+fn metric_note(metric: Metric) -> &'static str {
     match metric {
-        Metric::Visitors => "visitors",
-        Metric::Pageviews => "views",
-        Metric::Events => "events",
+        Metric::Visitors => "Visitors",
+        Metric::Pageviews => "Views",
+        Metric::Events => "Events",
     }
 }

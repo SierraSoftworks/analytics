@@ -5,17 +5,16 @@ use std::collections::BTreeMap;
 
 use analytics_api::{Pixel, PixelInput};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlInputElement;
 use yew::prelude::*;
-
-use crate::api::{self, ApiError};
-use crate::components::{
-    ApiErrorAlert, Drawer, Dropdown, DropdownItem, PageHeader, ProjectsContext,
+use yewi::prelude::{
+    Alert, Button, ButtonVariant, ConfirmDialog, Copyable, Drawer, EmptyState, Field, IconButton,
+    PageHeader, Select, SelectOption, SimpleTable, Size, Text, TextColor, TextInput, TextInputKind,
+    Tone, VisuallyHidden, attrs, icons,
 };
 
-fn input_value(e: &InputEvent) -> String {
-    e.target_unchecked_into::<HtmlInputElement>().value()
-}
+use crate::api::{self, ApiError};
+use crate::components::page::loading;
+use crate::components::{ApiErrorAlert, ProjectsContext};
 
 #[function_component(Pixels)]
 pub fn pixels() -> Html {
@@ -35,6 +34,8 @@ pub fn pixels() -> Html {
     let f_meta = use_state(Vec::<(String, String)>::new);
     let f_error = use_state(|| None::<String>);
     let submitting = use_state(|| false);
+    // The pixel awaiting a delete confirmation.
+    let deleting = use_state(|| None::<Pixel>);
 
     {
         let pixels = pixels.clone();
@@ -176,10 +177,14 @@ pub fn pixels() -> Html {
     };
 
     let body = match &*pixels {
-        None => html! { <p class="muted">{ "Loading…" }</p> },
+        None => loading(),
         Some(Err(err)) => html! { <ApiErrorAlert error={err.clone()} /> },
         Some(Ok(list)) if list.is_empty() => {
-            html! { <div class="empty">{ "No tracking pixels yet." }</div> }
+            html! {
+                <EmptyState title="No tracking pixels yet." icon={icons::IMAGE}>
+                    { "A pixel counts opens where JavaScript cannot run: emails, RSS readers, READMEs." }
+                </EmptyState>
+            }
         }
         Some(Ok(list)) => {
             let text = needle.to_lowercase();
@@ -196,50 +201,51 @@ pub fn pixels() -> Html {
                 let url = format!("{origin}/track/gif/{}.gif", p.id);
                 let on_edit = {
                     let (open_edit, pixel) = (open_edit.clone(), p.clone());
-                    Callback::from(move |_| open_edit(&pixel))
+                    Callback::from(move |_: MouseEvent| open_edit(&pixel))
                 };
                 let on_delete = {
-                    let (pid, reload) = (p.id.clone(), reload.clone());
-                    Callback::from(move |_| {
-                        let (pid, reload) = (pid.clone(), reload.clone());
-                        spawn_local(async move {
-                            if api::delete_pixel(&pid).await.is_ok() {
-                                reload.set(*reload + 1);
-                            }
-                        });
-                    })
+                    let (deleting, pixel) = (deleting.clone(), p.clone());
+                    Callback::from(move |_: MouseEvent| deleting.set(Some(pixel.clone())))
                 };
                 html! {
-                    <tr>
-                        <td>{ &p.name }</td>
+                    <tr key={p.id.clone()}>
+                        <th scope="row">{ &p.name }</th>
                         <td>{ project_name(&p.project_id) }</td>
                         <td>{ &p.event_name }</td>
-                        <td><code class="embed">{ url }</code></td>
+                        <td class="pixel-url"><Copyable value={url} truncate=true label="Copy embed URL" /></td>
                         <td class="row-actions">
-                            <button class="btn btn--small btn--ghost" onclick={on_edit}>{ "Edit" }</button>
-                            <button class="btn btn--small btn--ghost" onclick={on_delete}>{ "Delete" }</button>
+                            <IconButton icon={icons::PENCIL} label={format!("Edit {}", p.name)}
+                                variant={ButtonVariant::Subtle} size={Size::Small} on_click={on_edit} />
+                            <IconButton icon={icons::TRASH_2} label={format!("Delete {}", p.name)}
+                                variant={ButtonVariant::Subtle} size={Size::Small} on_click={on_delete} />
                         </td>
                     </tr>
                 }
             }).collect::<Html>();
 
             if visible.is_empty() {
-                html! { <div class="empty">{ "No pixels match your search." }</div> }
+                html! { <EmptyState title="No pixels match your search." icon={icons::SEARCH_X} /> }
             } else {
                 html! {
-                    <div class="card-table">
-                        <table class="list">
-                            <thead><tr><th>{ "Name" }</th><th>{ "Project" }</th><th>{ "Event" }</th><th>{ "Embed URL" }</th><th></th></tr></thead>
-                            <tbody>{ rows }</tbody>
-                        </table>
-                    </div>
+                    <SimpleTable label="Tracking pixels">
+                        <thead>
+                            <tr>
+                                <th scope="col">{ "Name" }</th>
+                                <th scope="col">{ "Project" }</th>
+                                <th scope="col">{ "Event" }</th>
+                                <th scope="col">{ "Embed URL" }</th>
+                                <th scope="col"><VisuallyHidden>{ "Actions" }</VisuallyHidden></th>
+                            </tr>
+                        </thead>
+                        <tbody>{ rows }</tbody>
+                    </SimpleTable>
                 }
             }
         }
     };
     let on_needle = {
         let needle = needle.clone();
-        Callback::from(move |e: InputEvent| needle.set(input_value(&e)))
+        Callback::from(move |value: String| needle.set(value))
     };
 
     let no_projects = projects.is_empty();
@@ -258,19 +264,51 @@ pub fn pixels() -> Html {
         on_save,
     });
 
+    let on_confirm_delete = {
+        let (deleting, reload) = (deleting.clone(), reload.clone());
+        Callback::from(move |_: ()| {
+            let Some(pixel) = (*deleting).clone() else {
+                return;
+            };
+            let (deleting, reload) = (deleting.clone(), reload.clone());
+            spawn_local(async move {
+                if api::delete_pixel(&pixel.id).await.is_ok() {
+                    reload.set(*reload + 1);
+                }
+                deleting.set(None);
+            });
+        })
+    };
+    let on_cancel_delete = {
+        let deleting = deleting.clone();
+        Callback::from(move |_: ()| deleting.set(None))
+    };
+
+    let actions = html! {
+        <>
+            <TextInput kind={TextInputKind::Search} placeholder="Filter pixels…" class="page-search"
+                value={(*needle).clone()} on_input={on_needle}
+                attrs={attrs! { "aria-label" => "Filter pixels" }} />
+            <Button variant={ButtonVariant::Primary} icon={icons::PLUS} on_click={open_new} disabled={no_projects}>
+                { "New pixel" }
+            </Button>
+        </>
+    };
+
     html! {
         <div class="page">
-            <PageHeader title="Tracking pixels"
-                subtitle="1×1 GIF beacons for email opens, RSS, and other no-JavaScript contexts.">
-                <input class="input" type="search" placeholder="Filter pixels…"
-                    value={(*needle).clone()} oninput={on_needle} />
-                <button class="btn btn--primary" onclick={open_new} disabled={no_projects}>{ "New pixel" }</button>
-            </PageHeader>
+            <PageHeader title="Tracking pixels" {actions}
+                subtitle="1×1 GIF beacons for email opens, RSS, and other no-JavaScript contexts." />
             if no_projects {
-                <p class="muted">{ "Create a project first — every pixel belongs to one." }</p>
+                <Alert tone={Tone::Info}>{ "Create a project first. Every pixel belongs to one." }</Alert>
             }
             { body }
             { drawer }
+            <ConfirmDialog open={deleting.is_some()} danger=true confirm_label="Delete pixel"
+                title={format!("Delete {}?", deleting.as_ref().map(|p| p.name.as_str()).unwrap_or("this pixel"))}
+                on_confirm={on_confirm_delete} on_cancel={on_cancel_delete}>
+                { "Anything still embedding its URL stops being counted. This cannot be undone." }
+            </ConfirmDialog>
         </div>
     }
 }
@@ -295,36 +333,34 @@ fn pixel_drawer<F: Fn(&str) -> String>(a: PixelDrawerArgs<F>) -> Html {
 
     let on_name = {
         let f = a.f_name.clone();
-        Callback::from(move |e: InputEvent| f.set(input_value(&e)))
+        Callback::from(move |value: String| f.set(value))
     };
     let on_event = {
         let f = a.f_event.clone();
-        Callback::from(move |e: InputEvent| f.set(input_value(&e)))
+        Callback::from(move |value: String| f.set(value))
     };
 
     let project_field = if a.editing {
         html! {
-            <div class="field">
-                <label class="field__label">{ "Project" }</label>
-                <p class="drawer__hint">{ (a.project_name)(&a.f_project) }</p>
-            </div>
+            <Field label="Project" group=true>
+                <Text color={TextColor::Muted}>{ (a.project_name)(&a.f_project) }</Text>
+            </Field>
         }
     } else {
-        let items: Vec<DropdownItem> = a
+        let options: Vec<SelectOption> = a
             .projects
             .iter()
-            .map(|p| DropdownItem::new(p.id.clone(), p.name.clone()))
+            .map(|p| SelectOption::new(p.id.clone(), p.name.clone()))
             .collect();
-        let on_select = {
+        let on_change = {
             let f = a.f_project.clone();
-            Callback::from(move |v: String| f.set(v))
+            Callback::from(move |v: AttrValue| f.set(v.to_string()))
         };
         html! {
-            <div class="field">
-                <label class="field__label">{ "Project" }</label>
-                <Dropdown block=true items={items} value={(*a.f_project).clone()}
-                    placeholder="Choose a project" {on_select} />
-            </div>
+            <Field label="Project">
+                <Select {options} value={AttrValue::from((*a.f_project).clone())}
+                    placeholder="Choose a project" {on_change} />
+            </Field>
         }
     };
 
@@ -332,92 +368,81 @@ fn pixel_drawer<F: Fn(&str) -> String>(a: PixelDrawerArgs<F>) -> Html {
     let meta_rows = (*a.f_meta).iter().enumerate().map(|(i, (k, v))| {
         let on_key = {
             let f = a.f_meta.clone();
-            Callback::from(move |e: InputEvent| {
+            Callback::from(move |value: String| {
                 let mut m = (*f).clone();
-                if let Some(row) = m.get_mut(i) { row.0 = input_value(&e); }
+                if let Some(row) = m.get_mut(i) { row.0 = value; }
                 f.set(m);
             })
         };
         let on_val = {
             let f = a.f_meta.clone();
-            Callback::from(move |e: InputEvent| {
+            Callback::from(move |value: String| {
                 let mut m = (*f).clone();
-                if let Some(row) = m.get_mut(i) { row.1 = input_value(&e); }
+                if let Some(row) = m.get_mut(i) { row.1 = value; }
                 f.set(m);
             })
         };
         let on_remove = {
             let f = a.f_meta.clone();
-            Callback::from(move |_| {
+            Callback::from(move |_: MouseEvent| {
                 let mut m = (*f).clone();
                 if i < m.len() { m.remove(i); }
                 f.set(m);
             })
         };
         html! {
-            <div class="kv-editor__row">
-                <input class="input" placeholder="key" value={k.clone()} oninput={on_key} />
-                <input class="input" placeholder="value" value={v.clone()} oninput={on_val} />
-                <button class="kv-editor__remove" aria-label="Remove field" onclick={on_remove}>
-                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
-                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12" /></svg>
-                </button>
+            <div class="kv-editor__row" key={i.to_string()}>
+                <TextInput placeholder="key" value={k.clone()} on_input={on_key} mono=true
+                    attrs={attrs! { "aria-label" => format!("Field {} key", i + 1) }} />
+                <TextInput placeholder="value" value={v.clone()} on_input={on_val}
+                    attrs={attrs! { "aria-label" => format!("Field {} value", i + 1) }} />
+                <IconButton icon={icons::MINUS} label="Remove field" variant={ButtonVariant::Subtle}
+                    on_click={on_remove} />
             </div>
         }
     }).collect::<Html>();
 
     let on_add = {
         let f = a.f_meta.clone();
-        Callback::from(move |_| {
+        Callback::from(move |_: MouseEvent| {
             let mut m = (*f).clone();
             m.push((String::new(), String::new()));
             f.set(m);
         })
     };
 
-    let error = a
-        .error
-        .map(|e| html! { <p class="drawer__hint" style="color: var(--danger);">{ e }</p> });
-
     let footer = {
-        let on_cancel = {
-            let close = a.on_close.clone();
-            Callback::from(move |_: MouseEvent| close.emit(()))
-        };
-        let save_label = if a.submitting {
-            "Saving…"
-        } else if a.editing {
-            "Save changes"
-        } else {
-            "Create pixel"
-        };
+        let on_cancel = a.on_close.reform(|_: MouseEvent| ());
         html! {
             <>
-                <button class="btn btn--ghost" onclick={on_cancel}>{ "Cancel" }</button>
-                <button class="btn btn--primary" onclick={a.on_save} disabled={a.submitting}>{ save_label }</button>
+                <Button variant={ButtonVariant::Subtle} on_click={on_cancel}>{ "Cancel" }</Button>
+                <Button variant={ButtonVariant::Primary} on_click={a.on_save} loading={a.submitting}>
+                    { if a.editing { "Save changes" } else { "Create pixel" } }
+                </Button>
             </>
         }
     };
 
     html! {
-        <Drawer open={a.open} title={title} on_close={a.on_close} footer={footer}>
-            <div class="field">
-                <label class="field__label">{ "Name" }</label>
-                <input class="input" placeholder="e.g. June newsletter" value={(*a.f_name).clone()} oninput={on_name} />
+        <Drawer open={a.open} {title} on_close={a.on_close} {footer}>
+            <div class="form">
+                if let Some(error) = a.error {
+                    <Alert tone={Tone::Danger}>{ error }</Alert>
+                }
+                <Field label="Name" required=true>
+                    <TextInput placeholder="e.g. June newsletter" value={(*a.f_name).clone()} on_input={on_name} />
+                </Field>
+                <Field label="Event name" hint="Defaults to “pixel”.">
+                    <TextInput placeholder="pixel" value={(*a.f_event).clone()} on_input={on_event} />
+                </Field>
+                { project_field }
+                <Field label="Event metadata" group=true>
+                    <div class="kv-editor">
+                        { meta_rows }
+                        <div><Button size={Size::Small} icon={icons::PLUS} on_click={on_add}>{ "Add field" }</Button></div>
+                    </div>
+                </Field>
             </div>
-            <div class="field">
-                <label class="field__label">{ "Event name" }</label>
-                <input class="input" placeholder="default: pixel" value={(*a.f_event).clone()} oninput={on_event} />
-            </div>
-            { project_field }
-            <div class="field">
-                <label class="field__label">{ "Event metadata" }</label>
-                <div class="kv-editor">
-                    { meta_rows }
-                    <button class="btn btn--small" onclick={on_add}>{ "Add field" }</button>
-                </div>
-            </div>
-            { error }
         </Drawer>
     }
 }

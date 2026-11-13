@@ -2,6 +2,7 @@
 
 use analytics_api::ExceptionStatus;
 use yew::prelude::*;
+use yewi::prelude::{Pill, Tone};
 
 pub fn status_label(status: ExceptionStatus) -> &'static str {
     match status {
@@ -11,11 +12,13 @@ pub fn status_label(status: ExceptionStatus) -> &'static str {
     }
 }
 
-pub fn status_class(status: ExceptionStatus) -> Classes {
-    let modifier = match status {
-        ExceptionStatus::Unresolved => "badge--warn",
-        ExceptionStatus::Resolved => "badge--ok",
-        ExceptionStatus::Ignored => "badge--muted",
+/// The triage status as a pill: unresolved asks for attention, resolved is
+/// settled, muted recedes.
+pub fn status_pill(status: ExceptionStatus) -> Html {
+    let tone = match status {
+        ExceptionStatus::Unresolved => Tone::Warn,
+        ExceptionStatus::Resolved => Tone::Ok,
+        ExceptionStatus::Ignored => Tone::Neutral,
     };
-    classes!("badge", modifier)
+    html! { <Pill {tone}>{ status_label(status) }</Pill> }
 }

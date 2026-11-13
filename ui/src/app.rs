@@ -4,6 +4,7 @@ use analytics_api::AdminUser;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 use yew_router::prelude::*;
+use yewi::prelude::{ErrorState, Loading, LoadingLayout};
 
 use crate::api::{self, ApiError};
 use crate::auth;
@@ -126,19 +127,12 @@ fn app_inner() -> Html {
 fn gate(auth: &AuthHandle) -> Html {
     match &auth.status {
         AuthStatus::Loading => html! {
-            <PublicLayout>
-                <div class="center-screen"><p class="muted">{ "Loading…" }</p></div>
-            </PublicLayout>
+            <PublicLayout><Loading label="Loading…" layout={LoadingLayout::Block} /></PublicLayout>
         },
         AuthStatus::NeedsLogin => html! { <PublicLayout><pages::Login /></PublicLayout> },
         AuthStatus::Error(message) => html! {
             <PublicLayout>
-                <div class="center-screen">
-                    <div class="auth-card">
-                        <h1>{ "Couldn't verify your session" }</h1>
-                        <p>{ message.clone() }</p>
-                    </div>
-                </div>
+                <ErrorState title="Couldn't verify your session">{ message.clone() }</ErrorState>
             </PublicLayout>
         },
         AuthStatus::SignedIn(_) | AuthStatus::Disabled => html! {
