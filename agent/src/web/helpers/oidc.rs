@@ -503,7 +503,7 @@ mod tests {
         jsonwebtoken::encode(
             &header,
             &claims,
-            &jsonwebtoken::EncodingKey::from_secret(b"secret"),
+            &jsonwebtoken::EncodingKey::from_secret(b"secret").unwrap(),
         )
         .unwrap()
     }
