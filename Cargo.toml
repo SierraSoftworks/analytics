@@ -63,5 +63,5 @@ uuid = { version = "1", features = ["v4"] }
 duckdb = { version = "1.10505" }
 # Legacy stores, retained only to migrate pre-DuckDB deployments at startup
 # (redb hot log; the Parquet archive is imported by DuckDB itself).
-redb = "4.1"
+redb = "5.0"
 ulid = "3"
